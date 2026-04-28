@@ -1138,3 +1138,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: yes, bucket 5; postponing means hitting an fs-inode wall on long runs.
 - ACT: 9 new tests (default/override/clamp/invalid; prune noop/oldest/missing-dir/triggered-from-write/skips-subdirs). Added missing `import os` to test file. 344 passed, 1 skipped.
 - COMMIT: pending.
+
+## Loop 53 — `_apply_diff` error category contract
+- OBSERVE: Errors are already shaped `"category: detail"` but no constant or extractor exists; future log-aggregator code would have to copy a hard-coded list.
+- ORIENT: bucket 8 — fragile-for-the-next-developer. Cheap to formalize.
+- DECIDE: introduce `APPLY_ERROR_CATEGORIES` (frozenset), `APPLY_OK_CATEGORY`, and `_apply_error_category(msg)` helper; add contract tests that real `_apply_diff` outputs return categories *in* the set.
+- DEVIL:
+  - Correctness: helper is a 1-line split. Existing call sites (`apply_failed:{rel}:{msg[:80]}`) unchanged — they slice the *outer* prefix. No behavior change.
+  - Scope: pure documentation+helper. Doesn't touch any control flow.
+  - Priority: low-impact alone, but it locks the contract so future loops can rely on it.
+- ACT: 6 new tests; 350 passed, 1 skipped.
+- COMMIT: pending.

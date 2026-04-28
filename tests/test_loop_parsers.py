@@ -635,3 +635,37 @@ class TestEnvIntCapped:
     def test_legacy_alias_still_works(self, monkeypatch):
         monkeypatch.setenv("QWEN_TEST_X", "55")
         assert L._env_timeout_seconds("QWEN_TEST_X", 7, 100) == 55
+
+
+class TestApplyErrorCategory:
+    """Loop 53: _apply_diff error categories form a stable contract."""
+
+    def test_category_set_nonempty(self):
+        assert len(L.APPLY_ERROR_CATEGORIES) >= 8
+
+    def test_category_extraction(self):
+        assert L._apply_error_category("unsafe_path: /etc/passwd") == "unsafe_path"
+        assert L._apply_error_category("not_a_unified_diff") == "not_a_unified_diff"
+        assert L._apply_error_category("apply_failed: foo bar") == "apply_failed"
+
+    def test_category_extraction_strips_whitespace(self):
+        assert L._apply_error_category("dir_conflict :  details") == "dir_conflict"
+
+    def test_not_a_unified_diff_in_set(self):
+        ok, msg = L._apply_diff("not a diff at all")
+        assert ok is False
+        assert L._apply_error_category(msg) in L.APPLY_ERROR_CATEGORIES
+        assert L._apply_error_category(msg) == "not_a_unified_diff"
+
+    def test_unsafe_path_in_set(self):
+        diff = (
+            "diff --git a/../etc/passwd b/../etc/passwd\n"
+            "--- a/../etc/passwd\n+++ b/../etc/passwd\n"
+            "@@ -1 +1 @@\n-x\n+y\n"
+        )
+        ok, msg = L._apply_diff(diff)
+        assert ok is False
+        assert L._apply_error_category(msg) in L.APPLY_ERROR_CATEGORIES
+
+    def test_ok_category(self):
+        assert L.APPLY_OK_CATEGORY == "applied"

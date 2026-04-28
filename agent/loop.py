@@ -729,6 +729,29 @@ def _run_git_apply(args: list[str], diff: str) -> tuple[int, str]:
         return 124, f"timed_out_after_{timeout}s"
 
 
+# Stable, machine-parseable error categories returned by `_apply_diff`.
+# The detail (after `: `) is free-form; the category before `:` is the
+# contract surface log-aggregators rely on.
+APPLY_ERROR_CATEGORIES: frozenset[str] = frozenset({
+    "not_a_unified_diff",
+    "oversized_diff",
+    "unsafe_path",
+    "binary_patch",
+    "unsafe_mode",
+    "malformed_diff",
+    "dir_conflict",
+    "apply_check_failed",
+    "apply_failed",
+})
+
+APPLY_OK_CATEGORY: str = "applied"
+
+
+def _apply_error_category(msg: str) -> str:
+    """Extract the leading category from an `_apply_diff` error message."""
+    return msg.split(":", 1)[0].strip()
+
+
 def _apply_diff(diff_text: str) -> tuple[bool, str]:
     """Try `git apply --check` then `git apply`. Returns (ok, message)."""
     diff = _strip_fence(diff_text)
