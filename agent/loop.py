@@ -299,6 +299,26 @@ def _diff_in_scope(changed: Iterable[Path], target: Path) -> tuple[bool, str]:
     return True, "ok"
 
 
+# Paths the loop owns and writes to during an iteration. They must
+# never count as "changes" for scope/validation purposes, otherwise a
+# missing `.gitignore` or a misconfigured worktree would make every
+# iteration look out-of-scope and the loop would silently never commit
+# anything useful.
+_INTERNAL_PATHS = {
+    Path(".loop"),
+    Path("STATE.md"),
+}
+
+
+def _is_internal_path(p: Path) -> bool:
+    parts = p.parts
+    if not parts:
+        return False
+    if Path(parts[0]) in _INTERNAL_PATHS:
+        return True
+    return p in _INTERNAL_PATHS
+
+
 def _changed_paths() -> list[Path]:
     """Return every path in the working tree that differs from HEAD.
 
@@ -306,7 +326,10 @@ def _changed_paths() -> list[Path]:
     modified *and* untracked files (`git diff` alone misses untracked
     additions, which would let an out-of-scope diff that creates a new
     file slip past `_diff_in_scope`). NUL-separated output is parsed so
-    paths containing whitespace are handled correctly.
+    paths containing whitespace are handled correctly. Loop-internal
+    artefacts (`.loop/...`, `STATE.md`) are filtered out so that a
+    missing or stale `.gitignore` cannot cause every iteration to
+    misclassify itself as out-of-scope.
     """
     proc = _run_git(
         "status", "--porcelain=v1", "-z", "-uall", check=False
@@ -334,9 +357,9 @@ def _changed_paths() -> list[Path]:
                 break
             src = raw[i:end2]
             i = end2 + 1
-            if src:
+            if src and not _is_internal_path(Path(src)):
                 out.append(Path(src))
-        if path:
+        if path and not _is_internal_path(Path(path)):
             out.append(Path(path))
     return out
 

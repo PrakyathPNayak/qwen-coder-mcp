@@ -316,3 +316,35 @@ with a scripted `_ScriptedClient.system_user(...)`. Verifies:
    test covering "what if a user installs without .gitignore". Filed.
 
 **Result**: 89/89 green. Commit `<filled by git>`.
+
+## Loop 11 — Self-defense against missing `.gitignore`
+**Bug**: every iteration writes `.loop/cursor.json` and `.loop/runtime.log`,
+and rolls `STATE.md`. After loop 7 made `_changed_paths` honour untracked
+files, the loop became silently dependent on `.gitignore` excluding `.loop/`
+and `STATE.md`. If a contributor cloned with a stale `.gitignore`, ran
+`git rm` on it, or used `git update-index --skip-worktree` and drifted —
+*every* iteration's diff would be tagged out_of_scope (because of the
+loop's own untracked files) and the loop would run forever doing nothing
+useful. Catastrophic fail-open.
+
+**Devil**: should `.agent/loop_log.md` also be filtered? No — we
+deliberately commit it every loop. So filter only the truly runtime-only
+artefacts.
+
+**Fix**: filter `.loop/...` and root-level `STATE.md` out of
+`_changed_paths` directly. `_INTERNAL_PATHS = {Path(".loop"), Path("STATE.md")}`
++ `_is_internal_path()` helper that checks the first path segment.
+`.agent/` is intentionally NOT filtered.
+
+**Tests added**:
+- `test_changed_paths_filters_loop_internals` — `.loop/cursor.json` and
+  `STATE.md` invisible to scope checks.
+- `test_changed_paths_does_not_filter_dot_agent` — `.agent/loop_log.md`
+  remains visible.
+- `test_changed_paths_filters_state_md_in_root_only` — `docs/STATE.md`
+  (a hypothetical user file) NOT filtered.
+- `test_applied_path_works_without_gitignore` — end-to-end: deleting
+  `.gitignore` from the repo entirely doesn't break the happy-path
+  iteration. Pre-fix this would have failed with out_of_scope.
+
+**Result**: 93/93 green. Commit `<filled by git>`.

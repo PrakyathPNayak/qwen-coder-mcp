@@ -42,6 +42,53 @@ def repo(tmp_path: Path, monkeypatch):
     return tmp_path
 
 
+def test_changed_paths_filters_loop_internals(repo):
+    """Loop-internal paths must be invisible to scope checks even
+    without `.gitignore` excluding them, so a misconfigured worktree
+    cannot make every iteration out-of-scope."""
+    import agent.loop as L
+
+    # Create a `.loop/` artefact and a STATE.md update — both untracked.
+    loop_dir = repo / ".loop"
+    loop_dir.mkdir()
+    (loop_dir / "cursor.json").write_text("{}", "utf-8")
+    (loop_dir / "runtime.log").write_text("hi\n", "utf-8")
+    (repo / "STATE.md").write_text("# state\n", "utf-8")
+
+    paths = [str(p) for p in L._changed_paths()]
+    assert ".loop/cursor.json" not in paths
+    assert ".loop/runtime.log" not in paths
+    assert "STATE.md" not in paths
+
+
+def test_changed_paths_does_not_filter_dot_agent(repo):
+    """`.agent/loop_log.md` is intentionally tracked and must remain
+    visible — every loop commits to it."""
+    import agent.loop as L
+
+    agent_dir = repo / ".agent"
+    agent_dir.mkdir()
+    (agent_dir / "loop_log.md").write_text("# log\n", "utf-8")
+
+    paths = [str(p).replace("\\", "/") for p in L._changed_paths()]
+    assert ".agent/loop_log.md" in paths
+
+
+def test_changed_paths_filters_state_md_in_root_only(repo):
+    """`STATE.md` at the root is filtered, but a stray `STATE.md` deeper
+    in the tree (e.g. someone's docs) is NOT — we only own the root one."""
+    import agent.loop as L
+
+    (repo / "STATE.md").write_text("# state\n", "utf-8")
+    sub = repo / "docs"
+    sub.mkdir()
+    (sub / "STATE.md").write_text("# user docs\n", "utf-8")
+
+    paths = [str(p).replace("\\", "/") for p in L._changed_paths()]
+    assert "STATE.md" not in paths
+    assert "docs/STATE.md" in paths
+
+
 def test_changed_paths_modified_file(repo, monkeypatch):
     import agent.loop as L
 

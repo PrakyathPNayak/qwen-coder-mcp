@@ -185,3 +185,32 @@ def test_applied_branch_commits_without_push(env):
     # The third call's system prompt is the devil prompt.
     devil_system = client.calls[2][0]
     assert "devil" in devil_system.lower() or "advocate" in devil_system.lower()
+
+
+def test_applied_path_works_without_gitignore(env):
+    """Belt-and-suspenders: even with no `.gitignore` at all, loop-internal
+    paths (`.loop/`, `STATE.md`) must not poison the scope check.
+
+    Before the loop-11 fix, removing `.gitignore` made every iteration
+    mark itself as out_of_scope because cursor.json/runtime.log were
+    untracked and counted as changes.
+    """
+    L, repo = env
+    (repo / ".gitignore").unlink()
+    subprocess.run(
+        ["git", "commit", "-am", "drop gitignore"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    L._save_cursor(0)  # f.py
+    client = _ScriptedClient([
+        "- x is set to a magic number\n",
+        _diff_for("f.py", "x = 1", "x = 2"),
+        "VERDICT: ACCEPT\n",
+    ])
+    out = L._iteration(client, max_bytes=10_000, push=False)
+    assert out.startswith("applied:"), out
+    assert (repo / "f.py").read_text("utf-8") == "x = 2\n"
