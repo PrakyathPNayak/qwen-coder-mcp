@@ -190,3 +190,30 @@ unbounded growth.
 
 
 
+
+## Loop 6 — 4xx fail-fast in QwenClient
+**Pivot**: original target (`_load_cursor` crash) was already protected by
+`except Exception: return 0`. Pivoted mid-DECIDE to candidate #4.
+
+**Problem**: `qwen_client.chat` retried *all* 4xx responses 3x with exponential
+backoff. Auth errors (401), bad payloads (400), permissions (403), unprocessable
+(422) etc. wasted 7s + 3 token charges and never succeeded.
+
+**Devil**: 408 (timeout) and 429 (rate limit) ARE legitimately retriable; a
+naive "all 4xx fail-fast" rule would regress those. Refined plan: retry on
+408/425/429 + 5xx + network; fail-fast on every other 4xx via a new
+`QwenFatalError` (subclass of `QwenError`) caught and re-raised inside the loop.
+
+**Fix**:
+- Added `QwenFatalError` and `_RETRIABLE_4XX = {408, 425, 429}`.
+- 5xx → `QwenError` (retried).
+- 4xx in `_RETRIABLE_4XX` → `QwenError` (retried).
+- Other 4xx → `QwenFatalError` (re-raised before backoff).
+
+**Tests**: `tests/test_qwen_client.py`, 11 cases using `httpx.MockTransport`
+and a monkey-patched `time.sleep`. Covers 200 happy path, fail-fast on
+400/401/403/422 (each verified to call the transport exactly once),
+retry-and-succeed on 408/429, retry-and-give-up on 500, recovery after one
+503, malformed empty `choices`, and content-as-list-of-blocks extraction.
+
+**Result**: 60/60 green. Commit `<filled in by git>`.

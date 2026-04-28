@@ -29,6 +29,17 @@ class QwenError(RuntimeError):
     """Raised when the Qwen backend returns an unrecoverable error."""
 
 
+class QwenFatalError(QwenError):
+    """Non-retriable error (4xx other than 408/429, malformed payload).
+
+    Distinguished from ``QwenError`` so the retry loop can fail fast
+    instead of wasting attempts on requests that will never succeed.
+    """
+
+
+_RETRIABLE_4XX = frozenset({408, 425, 429})
+
+
 class QwenClient:
     """Thin OpenAI-compatible client with retries and sane defaults."""
 
@@ -89,11 +100,18 @@ class QwenClient:
                         f"backend {resp.status_code}: {resp.text[:300]}"
                     )
                 if resp.status_code >= 400:
-                    raise QwenError(
+                    if resp.status_code in _RETRIABLE_4XX:
+                        raise QwenError(
+                            f"transient {resp.status_code}: {resp.text[:300]}"
+                        )
+                    raise QwenFatalError(
                         f"client error {resp.status_code}: {resp.text[:300]}"
                     )
                 data = resp.json()
                 return self._extract_text(data)
+            except QwenFatalError:
+                # Not retriable — fail fast.
+                raise
             except (httpx.HTTPError, QwenError, json.JSONDecodeError) as exc:
                 last_err = exc
                 sleep = min(2**attempt, 10)
