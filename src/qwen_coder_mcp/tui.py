@@ -1159,6 +1159,37 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def render_stream_tail(accum: str, budget: int = 2000) -> str:
+    """Return the last ``budget`` characters of ``accum``, but if the
+    cut lands mid-word, snap forward to the next whitespace so the
+    rendered tail starts on a clean token boundary.
+
+    Why: the streaming widget redraws on every chunk; without alignment
+    long tails like ``...he agent loop is a finite state ma|chine that…``
+    flicker mid-word as the cut point drifts. Snapping to whitespace
+    keeps the head of the visible tail readable.
+
+    Edge cases:
+    - ``len(accum) <= budget`` returns ``accum`` unchanged.
+    - ``budget <= 0`` returns the empty string.
+    - If the last ``budget`` characters contain no whitespace at all
+      (e.g. one giant base64 blob), we keep the raw cut rather than
+      collapse to empty.
+    - We snap forward by at most 64 characters so the tail never
+      shrinks below ~``budget - 64``.
+    """
+    if budget <= 0:
+        return ""
+    if len(accum) <= budget:
+        return accum
+    cut = len(accum) - budget
+    window_end = min(cut + 64, len(accum))
+    for i in range(cut, window_end):
+        if accum[i].isspace():
+            return accum[i + 1 :]
+    return accum[cut:]
+
+
 _MARKDOWN_HINTS = (
     "```",
     "\n# ",
@@ -1755,7 +1786,7 @@ def _build_app(
                 stream = self.query_one("#stream", Static)
             except Exception:  # noqa: BLE001
                 return
-            tail = accum[-2000:]
+            tail = render_stream_tail(accum, 2000)
             stream.update(f"[green]qwen›[/green] {tail}▍")
 
         def _reset_stream_buffer(self) -> None:

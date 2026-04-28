@@ -2467,3 +2467,20 @@ read-only operation, no state changes.
 **Act.** Edited `scripts/serve_qwen.sh` (defaults + 3 new env knobs + always-on `--swap-space` + conditional chunked-prefill flags). Edited `src/qwen_coder_mcp/config.py` (raised both defaults). Edited tests to match new pins; added 5 new tests covering swap-space override, chunked-prefill disable, max-batched override, long-context override, and default chunked flags. Edited `docs/LOCAL_SERVE.md` troubleshooting + added a "Going beyond 64k context" subsection.
 
 **Verify.** `pytest -x -q` → ~1k tests passing, 1 skipped. New defaults are pinned by the serve test harness so any silent regression breaks the suite.
+
+## Loop 172 — align streaming tail to whitespace boundary
+
+**Observe.** At HEAD `4dc3053` (1019 passed) the streaming widget cut the visible tail with raw `accum[-2000:]`. As new chunks arrived the cut point drifted by 1-2 chars per redraw, so the head of the tail flickered mid-word: `…ent loop is a finite state ma|chine that…`. Distracting on long replies.
+
+**Orient.** The other open candidates: token-meter accounting for tool_result body bytes (already covered — feedback gets folded into history as a user msg, so /tokens already counts it), auto-checkpoint to `.agent/agent_state.json` (real but bigger), live vLLM tool_call protocol smoke test (needs a running server, opt-in only). Streaming-tail alignment is small, isolated, and ships a visible UX win.
+
+**Decide.** Extract `render_stream_tail(accum, budget=2000) -> str` as a module-level pure function. When `len(accum) > budget`, snap the cut forward to the next whitespace within the next 64 chars; if no whitespace in window, fall back to the raw cut. Replace the `accum[-2000:]` slice in `_on_stream_chunk` with a call to the new helper.
+
+**Devil.**
+- *Correctness:* What if the entire tail is one giant token (e.g. base64)? Test `test_no_whitespace_in_window_falls_back_to_raw_cut` covers that path. ✅
+- *Scope:* Is this masking a deeper symptom? No — the existing tail is fundamentally byte-budget-driven; aligning to whitespace is a small visual polish on a working primitive, not a workaround. ✅
+- *Priority:* Higher-impact open items? Token meter is already correct (results land in history before /tokens runs). Auto-checkpoint is bigger but strictly opt-in design by nothing's lost without it today. Streaming polish is small and shippable in one loop. ✅ 
+
+**Act.** Added `render_stream_tail` next to `estimate_tokens` in `tui.py`. Updated `_on_stream_chunk` to call it. Added `tests/test_render_stream_tail.py` with 7 cases: short input, zero/negative budget, exact boundary, normal snap, no-whitespace fallback, and bounded-snap-window fallback.
+
+**Verify.** `pytest -x -q` → ~1k passed, 1 skipped. New helper has 100% branch coverage from the new tests.
