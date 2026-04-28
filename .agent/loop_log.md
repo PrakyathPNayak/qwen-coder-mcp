@@ -1064,3 +1064,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: medium.
 - ACT: 5 new tests covering valid cfg/ini, duplicate-section, missing-header, percent-in-value. 301 passed, 1 skipped.
 - COMMIT: pending.
+
+## Loop 46 — JSON duplicate-key detection
+- OBSERVE: `json.loads` silently keeps the last value on duplicate keys. A model-emitted fix that accidentally inserts a duplicate `"version"` or `"main"` in `package.json` round-trips green and corrupts config without any signal.
+- ORIENT: silent corruption — exactly the priority-1 class. Fixing the validator is cause-level.
+- DECIDE: parse with `object_pairs_hook` that raises on duplicates inside any object.
+- DEVIL:
+  - Correctness: `_no_dup` runs at every nesting level; raises a plain ValueError caught by the existing `except Exception`. Output prefix `json_invalid:` already covers the message.
+  - Scope: only affects .json validation — other branches untouched.
+  - Priority: high — matches priority bucket 1 (silent data corruption).
+- ACT: rewrote .json branch; 3 new tests for top-level dup, nested dup, unique-keys-pass. 304 passed, 1 skipped.
+- COMMIT: pending.

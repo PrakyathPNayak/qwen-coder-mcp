@@ -783,7 +783,21 @@ def _validate_changed_files(paths: Iterable[Path]) -> tuple[bool, str]:
         try:
             if suffix == ".json":
                 import json
-                json.loads(full.read_text(encoding="utf-8"))
+                # `json.loads` silently keeps only the last duplicate key,
+                # so a fix that accidentally copies a key into a JSON
+                # config file would round-trip green and corrupt the
+                # config silently. Use object_pairs_hook to detect.
+                def _no_dup(pairs: list[tuple[str, object]]) -> dict:
+                    seen: set[str] = set()
+                    for k, _ in pairs:
+                        if k in seen:
+                            raise ValueError(f"duplicate key: {k!r}")
+                        seen.add(k)
+                    return dict(pairs)
+                json.loads(
+                    full.read_text(encoding="utf-8"),
+                    object_pairs_hook=_no_dup,
+                )
             elif suffix == ".toml":
                 try:
                     import tomllib

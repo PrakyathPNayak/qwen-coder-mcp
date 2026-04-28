@@ -555,3 +555,28 @@ class TestValidateChangedFilesCfgIni:
         monkeypatch.setattr(L, "_REPO", tmp_path)
         ok, _ = L._validate_changed_files([Path("ok.cfg")])
         assert ok is True
+
+
+class TestValidateChangedFilesJsonDupKeys:
+    """Loop 46: duplicate JSON keys are rejected."""
+
+    def test_duplicate_top_level_key_rejected(self, tmp_path, monkeypatch):
+        (tmp_path / "p.json").write_text('{"a": 1, "a": 2}')
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, msg = L._validate_changed_files([Path("p.json")])
+        assert ok is False
+        assert msg.startswith("json_invalid")
+        assert "duplicate key" in msg
+
+    def test_duplicate_nested_key_rejected(self, tmp_path, monkeypatch):
+        (tmp_path / "p.json").write_text('{"x": {"k": 1, "k": 2}}')
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, msg = L._validate_changed_files([Path("p.json")])
+        assert ok is False
+        assert "duplicate key" in msg
+
+    def test_unique_keys_pass(self, tmp_path, monkeypatch):
+        (tmp_path / "p.json").write_text('{"a": 1, "b": 2, "nested": {"c": 3}}')
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, _ = L._validate_changed_files([Path("p.json")])
+        assert ok is True
