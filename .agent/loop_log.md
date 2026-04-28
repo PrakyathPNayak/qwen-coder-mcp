@@ -1928,3 +1928,11 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: write_file refuses missing parent unless create_parents=True -- prevents accidental directory typos. apply_patch has check_only mode for TUI preview.
   - Priority: P3 user-requested (claude-code parity). Lays groundwork for TUI agent loop.
 - ACT: 200-line module + 27 tests + 4 server tool entries with closure dispatch through fs_cfg. README updated. 654 passed.
+
+## Loop 130 — Textual TUI scaffolding (tui.py + slash commands + multi-turn memory)
+- DECIDE: claude-code parity needs an interactive TUI. Ship Textual-based tui.py with a pure parse_slash and dispatch_slash so logic is fully testable without spinning an App. Slash commands: help search fetch read ls find_bugs explain quit. Plain text becomes a chat turn with multi-turn ChatMessage history. Add `tui` extra and `qwen-coder-tui` console script.
+- DEVIL:
+  - Correctness: parser strips and lowercases; empty-after-slash handled. dispatch_slash returns (text, quit) tuple so the App layer never has to inspect command names. chat_turn injects system message only if absent so user-supplied system survives.
+  - Scope: textual import is lazy inside _build_app so MCP-only users do not pay the dep cost. Tests use FakeClient so no Qwen server needed.
+  - Priority: P3 user-requested feature (TUI parity).
+- ACT: 240-line module, 21 tests, README section, pyproject.toml `tui` extra and `qwen-coder-tui` script. 675 passed.

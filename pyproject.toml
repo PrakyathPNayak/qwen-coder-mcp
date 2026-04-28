@@ -20,9 +20,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+tui = ["textual>=0.50"]
 
 [project.scripts]
 qwen-coder-mcp = "qwen_coder_mcp.server:main"
+qwen-coder-tui = "qwen_coder_mcp.tui:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

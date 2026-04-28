@@ -30,6 +30,22 @@ quantizations, and the llama.cpp fallback.
   - `refactor` — rewrite code per a goal
   - `write_tests` — generate tests for code
   - `summarize_repo` — high-level repo summary
+
+## TUI
+
+A Textual-based terminal UI is shipped under the `tui` extra:
+
+```
+pip install -e '.[tui]'
+qwen-coder-tui
+```
+
+Slash commands: `/help`, `/search <q>`, `/fetch <url>`, `/read <path>`,
+`/ls [path]`, `/find_bugs <path>`, `/explain <path>`, `/quit`. Anything
+not starting with `/` is sent to Qwen as a chat message with multi-turn
+memory preserved within the session.
+
+(continued tools list below)
   - `web_search` — DuckDuckGo HTML web search (no API key)
   - `fetch_url` — fetch a URL's text body (binary content refused, byte-capped)
   - `read_file` — read a file from the configured repo root
