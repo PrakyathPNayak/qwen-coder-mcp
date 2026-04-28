@@ -73,14 +73,18 @@ require `/v1/chat/completions`.
 ## Troubleshooting
 
 - **OOM at startup (CUDA out of memory during warmup / KV cache allocation)**:
-  the defaults already enforce eager mode, fp8 KV cache, and `max_num_seqs=4`
-  on a 24 GB 4090. If it still OOMs, drop further:
-  - `QWEN_SERVE_MAX_LEN=2048` (less KV cache per slot)
-  - `QWEN_SERVE_MAX_SEQS=1` (single-slot KV cache)
-  - `QWEN_SERVE_GPU_UTIL=0.75`
+  the defaults already enforce eager mode, fp8 KV cache, `max_num_seqs=1`,
+  `max_model_len=2048`, `gpu_memory_utilization=0.92`, and disable image+video
+  multimodal (`--limit-mm-per-prompt '{"image":0,"video":0}'`) so the int4
+  27B fits on a 24 GB 4090. If you still see `Available KV cache memory: -X GiB`
+  / `No available memory for the cache blocks`:
+  - `QWEN_SERVE_MAX_LEN=1024` (less KV cache per slot)
+  - `QWEN_SERVE_GPU_UTIL=0.94` (push closer to the limit; risk of OOM kill)
   - `QWEN_SERVE_KV_DTYPE=fp8` is already the default; keep it.
   - `QWEN_SERVE_EAGER=1` is already the default; keep it (skips CUDA graph
     capture which briefly doubles peak memory).
+  - To re-enable multimodal once you have memory headroom:
+    `QWEN_SERVE_LIMIT_MM='' ./scripts/serve_qwen.sh`.
   The script also exports `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
   which the OOM error itself recommends; it reduces fragmentation.
 - **`unknown architecture qwen3_5`**: upgrade vLLM (`pip install -U vllm`)
