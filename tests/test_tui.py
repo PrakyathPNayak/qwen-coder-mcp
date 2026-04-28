@@ -1342,3 +1342,66 @@ class TestSysInfoSlash:
             history=[],
         )
         assert "kaboom" in text
+
+
+# ----------------------------------------------------------- Loop 144
+class TestExportSlash:
+    def test_export_basic(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history = [
+            ChatMessage(role="system", content="be brief"),
+            ChatMessage(role="user", content="hello"),
+            ChatMessage(role="assistant", content="hi"),
+        ]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/export out.md"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "exported 2 turns" in text
+        body = (tmp_path / "out.md").read_text()
+        assert "# qwen-coder-tui chat transcript" in body
+        assert "## you" in body
+        assert "## qwen" in body
+        assert "> system: be brief" in body
+
+    def test_export_no_args(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/export"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[ChatMessage(role="user", content="x")],
+        )
+        assert "usage" in text
+
+    def test_export_no_history(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/export out.md"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=None,
+        )
+        assert "no history" in text
+
+    def test_export_empty_history(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/export out.md"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "no chat to export" in text
+
+    def test_export_path_escape(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/export ../../etc/whatever"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[ChatMessage(role="user", content="x")],
+        )
+        assert "error" in text.lower()

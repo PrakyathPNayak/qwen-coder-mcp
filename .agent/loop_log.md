@@ -2051,3 +2051,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P5 polish but free since the helpers exist.
 - ACT: _render_sysinfo helper emitting model base url fs root history count tokens and health line. Dispatcher branch and SLASH_COMMANDS entry. Three new tests covering healthy backend, unhealthy backend, and health check raising. Eight hundred fifteen passed. Also fixed two indentation regressions in _render_diff_head and the retry branch caused by an editor merge in this loop.
 
+
+## Loop 144 — /export markdown transcript
+- DECIDE: claude code has Save Conversation as Markdown. Add slash export that writes a properly headed and fenced markdown transcript distinct from slash save's flat log shape.
+- DEVIL:
+  - Correctness: header lines, fence around bodies, blockquote for system prompt, count of non-system turns in the success message. Path goes through fs_tools.write_file so the sandbox applies.
+  - Scope: keep slash save unchanged for users who want the simpler log format.
+  - Priority: P5 polish.
+- ACT: _render_export helper plus dispatcher branch plus SLASH_COMMANDS entry plus help text. Five new tests cover basic round trip, no args, no history, empty history, and a path escape attempt. Eight hundred twenty passed.
+

@@ -89,6 +89,7 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/undo",
     "/retry",
     "/sysinfo",
+    "/export",
     "/quit",
 )
 
@@ -131,6 +132,7 @@ Slash commands:
   /undo                Pop the last user/assistant exchange
   /retry               Re-send the last user message
   /sysinfo             Snapshot of backend health, model, root, history
+  /export <path>       Export full chat as Markdown
   /quit                Exit
 
 @<path> tokens in plain chat are expanded inline as file contents.
@@ -317,8 +319,7 @@ def _render_run(cfg: fs_tools.FsConfig, cmd: str) -> str:
     return shell_tools.format_run_result(res)
 
 
-def _render_sysinfo(
-    client: QwenClient,
+def _render_sysinfo(    client: QwenClient,
     cfg: fs_tools.FsConfig,
     history: list[ChatMessage] | None,
 ) -> str:
@@ -397,6 +398,40 @@ def _render_save(
     except fs_tools.FsError as exc:
         return f"save error: {exc}"
     return f"saved {len(pairs)} turns to {path}"
+
+
+def _render_export(
+    cfg: fs_tools.FsConfig, history: list[ChatMessage], path: str
+) -> str:
+    """Export the full chat transcript as Markdown.
+
+    Unlike `_render_save` which uses a flat `you>` / `qwen>` log shape
+    suitable for re-reading, this helper produces proper Markdown with
+    `## you` / `## qwen` headings and triple-backtick fenced bodies so
+    the file renders as a readable transcript in any markdown viewer.
+    The system prompt is included as a leading `> system: ...` blockquote.
+    """
+    if not history:
+        return "no chat to export"
+    lines: list[str] = ["# qwen-coder-tui chat transcript", ""]
+    for m in history:
+        if m.role == "system":
+            for sl in m.content.splitlines() or [""]:
+                lines.append(f"> system: {sl}")
+            lines.append("")
+            continue
+        heading = "you" if m.role == "user" else "qwen"
+        lines.append(f"## {heading}")
+        lines.append("")
+        lines.append(m.content)
+        lines.append("")
+    body = "\n".join(lines)
+    try:
+        fs_tools.write_file(cfg, path, body, create_parents=True)
+    except fs_tools.FsError as exc:
+        return f"export error: {exc}"
+    msgs = sum(1 for m in history if m.role != "system")
+    return f"exported {msgs} turns as markdown to {path}"
 
 
 _GIT_ALLOWED = {"status", "log", "diff", "show", "branch", "remote", "rev-parse"}
@@ -651,6 +686,12 @@ def dispatch_slash(
         return f"__RETRY__{prompt}", False
     if name == "sysinfo":
         return _render_sysinfo(client, fs_cfg, history), False
+    if name == "export":
+        if history is None:
+            return "no history available", False
+        if not cmd.args:
+            return "usage: /export <path>", False
+        return _render_export(fs_cfg, history, cmd.args[0]), False
     return f"unknown command: /{name}  (try /help)", False
 
 
