@@ -3415,3 +3415,51 @@ class TestRevertPhaseTiming:
             )
             return
         raise AssertionError("_iteration not found")
+
+
+class TestReadmeTimingLogExample:
+    """Loop 111: README schema section includes a parseable JSON
+    example so operators can copy-paste into a parser. The example
+    must round-trip through `json.loads` and contain every field the
+    code emits."""
+
+    def _extract_json_blocks(self, readme: str) -> list[str]:
+        marker = "Example timing.log line"
+        idx = readme.find(marker)
+        assert idx != -1, "README missing timing.log example marker"
+        # Walk all ```json fences after the marker.
+        blocks: list[str] = []
+        cursor = idx
+        while True:
+            fence_start = readme.find("```json", cursor)
+            if fence_start == -1:
+                break
+            fence_end = readme.find("```", fence_start + len("```json"))
+            assert fence_end != -1
+            blocks.append(readme[fence_start + len("```json") : fence_end].strip())
+            cursor = fence_end + 3
+        return blocks
+
+    def test_example_json_blocks_parse(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
+        blocks = self._extract_json_blocks(readme)
+        assert len(blocks) >= 1
+        import json
+        for body in blocks:
+            rec = json.loads(body)
+            for field in ("ts", "file", "outcome", "category", "phases", "wall_s", "wall_s_delta_phases"):
+                assert field in rec, f"example missing field {field!r}"
+            assert rec["outcome"].split(":", 1)[0] == rec["category"]
+
+    def test_examples_collectively_cover_every_phase(self):
+        """Union of phase keys across all examples must equal the
+        production phase set. A new phase added without refreshing
+        the examples would fail this audit."""
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
+        blocks = self._extract_json_blocks(readme)
+        import json
+        union: set[str] = set()
+        for body in blocks:
+            union |= set(json.loads(body)["phases"].keys())
+        audit = TestPhaseNameDriftAudit()
+        assert union == audit._phase_names_in_source()

@@ -154,3 +154,49 @@ and `revert` (rolling back uncommitted changes after a rejection,
 out-of-scope diff, validation failure, or commit failure).
 Early-exit outcomes (`no_candidate_files`, `skip:...`, `crashed`)
 emit `phases: {}` -- no phase ran to completion in those records.
+
+Example timing.log line for an applied fix (one JSON object per
+line, pretty-printed here for readability):
+
+```json
+{
+  "ts": "2026-04-28T05:00:00Z",
+  "file": "agent/loop.py",
+  "outcome": "applied:agent/loop.py",
+  "category": "applied",
+  "phases": {
+    "discovery": 0.012,
+    "find_bugs": 4.31,
+    "propose_fix": 6.07,
+    "devils_advocate": 3.84,
+    "apply_diff": 0.041,
+    "validate": 0.118,
+    "commit_push": 0.692
+  },
+  "wall_s": 15.21,
+  "wall_s_delta_phases": 0.13
+}
+```
+
+Example for a `validation_failed` iteration (includes the `revert`
+phase that doesn't appear on the happy path):
+
+```json
+{
+  "ts": "2026-04-28T05:01:14Z",
+  "file": "agent/loop.py",
+  "outcome": "validation_failed:agent/loop.py:py_invalid",
+  "category": "validation_failed",
+  "phases": {
+    "discovery": 0.011,
+    "find_bugs": 3.92,
+    "propose_fix": 5.41,
+    "devils_advocate": 3.16,
+    "apply_diff": 0.038,
+    "validate": 0.082,
+    "revert": 0.064
+  },
+  "wall_s": 12.79,
+  "wall_s_delta_phases": 0.09
+}
+```

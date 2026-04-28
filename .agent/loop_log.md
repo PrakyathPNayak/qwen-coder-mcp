@@ -1768,3 +1768,13 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: This catches a real observability hole that complements loop 108's discovery phase. The AST audit is the load-bearing piece -- prevents future regressions.
   - Test fix: first test draft used `VERDICT: APPLY\n` (wrong). Production matches `VERDICT: ACCEPT`. Without the verdict regex match, the iteration short-circuits to `rejected:no_verdict` before even hitting the revert path. Fixed.
 - ACT: 3 PhaseTimer wraps in agent/loop.py. README updated. Audit set extended to 8. 3 new tests. 541 passed.
+
+## Loop 111 — README JSON example for timing.log
+- OBSERVE: README schema section describes every field but doesn't show what one record actually looks like. Operators writing parsers have to infer the JSON shape from prose.
+- ORIENT: P5 documentation usability gap. A concrete parseable example is worth more than a paragraph.
+- DECIDE: Add two ```json blocks -- one applied iteration (covers happy-path phases), one validation_failed (covers the revert phase that doesn't appear on the happy path). Audit asserts every example parses, has every required field, and that the union of phase keys across all examples covers the production phase set.
+- DEVIL:
+  - Correctness: First attempt had ONE example with applied outcome, asserting the example's phase keys equal the production set. Failed: applied iterations have no `revert` phase. Two choices -- either the example is artificial (include all phases) or audit is loosened. Picked: two examples whose union covers the set. More honest, also documents that revert is conditional.
+  - Scope: Should I add a third example for `crashed` (empty phases) or `qwen_error_*` (only first phase)? The current 2 examples already cover the happy + recovery paths -- third would be diminishing returns. Punt to next.md.
+  - Priority: Documentation completeness, low risk.
+- ACT: 2 ```json fences in README, AST audit walks all fences after the marker. 2 new tests. 543 passed.
