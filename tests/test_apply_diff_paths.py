@@ -401,3 +401,53 @@ def test_apply_diff_rejects_symlink_via_index_only():
     assert ok is False
     assert msg.startswith("unsafe_mode:")
     assert "symlink_mode" in msg
+
+
+# ---------------------------------------------------------- size clamp tests
+def test_has_oversized_diff_accepts_small():
+    diff = (
+        "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n"
+    )
+    assert loop._has_oversized_diff(diff) is None
+
+
+def test_has_oversized_diff_rejects_too_many_bytes(monkeypatch):
+    monkeypatch.setattr(loop, "_MAX_DIFF_BYTES", 100)
+    diff = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+" + ("y" * 200) + "\n"
+    msg = loop._has_oversized_diff(diff)
+    assert msg is not None
+    assert msg.startswith("size_bytes:")
+
+
+def test_has_oversized_diff_rejects_too_many_lines(monkeypatch):
+    monkeypatch.setattr(loop, "_MAX_DIFF_LINES", 5)
+    diff = "--- a/x\n+++ b/x\n@@\n" + "\n".join("+l%d" % i for i in range(20)) + "\n"
+    msg = loop._has_oversized_diff(diff)
+    assert msg is not None
+    assert msg.startswith("size_lines:")
+
+
+def test_apply_diff_rejects_oversized_with_oversized_prefix(monkeypatch):
+    monkeypatch.setattr(loop, "_MAX_DIFF_BYTES", 50)
+    diff = (
+        "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+" + ("y" * 200) + "\n"
+    )
+    ok, msg = loop._apply_diff(diff)
+    assert ok is False
+    assert msg.startswith("oversized_diff:")
+
+
+def test_oversized_check_runs_before_path_check(monkeypatch):
+    """Even a path-traversal diff that would have been caught by
+    _has_unsafe_path is rejected as oversized first if it's larger
+    than the byte cap. The earlier-stage rejection is preferred."""
+    monkeypatch.setattr(loop, "_MAX_DIFF_BYTES", 50)
+    diff = (
+        "diff --git a/foo b/foo\n"
+        "rename from foo\n"
+        "rename to ../../etc/passwd\n"
+        + ("padding line\n" * 50)
+    )
+    ok, msg = loop._apply_diff(diff)
+    assert ok is False
+    assert msg.startswith("oversized_diff:")

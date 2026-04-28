@@ -701,3 +701,31 @@ unclosed-with-lang, unclosed-bare, prose-before doesn't salvage,
 already-closed still works, dangling-close stripped.
 
 **Result**: 202/202 green.
+
+## Loop 24 — `_apply_diff` had no diff-size clamp
+**Bug**: any diff size, in bytes or lines, was accepted up to the
+limits of `git apply` itself. A model emitting a 50,000-line patch
+(entire repo rewritten, hallucinated mass refactor, context-window
+leak) would consume seconds of `git apply`, scribble across
+hundreds of files, then trigger validation failures and a revert
+costing more time. Worse, an oversized patch with one valid hunk
+might apply partly before a failure mid-patch.
+
+**Devil**: (a) Correctness — what bound? Set 256 KB / 5000 lines —
+~50× larger than any realistic single-fix diff. False-positive risk
+is near zero. (b) Scope — root cause is "untrusted model"; this is
+a resource bound, not a security check. Fits the defense-in-depth
+stack. (c) Priority — caps a real failure mode; cheap and safe.
+(d) Ordering — placed BEFORE path/mode/structural checks because
+those iterate the whole diff and on an oversized diff that work is
+itself the cost we're trying to avoid. Tested.
+
+**Fix**: `_MAX_DIFF_BYTES = 256*1024`, `_MAX_DIFF_LINES = 5000`.
+`_has_oversized_diff` returns `size_bytes:` / `size_lines:` / None,
+wired into `_apply_diff` immediately after CRLF normalisation.
+
+**Tests**: 5 new — accept-small, reject-bytes (monkeypatched cap),
+reject-lines, end-to-end `oversized_diff:` prefix, ordering check
+(oversized takes precedence over path-unsafe).
+
+**Result**: 207/207 green.

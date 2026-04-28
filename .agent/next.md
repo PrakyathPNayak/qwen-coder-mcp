@@ -1,16 +1,14 @@
 # Next loop seed
 
 ## Candidates ranked
-1. **(P6) Clamp model diff size** before apply — reject diffs >N
-   bytes / >M lines. Prevents runaway model from emitting
-   megabytes.
+1. **(P7) `qwen_client.system_user` kwargs passthrough contract**.
 
-2. **(P7) `qwen_client.system_user` kwargs passthrough contract**.
+2. **(P7) `_verdict_accepts` audit** — accept variants like
+   `Verdict: accept` (lowercase), `VERDICT : ACCEPT` (extra spaces).
 
-3. **(P5) Verify `git apply --check` is run before `git apply`** —
-   read the code path and prove the staged check exists.
+3. **(P8) `.agent/loop_log.md` rotation**.
 
-4. **(P8) `.agent/loop_log.md` rotation** — same logic as STATE.md.
+4. **(P5) `_changed_paths` — handle quoted paths** (paths with
+   spaces / unicode encoded by `core.quotePath`).
 
-5. **(P7) `_verdict_accepts` audit** — does it accept variants like
-   `Verdict: accept` (lowercase) or `VERDICT : ACCEPT` (extra space)?
+5. **(P6) `_revert_changes` — verify it's idempotent on a clean tree**.

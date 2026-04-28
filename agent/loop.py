@@ -419,6 +419,32 @@ def _has_structural_defect(diff: str) -> str | None:
     return None
 
 
+_MAX_DIFF_BYTES = 256 * 1024
+_MAX_DIFF_LINES = 5000
+
+
+def _has_oversized_diff(diff: str) -> str | None:
+    """Reject pathologically large diffs.
+
+    A single coding fix should be a focused patch — usually <100 lines,
+    rarely above ~1000. A 5000-line / 256 KB diff signals one of:
+      - the model dumped the entire file rewritten as a diff,
+      - context window leaked partial corpus into the response,
+      - model is hallucinating mass-edits across many files.
+
+    None of these are recoverable patches; reject before we waste
+    `git apply` and a commit on them. Limits are deliberately well
+    above any legitimate fix to avoid false positives.
+    """
+    n = len(diff)
+    if n > _MAX_DIFF_BYTES:
+        return f"size_bytes:{n}>{_MAX_DIFF_BYTES}"
+    lines = diff.count("\n") + (0 if diff.endswith("\n") else 1)
+    if lines > _MAX_DIFF_LINES:
+        return f"size_lines:{lines}>{_MAX_DIFF_LINES}"
+    return None
+
+
 def _apply_diff(diff_text: str) -> tuple[bool, str]:
     """Try `git apply --check` then `git apply`. Returns (ok, message)."""
     diff = _strip_fence(diff_text)
@@ -431,6 +457,9 @@ def _apply_diff(diff_text: str) -> tuple[bool, str]:
     diff = diff.replace("\r\n", "\n").replace("\r", "\n")
     if not diff.endswith("\n"):
         diff += "\n"
+    oversized = _has_oversized_diff(diff)
+    if oversized is not None:
+        return False, f"oversized_diff: {oversized}"
     unsafe = _has_unsafe_path(diff)
     if unsafe is not None:
         return False, f"unsafe_path: {unsafe}"
