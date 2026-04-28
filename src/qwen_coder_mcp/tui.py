@@ -105,6 +105,7 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/run",
     "/run_on",
     "/run_off",
+    "/runs",
     "/grep",
     "/find",
     "/clear",
@@ -169,6 +170,7 @@ Slash commands:
                        /run_on to auto-approve every /run this session.
   /run_on              Auto-approve every /run for this session (loop 250)
   /run_off             Disable /run auto-approve (default; --yes still works)
+  /runs [N|--json]     Show last N (default 10) /run audit records (loop 251)
   /grep <pat> [path] [--ext]
                        Recursive regex search; --py/--md/--json filters by suffix
   /find <glob> [path]  Glob search through the repo
@@ -620,11 +622,98 @@ def _render_diff_head(cfg: fs_tools.FsConfig, path: str) -> str:
     return body
 
 
+def _audit_run_path(cfg: fs_tools.FsConfig) -> Path:
+    """Return the audit-log path for /run attempts (loop 251)."""
+    return Path(cfg.root) / ".agent" / "runs.log"
+
+
+def _audit_run(
+    cfg: fs_tools.FsConfig,
+    *,
+    cmd: str,
+    approved: bool,
+    source: str,
+    returncode: int | None = None,
+) -> None:
+    """Append one JSONL record describing a /run attempt.
+
+    Loop 251 added this to give operators a forensic trail of every
+    command execution (or denial) that traversed the slash dispatcher.
+    Best-effort: any IO failure is swallowed because audit logging
+    must never break the operator's chat session.
+    """
+    try:
+        path = _audit_run_path(cfg)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": time.time(),
+            "cmd": cmd,
+            "approved": bool(approved),
+            "source": source,
+        }
+        if returncode is not None:
+            record["returncode"] = int(returncode)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=True) + "\n")
+    except Exception:  # noqa: BLE001 -- audit must never crash a turn
+        pass
+
+
+def _render_runs_audit(cfg: fs_tools.FsConfig, args: list[str]) -> str:
+    """Render the tail of the /run audit log (loop 251).
+
+    Usage:
+      /runs              -> last 10 records, human-readable
+      /runs 25           -> last 25 records
+      /runs --json       -> last 10 records as JSONL
+      /runs 25 --json    -> last 25 records as JSONL
+    """
+    want_json = False
+    n = 10
+    for tok in args:
+        if tok == "--json":
+            want_json = True
+            continue
+        if tok.isdigit():
+            try:
+                n = max(1, min(1000, int(tok)))
+            except ValueError:
+                pass
+    path = _audit_run_path(cfg)
+    if not path.exists():
+        return "(no /run audit records yet)"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        return f"audit read error: {exc}"
+    tail = [ln for ln in lines if ln.strip()][-n:]
+    if want_json:
+        return "\n".join(tail) if tail else "(no /run audit records yet)"
+    if not tail:
+        return "(no /run audit records yet)"
+    out: list[str] = []
+    for ln in tail:
+        try:
+            rec = json.loads(ln)
+        except (json.JSONDecodeError, ValueError):
+            out.append(f"  ?? {ln}")
+            continue
+        ts_iso = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(rec.get("ts", 0))))
+        approved = "OK " if rec.get("approved") else "DEN"
+        rc = rec.get("returncode")
+        rc_str = f" rc={rc}" if rc is not None else ""
+        src = rec.get("source", "?")
+        out.append(f"  {ts_iso} {approved} [{src}]{rc_str} :: {rec.get('cmd','')}")
+    return "\n".join(out)
+
+
+
 def _render_run(
     cfg: fs_tools.FsConfig,
     cmd: str,
     *,
     confirm: Callable[[str], bool] | None = None,
+    audit_source: str | None = None,
 ) -> str:
     """Run a shell command inside the workspace sandbox.
 
@@ -634,13 +723,23 @@ def _render_run(
     that the operator can see in the chat log. ``confirm=None`` is the
     legacy auto-execute path (kept for backward-compat with anyone
     calling ``_render_run`` directly without a session app).
+
+    Loop 251 added ``audit_source``: when non-None, every approve/deny
+    decision and every executed return code is appended as one JSONL
+    record to ``<workspace>/.agent/runs.log``. ``None`` skips logging
+    so the original test fixtures don't accidentally start producing
+    files in tmp_path.
     """
     if confirm is not None:
         try:
             ok = bool(confirm(cmd))
         except Exception as exc:  # noqa: BLE001 -- approval must never crash
+            if audit_source is not None:
+                _audit_run(cfg, cmd=cmd, approved=False, source=audit_source)
             return f"run denied: confirm hook raised {type(exc).__name__}: {exc}"
         if not ok:
+            if audit_source is not None:
+                _audit_run(cfg, cmd=cmd, approved=False, source=audit_source)
             return (
                 f"run denied (no approval): {cmd}\n"
                 "  hint: add --yes to one-shot approve, or /run_on to "
@@ -649,7 +748,17 @@ def _render_run(
     try:
         res = shell_tools.run_shell(cfg, cmd)
     except shell_tools.ShellError as exc:
+        if audit_source is not None:
+            _audit_run(cfg, cmd=cmd, approved=True, source=audit_source)
         return f"run error: {exc}"
+    if audit_source is not None:
+        _audit_run(
+            cfg,
+            cmd=cmd,
+            approved=True,
+            source=audit_source,
+            returncode=getattr(res, "returncode", None),
+        )
     return shell_tools.format_run_result(res)
 
 
@@ -1710,7 +1819,7 @@ def dispatch_slash(
             confirm: Callable[[str], bool] | None = lambda _c: True
         else:
             confirm = lambda _c: False
-        return _render_run(fs_cfg, body, confirm=confirm), False
+        return _render_run(fs_cfg, body, confirm=confirm, audit_source="slash"), False
     if name == "run_on":
         if app is not None:
             try:
@@ -1725,6 +1834,8 @@ def dispatch_slash(
             except Exception:  # noqa: BLE001
                 pass
         return "/run auto-approve: OFF (each /run requires --yes or /run_on)", False
+    if name == "runs":
+        return _render_runs_audit(fs_cfg, list(cmd.args)), False
     if name == "grep":
         if not cmd.args:
             return "usage: /grep <pattern> [path] [--ext] [--count]", False
