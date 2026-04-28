@@ -241,7 +241,7 @@ Slash commands:
   /resume [--preview]  Reload .agent/agent_state.json into chat history;
                        `--preview` (also `--dry-run`) shows the diff and
                        leaves history untouched
-  /checkpoints [load N|prune K|diff N [--inline]|diff --since-resume [--inline]|export N path]
+  /checkpoints [load N|prune K|diff N [--inline]|diff --since-resume [--inline]|export N path [--gzip]]
                        List rotated agent-state snapshots; `load N` rehydrates
                        snapshot N (1-based, oldest first) into history;
                        `prune K` deletes all but the newest K snapshots;
@@ -2523,15 +2523,22 @@ def dispatch_slash(
                 False,
             )
         if sub == "export":
-            # /checkpoints export <N> <path> — copy snapshot N to <path>
+            # /checkpoints export <N> <path> [--gzip] — copy snapshot N to <path>
             # without mutating history. Lets users archive a snapshot
-            # before /checkpoints prune removes it.
-            if len(cmd.args) < 3:
-                return "usage: /checkpoints export <N> <path>", False
+            # before /checkpoints prune removes it. Loop 269: --gzip flag
+            # writes a gzip-compressed copy and auto-suffixes ``.gz`` if
+            # the destination doesn't already end in ``.gz``.
+            args = list(cmd.args[1:])
+            gzip_flag = False
+            if "--gzip" in args:
+                gzip_flag = True
+                args = [a for a in args if a != "--gzip"]
+            if len(args) < 2:
+                return "usage: /checkpoints export <N> <path> [--gzip]", False
             try:
-                idx = int(cmd.args[1])
+                idx = int(args[0])
             except ValueError:
-                return f"invalid index: {cmd.args[1]!r}", False
+                return f"invalid index: {args[0]!r}", False
             if not snaps:
                 return "(no rotated checkpoints to export)", False
             if idx < 1 or idx > len(snaps):
@@ -2540,7 +2547,9 @@ def dispatch_slash(
                     False,
                 )
             chosen = snaps[idx - 1]
-            dest_arg = cmd.args[2]
+            dest_arg = args[1]
+            if gzip_flag and not dest_arg.endswith(".gz"):
+                dest_arg = dest_arg + ".gz"
             try:
                 dest = fs_tools._resolve_inside_root(fs_cfg, dest_arg)
             except fs_tools.FsError as exc:
@@ -2549,6 +2558,9 @@ def dispatch_slash(
                 data = chosen.read_bytes()
             except OSError as exc:
                 return f"export failed: cannot read {chosen.name}: {exc}", False
+            if gzip_flag:
+                import gzip as _gzip
+                data = _gzip.compress(data)
             try:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 tmp = dest.with_suffix(dest.suffix + ".tmp")
@@ -2563,8 +2575,9 @@ def dispatch_slash(
                 except (OSError, NameError, UnboundLocalError):
                     pass
                 return f"export failed: {exc}", False
+            suffix_note = " gzip" if gzip_flag else ""
             return (
-                f"exported {chosen.name} ({len(data)} bytes) to {dest_arg}",
+                f"exported{suffix_note} {chosen.name} ({len(data)} bytes) to {dest_arg}",
                 False,
             )
         if sub == "prune":

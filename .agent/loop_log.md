@@ -4541,3 +4541,19 @@ logic), Priority (P2 -- diagnostic only, not behavioural). Suite
 - *Scope*: did NOT change `_chars_per_token` or any caller of `_estimate_tokens`. Default behaviour is byte-identical for users who don't set the env var. Critically, `test_no_env_does_not_import_transformers` proves transformers stays unimported in the default code path -- so e.g. CI runners and minimal installs don't get any new import surface.
 - *Priority*: this lifts the ceiling on every overflow-related bug we've fought since loop 240. Once an operator opts in (`export QWEN_REAL_TOKENIZER=Qwen/Qwen3-Next-80B`), the budget gates become exact rather than heuristic.
 - *Backward-compat hole*: `lru_cache(maxsize=4)` means hot-swapping a HF model name in env mid-process picks up only on cache miss. That's fine for our usage (single-model serving) but a multi-tenant rewrite would need a `cache_clear()` hook. Not blocking.
+
+## Loop 269 — `/checkpoints export N <path> --gzip`
+
+**Why**: Snapshot files are JSON with very repetitive ChatML structure (role keys, content prefixes). Long agent runs produce 200-500KB snapshots; archiving multiple loops worth of them eats disk fast. A `--gzip` flag on the existing export gives ~10x reduction on typical snapshots without forcing every consumer onto a new tool.
+
+**Change**:
+- `tui.py` `/checkpoints export` handler: accepts `--gzip` anywhere in the arg list (before or after positional args), gzip-compresses the snapshot bytes via `gzip.compress`, auto-suffixes `.gz` if the destination doesn't already end in it. The reported byte count is the compressed size (so users see savings). Atomic-write recipe (tmp+fsync+os.replace) preserved end-to-end.
+- HELP_TEXT updated to surface `[--gzip]`.
+
+**Tests**: around 2.06k passed, 7 skipped (+9 new in `tests/test_checkpoints_export_gzip.py`). All 11 prior `test_checkpoints_export` tests still green (verified `--gzip` absent path is byte-identical to the previous behaviour).
+
+**Devil**:
+- *Correctness*: `gzip.decompress(dest.read_bytes()) == src.read_bytes()` locks roundtrip integrity. `test_gzip_compresses_repetitive_content` asserts <50% size on 50KB of `'A'`s, catching a regression where the flag would silently no-op. `test_gzip_reports_compressed_byte_count` asserts the printed count matches the file's on-disk size (not the source).
+- *Scope*: did NOT change behaviour when `--gzip` is absent. The flag stripping uses list comprehension `[a for a in args if a != "--gzip"]` so positional arg parsing remains identical.
+- *Priority*: low-risk additive change; high user-facing utility for anyone running long autonomous loops. Defensible.
+- *Backward-compat hole*: `_resolve_inside_root` is called AFTER suffix mutation, so escape attempts via `--gzip ../escape.json` still get caught (locked by `test_gzip_path_escape_rejected`).
