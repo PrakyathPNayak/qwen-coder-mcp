@@ -2675,3 +2675,29 @@ class TestWallSecondsDeltaPhases:
         rec = json.loads(timing_path.read_text().strip().splitlines()[-1])
         assert "wall_s" not in rec
         assert "wall_s_delta_phases" not in rec
+
+
+class TestSwallowLoggerAutoReset:
+    """Loop 94: autouse fixture in conftest.py resets every registered
+    swallow logger between tests. Without this, count contamination from
+    a prior test leaks into later tests that assert exact emission counts.
+
+    Two tests in sequence: the first deliberately leaves a count behind;
+    the second asserts the count was reset by the fixture, NOT by the
+    first test cleaning up after itself."""
+
+    def test_a_emits_to_logger(self):
+        from agent import loop as L
+        L._GIT_LOCAL_SWALLOW_LOG.report(RuntimeError("a"))
+        L._GIT_LOCAL_SWALLOW_LOG.report(RuntimeError("a"))
+        L._GIT_LOCAL_SWALLOW_LOG.report(RuntimeError("a"))
+        assert L._GIT_LOCAL_SWALLOW_LOG.count == 3
+        # Intentionally do NOT reset.
+
+    def test_b_observes_clean_logger(self):
+        from agent import loop as L
+        # Fixture must have reset every logger.
+        for lg in L._swallow_loggers():
+            assert lg.count == 0, (
+                f"{lg.label} not reset between tests (count={lg.count})"
+            )

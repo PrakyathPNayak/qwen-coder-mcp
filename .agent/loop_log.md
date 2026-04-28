@@ -1598,3 +1598,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: Could also emit `wall_s_phase_ratio = sum(phases) / wall_s` but that requires nonzero division and is trivially derivable. Skipping.
   - Priority: P6 from next.md, but cheap and pairs naturally with the loop 90 invariant.
 - ACT: 1-line code change, 4 tests. 500 passed.
+
+## Loop 94 — Autouse fixture: reset every swallow logger between tests
+- OBSERVE: 32 occurrences of `_SWALLOW_LOG.reset()` scattered across `test_iteration.py`. Loop 91 added another. Each is a try/finally guarding against count contamination. The recurring pattern is symptomatic of missing centralisation.
+- ORIENT: A single autouse fixture in `conftest.py` that iterates `_swallow_loggers()` and calls `.reset()` before AND after each test removes the entire class of contamination bugs. Pre-test reset protects against contamination from a prior test that didn't clean up; post-test reset is belt-and-suspenders.
+- DECIDE: Centralise in `tests/conftest.py`. Add 2 tests that verify the fixture works (test_a leaves count=3 behind, test_b asserts count=0 — sequence-dependent but both will pass because pytest collects in file order).
+- DEVIL:
+  - Correctness: pytest does NOT guarantee test execution order across classes within a file; it does within a class. The two tests are in `TestSwallowLoggerAutoReset` and pytest preserves declaration order within a class. Verified.
+  - Scope: The autouse fixture wraps EVERY test, including ones that don't touch loggers. Cost is iterating a 10-element tuple twice — negligible.
+  - Risk: Could mask real contamination bugs (a test that secretly relies on another test's count). Mitigated because tests should be independent; if any test breaks under autouse-reset, it was relying on contamination and was wrong.
+  - Pre-existing try/finally resets are now redundant but harmless — leave them in (they document intent and protect against fixture removal).
+- ACT: 5-line conftest fixture, 2 tests. 502 passed.
