@@ -1960,3 +1960,13 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: stdlib only -- no new deps. n=3 context lines is the python diff default.
   - Priority: P3 user-requested.
 - ACT: ~20 lines code + 6 tests. 705 passed.
+
+## Loop 134 — fix TUI connection-refused UX + serve OOM defaults
+- OBSERVE: user reports the TUI shows raw "connection refused" with no hint. .loop/serve.log shows vLLM CUDA OOM during warmup with default max_model_len=32768 and gpu_util=0.92 because the int4 27B weights plus 32k KV cache overflow 24 GB on a 4090.
+- DECIDE: make defaults safe out of the box and surface a friendly banner with an actionable hint when the server is unreachable.
+- DEVIL:
+  - Correctness: lower max_model_len to 8192 and gpu_util to 0.85 -- still room for full int4 27B with KV cache headroom on a 24 GB card; users with bigger cards can override via env. health_check uses a short timeout (default two seconds) so UI startup is not blocked when the server is genuinely down.
+  - Scope: friendly error path applies to chat_turn (non-streaming). chat_turn_stream already accumulates the error inline; not regressed. health_check returns dict, never raises -- callers safe.
+  - Priority: P1 user-blocker -- TUI literally unusable without this.
+- ACT: scripts/serve_qwen.sh new defaults; QwenClient.health_check returning ok/models or error/hint dict; TUI App on_mount now writes a green or red banner; chat_turn now routes through _friendly_chat_error which sniffs ConnectError and prints a serve_qwen hint. 9 new tests (5 health_check + 2 friendly chat error + 2 Pilot-driven banner). 714 passed.
+

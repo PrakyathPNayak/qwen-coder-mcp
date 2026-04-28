@@ -28,8 +28,12 @@ cd "$(dirname "$0")/.."
 MODEL="${QWEN_SERVE_MODEL:-Lorbus/Qwen3.6-27B-int4-AutoRound}"
 PORT="${QWEN_SERVE_PORT:-8000}"
 HOST="${QWEN_SERVE_HOST:-127.0.0.1}"
-MAX_LEN="${QWEN_SERVE_MAX_LEN:-32768}"
-GPU_UTIL="${QWEN_SERVE_GPU_UTIL:-0.92}"
+# Defaults tuned for a 24 GB RTX 4090 holding the int4 27B weights
+# (~14 GB) plus KV cache headroom. Larger contexts overflow VRAM and
+# the engine core crashes with CUDA OOM during warmup. Override with
+# QWEN_SERVE_MAX_LEN / QWEN_SERVE_GPU_UTIL for cards with more memory.
+MAX_LEN="${QWEN_SERVE_MAX_LEN:-8192}"
+GPU_UTIL="${QWEN_SERVE_GPU_UTIL:-0.85}"
 DTYPE="${QWEN_SERVE_DTYPE:-auto}"
 API_KEY="${QWEN_SERVE_API_KEY:-EMPTY}"
 EXTRA="${QWEN_SERVE_EXTRA:-}"

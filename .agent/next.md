@@ -1,7 +1,9 @@
 # Next Loop Candidates
-1. (P3) Token telemetry footer in TUI (tokens / wall time per turn).
-2. (P3) LRU cache layer for fetch_url (in-memory keyed by URL).
-3. (P5) Auto @file mention expansion in chat input.
-4. (P5) /find_bugs into /propose_fix into /apply autochain.
-5. (P5) Live RichLog update during chat_turn_stream (currently aggregated then rendered).
-6. (P5) /diff supports a single argument compared to git HEAD.
+1. (P2) /run <cmd> slash command -- bounded shell exec with stdout+stderr capture and a deny list (claude-code parity).
+2. (P2) /grep <pattern> [path] -- ripgrep-backed search through fs sandbox.
+3. (P2) /find <glob> [path] -- glob search through fs sandbox.
+4. (P3) /git <subcmd> -- read-only git status / log / diff in repo.
+5. (P3) /tests -- run pytest and render summary in TUI.
+6. (P3) /clear and /save <path> -- chat history management.
+7. (P5) @file mention auto-expansion in chat input.
+

@@ -486,3 +486,87 @@ class TestDiffSlash:
             fs_cfg=cfg,
         )
         assert "error" in text
+
+
+# ----------------------------------------------------------- Loop 134
+class _ConnRefusedClient:
+    """Client stub whose chat() raises a ConnectError-shaped exception."""
+    def chat(self, history, **kw):
+        import httpx
+        raise httpx.ConnectError("Connection refused [Errno 111]")
+
+    def chat_stream(self, history, **kw):  # not used but keep parity
+        raise NotImplementedError
+
+
+class TestFriendlyChatError:
+    def test_connect_error_includes_hint(self) -> None:
+        client = _ConnRefusedClient()
+        history: list[ChatMessage] = []
+        out = tui.chat_turn(history, "hello", client=client)
+        assert "ConnectError" in out
+        assert "serve_qwen" in out
+        # User message stays so the user can retry; no assistant reply added.
+        assert any(m.role == "user" for m in history)
+        assert not any(m.role == "assistant" for m in history)
+
+    def test_non_connect_error_no_hint(self) -> None:
+        class Boom:
+            def chat(self, history, **kw):
+                raise ValueError("bad payload")
+        out = tui.chat_turn([], "hi", client=Boom())
+        assert "ValueError" in out
+        assert "serve_qwen" not in out
+
+
+class _HealthClient:
+    """Stub exposing only health_check for banner tests."""
+    def __init__(self, payload):
+        self._payload = payload
+
+    def health_check(self):
+        return self._payload
+
+
+class TestHealthBanner:
+    """Drive the App's _render_health_banner via Pilot."""
+
+    @pytest.mark.anyio("asyncio")
+    async def test_banner_ok(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        AppCls = tui._build_app(
+            client_factory=lambda: _HealthClient(
+                {"ok": True, "models": ["qwen3.6-27b"]}
+            ),
+            fs_cfg=cfg,
+        )
+        app = AppCls()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            from textual.widgets import RichLog
+            log = app.query_one("#log", RichLog)
+            text = "\n".join(str(line) for line in log.lines)
+            assert "backend ok" in text
+            assert "qwen3" in text and "27b" in text
+
+    @pytest.mark.anyio("asyncio")
+    async def test_banner_unavailable_with_hint(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        AppCls = tui._build_app(
+            client_factory=lambda: _HealthClient(
+                {
+                    "ok": False,
+                    "error": "connection refused",
+                    "hint": "start scripts/serve_qwen.sh",
+                }
+            ),
+            fs_cfg=cfg,
+        )
+        app = AppCls()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            from textual.widgets import RichLog
+            log = app.query_one("#log", RichLog)
+            text = "\n".join(str(line) for line in log.lines)
+            assert "unavailable" in text
+            assert "hint" in text

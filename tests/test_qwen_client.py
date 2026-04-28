@@ -465,3 +465,52 @@ def test_chat_budget_at_cap(monkeypatch):
     from qwen_coder_mcp import qwen_client as Q
     monkeypatch.setenv("QWEN_CHAT_BUDGET_S", "3600")
     assert Q._chat_total_budget_seconds() == 3600.0
+
+
+# ----------------------------------------------------------- health_check
+class TestHealthCheck:
+    def test_ok_returns_models(self):
+        def handler(request):
+            assert request.url.path.endswith("/models")
+            return httpx.Response(
+                200,
+                json={"data": [{"id": "qwen3.6-27b"}, {"id": "qwen-int4"}]},
+            )
+        c = _client_with(handler)
+        res = c.health_check()
+        assert res["ok"] is True
+        assert "qwen3.6-27b" in res["models"]
+
+    def test_connection_refused_has_hint(self):
+        def handler(_request):
+            raise httpx.ConnectError("[Errno 111] Connection refused")
+        c = _client_with(handler)
+        res = c.health_check()
+        assert res["ok"] is False
+        assert "connection refused" in res["error"].lower()
+        assert "serve_qwen" in (res.get("hint") or "")
+
+    def test_401_suggests_api_key(self):
+        def handler(_request):
+            return httpx.Response(401, text="unauthorized")
+        c = _client_with(handler)
+        res = c.health_check()
+        assert res["ok"] is False
+        assert "401" in res["error"]
+        assert "api key" in (res.get("hint") or "").lower()
+
+    def test_500_no_hint(self):
+        def handler(_request):
+            return httpx.Response(500, text="boom")
+        c = _client_with(handler)
+        res = c.health_check()
+        assert res["ok"] is False
+        assert res.get("hint") is None
+
+    def test_malformed_json_does_not_crash(self):
+        def handler(_request):
+            return httpx.Response(200, text="not json")
+        c = _client_with(handler)
+        res = c.health_check()
+        assert res["ok"] is True
+        assert res["models"] == []

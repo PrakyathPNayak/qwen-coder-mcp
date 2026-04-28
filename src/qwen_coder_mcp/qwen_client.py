@@ -85,6 +85,61 @@ class QwenClient:
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
+    def health_check(self, timeout: float = 2.0) -> dict[str, Any]:
+        """Probe the backend with a short GET /models call.
+
+        Returns a dict of shape:
+          {"ok": True,  "status": int, "models": [str, ...]}
+          {"ok": False, "error": str, "hint": str | None}
+
+        Used by the TUI on startup to give an actionable banner instead
+        of letting the first chat fail with a raw httpx ConnectError.
+        Never raises -- callers may safely use this in a UI thread.
+        """
+        try:
+            resp = self._client.get("/models", timeout=timeout)
+        except httpx.ConnectError as exc:
+            return {
+                "ok": False,
+                "error": f"connection refused: {exc}",
+                "hint": (
+                    "is the qwen server running? "
+                    "start it with scripts/serve_qwen.sh"
+                ),
+            }
+        except httpx.TimeoutException as exc:
+            return {
+                "ok": False,
+                "error": f"connection timed out: {exc}",
+                "hint": "backend is reachable but slow to respond; still warming up?",
+            }
+        except httpx.HTTPError as exc:
+            return {
+                "ok": False,
+                "error": f"http error: {type(exc).__name__}: {exc}",
+                "hint": None,
+            }
+        if resp.status_code >= 400:
+            return {
+                "ok": False,
+                "error": f"backend returned {resp.status_code}: {resp.text[:200]}",
+                "hint": (
+                    "check the api key matches QWEN_SERVE_API_KEY"
+                    if resp.status_code in (401, 403)
+                    else None
+                ),
+            }
+        models: list[str] = []
+        try:
+            data = resp.json()
+            for entry in data.get("data") or []:
+                mid = entry.get("id")
+                if isinstance(mid, str):
+                    models.append(mid)
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            pass
+        return {"ok": True, "status": resp.status_code, "models": models}
+
     def chat(
         self,
         messages: Sequence[ChatMessage | dict[str, str]],

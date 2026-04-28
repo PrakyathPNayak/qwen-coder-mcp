@@ -308,9 +308,40 @@ def chat_turn(
     try:
         reply = client.chat(history)
     except Exception as exc:  # noqa: BLE001
-        return f"chat error: {type(exc).__name__}: {exc}"
+        return _friendly_chat_error(exc)
     history.append(ChatMessage(role="assistant", content=reply))
     return reply
+
+
+def _friendly_chat_error(exc: BaseException) -> str:
+    """Render a chat exception as a user-facing string with a hint
+    when the failure is a backend connection problem rather than a
+    model-side error. Imports httpx lazily so callers without the
+    dependency installed do not pay the cost.
+    """
+    name = type(exc).__name__
+    text = str(exc)
+    try:
+        import httpx as _httpx
+        connect_types: tuple[type, ...] = (
+            _httpx.ConnectError,
+            _httpx.ConnectTimeout,
+        )
+    except ImportError:
+        connect_types = ()
+    looks_connect = isinstance(exc, connect_types) or (
+        "ConnectError" in name
+        or "Connection refused" in text
+        or "Connection reset" in text
+    )
+    if looks_connect:
+        return (
+            f"chat error: {name}: {text}\n"
+            "hint: is the qwen server running? "
+            "start it with scripts/serve_qwen.sh and wait for "
+            "'application startup complete' in .loop/serve.log"
+        )
+    return f"chat error: {name}: {text}"
 
 
 def chat_turn_stream(
@@ -386,6 +417,33 @@ def _build_app(
         def on_mount(self) -> None:  # type: ignore[override]
             log = self.query_one("#log", RichLog)
             log.write("[bold]qwen-coder-tui[/bold]  type /help")
+            self._render_health_banner(log)
+
+        def _render_health_banner(self, log) -> None:  # type: ignore[no-untyped-def]
+            """Probe the backend and write a status banner.
+
+            Catches all exceptions so a missing httpx, missing settings,
+            or any other startup problem cannot crash the App before
+            the user has typed anything.
+            """
+            try:
+                check = self.client.health_check()
+            except Exception as exc:  # noqa: BLE001
+                log.write(
+                    f"[red]health check raised:[/red] "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                return
+            if check.get("ok"):
+                models = check.get("models") or []
+                tag = ", ".join(models[:3]) or "(no models reported)"
+                log.write(f"[green]backend ok[/green]  models: {tag}")
+                return
+            err = check.get("error") or "unknown error"
+            hint = check.get("hint")
+            log.write(f"[red]backend unavailable:[/red] {err}")
+            if hint:
+                log.write(f"[yellow]hint:[/yellow] {hint}")
 
         def on_input_submitted(self, event: Input.Submitted) -> None:  # type: ignore[override]
             line = event.value.strip()
