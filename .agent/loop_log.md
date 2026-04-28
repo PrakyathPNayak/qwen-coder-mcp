@@ -2096,3 +2096,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P5 cleanup but high user value since unbounded history bloat across sessions is a real issue.
 - ACT: extend /history dispatch to accept clear arg. clears in place via list.clear and extend so the live history reference the App holds stays the same object. unlink jsonl when fs_cfg present. updated usage error string and help text. four tests cover clear keeping system clear deleting the jsonl file clear when no jsonl exists and the existing numeric n form still working.
 
+
+## Loop 149 — /open launches \$EDITOR on a file
+- DECIDE: claude code and copilot let you jump from chat into the editor on a path. Add /open that resolves the path inside the sandbox and execs \$EDITOR.
+- DEVIL:
+  - Correctness: path goes through fs_tools._resolve_inside_root before the editor sees it so a chat supplied dot dot escape never reaches subprocess. EDITOR string split with shlex so a value like code dash w works. shell free invocation via subprocess.run with a list to defeat command injection through a malicious path that contains shell metacharacters. FileNotFoundError caught for the editor missing case so we return a friendly error not a stack trace. fall back to vi when EDITOR is unset which mirrors POSIX convention.
+  - Scope: blocking call. The TUI input is paused while the editor runs which is fine for vim or vscode wait mode. A non blocking variant would need its own slash. P5 utility ships now blocking variant later if requested.
+  - Priority: P5 user requested ml intern parity.
+- ACT: _render_open helper. Dispatcher branch added with usage error. SLASH_COMMANDS gains open. Help text updated. Four tests cover path escape blocking the launch usage error invoking the editor with a resolved sandbox path and capturing the args via monkeypatch and the FileNotFoundError friendly error path. Eight hundred forty seven passed.
+

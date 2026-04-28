@@ -1669,3 +1669,70 @@ class TestHistoryClear:
             history=history,
         )
         assert "hi" in text
+
+
+# ----------------------------------------------------------- Loop 149
+class TestOpenSlash:
+    def test_path_escape_blocks_editor_launch(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/open ../../etc/passwd"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+        )
+        assert "open error" in text
+
+    def test_usage_when_no_path(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/open"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+        )
+        assert text.startswith("usage:")
+
+    def test_invokes_editor_with_resolved_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "spec.md"
+        target.write_text("hi\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        captured: dict[str, list[str]] = {}
+
+        class _Proc:
+            returncode = 0
+
+        def _fake_run(args, check):  # type: ignore[no-untyped-def]
+            captured["args"] = list(args)
+            return _Proc()
+
+        monkeypatch.setenv("EDITOR", "myedit -w")
+        monkeypatch.setattr("subprocess.run", _fake_run)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/open spec.md"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+        )
+        assert "opened spec.md" in text
+        assert captured["args"][0] == "myedit"
+        assert captured["args"][1] == "-w"
+        assert captured["args"][-1].endswith("spec.md")
+
+    def test_editor_not_found_returns_friendly_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        target = tmp_path / "a.md"
+        target.write_text("hi\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+
+        def _raise(args, check):  # type: ignore[no-untyped-def]
+            raise FileNotFoundError(args[0])
+
+        monkeypatch.setenv("EDITOR", "nope-not-real")
+        monkeypatch.setattr("subprocess.run", _raise)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/open a.md"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+        )
+        assert "editor not found" in text

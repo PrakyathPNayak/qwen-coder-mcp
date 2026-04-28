@@ -93,6 +93,7 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/pin",
     "/unpin",
     "/pinned",
+    "/open",
     "/quit",
 )
 
@@ -139,6 +140,7 @@ Slash commands:
   /pin <path>          Attach file to system prompt for the rest of the session
   /unpin               Clear all pinned files from the system prompt
   /pinned              List currently pinned files
+  /open <path>         Launch $EDITOR on a file in the repo
   /quit                Exit
 
 @<path> tokens in plain chat are expanded inline as file contents.
@@ -323,6 +325,36 @@ def _render_run(cfg: fs_tools.FsConfig, cmd: str) -> str:
     except shell_tools.ShellError as exc:
         return f"run error: {exc}"
     return shell_tools.format_run_result(res)
+
+
+def _render_open(cfg: fs_tools.FsConfig, path: str) -> str:
+    """Resolve a path inside the sandbox and launch ``$EDITOR`` on it.
+
+    Returns a status string. The path is resolved through fs_tools so a
+    relative dot-dot escape never reaches the editor. The editor command
+    is split on whitespace so callers can set ``EDITOR='code -w'`` etc.
+    Subprocess invocation is shell-free to avoid command injection from
+    a chat-supplied path. A missing ``$EDITOR`` falls back to ``vi``
+    which mirrors POSIX convention.
+    """
+    import shlex
+    import subprocess
+
+    try:
+        resolved = fs_tools._resolve_inside_root(cfg, path)
+    except fs_tools.FsError as exc:
+        return f"open error: {exc}"
+    editor_cmd = os.environ.get("EDITOR") or "vi"
+    parts = shlex.split(editor_cmd) + [str(resolved)]
+    try:
+        proc = subprocess.run(parts, check=False)
+    except FileNotFoundError:
+        return f"open error: editor not found: {parts[0]}"
+    except OSError as exc:
+        return f"open error: {exc}"
+    if proc.returncode == 0:
+        return f"(opened {path} in {parts[0]})"
+    return f"(editor {parts[0]} exited with {proc.returncode})"
 
 
 def _render_sysinfo(    client: QwenClient,
@@ -795,6 +827,10 @@ def dispatch_slash(
         if history is None:
             return "no history available", False
         return _render_pinned(history), False
+    if name == "open":
+        if not cmd.args:
+            return "usage: /open <path>", False
+        return _render_open(fs_cfg, cmd.args[0]), False
     return f"unknown command: /{name}  (try /help)", False
 
 
