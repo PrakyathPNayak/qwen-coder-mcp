@@ -758,3 +758,31 @@ class TestTimingLogCategoryField:
         import json as _json
         rec = _json.loads(timing.read_text(encoding="utf-8").strip())
         assert rec["category"] == "weird_unknown"
+
+
+class TestCommitAndPushEmptyTreeLog:
+    """Loop 62: empty staged tree path emits a log line for forensics."""
+
+    def test_empty_staged_tree_logs_message(self, tmp_path, monkeypatch):
+        from agent import loop as L
+
+        # Stub _run_git: add succeeds, status returns empty.
+        calls = []
+        def fake_run_git(*args, check=True):
+            calls.append(args)
+            import subprocess
+            if args[0] == "add":
+                return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+            if args[0] == "status":
+                return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(L, "_run_git", fake_run_git)
+
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda msg: log_lines.append(msg))
+
+        result = L._commit_and_push("test: msg", push=False)
+        assert result is False
+        assert any("empty staged tree" in line for line in log_lines), log_lines
+        # Must not have attempted commit/pull/push
+        assert not any(c[0] in ("commit", "pull", "push") for c in calls)

@@ -1239,3 +1239,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 5 over the remaining bucket 6/7 work.
 - ACT: 3 tests covering known/no-colon/unknown outcomes. 386 passed.
 - COMMIT: pending.
+
+## Loop 62 — log empty-staged-tree path in `_commit_and_push`
+- OBSERVE: `_commit_and_push` returned False silently when `git add -A && git status --porcelain` produced an empty tree. Caller (`_iteration`) sees only `commit_failed:{rel}` — indistinguishable from a real git error.
+- ORIENT: This *is* anomalous: caller only invokes us after `_apply_diff` succeeded and `_changed_paths()` was non-empty. Empty staged tree means changes were lost between apply and commit (external reset, all-gitignored changes, etc.) — exactly the kind of silent corruption the operating-law prioritizes catching.
+- DECIDE: Add an explicit `_log` line before returning False from the empty-tree branch.
+- DEVIL:
+  - Correctness: log-only change, no behavior change for callers. Test verifies log present + no spurious commit attempt.
+  - Scope: this is forensics, not the root cause; but making the cause discoverable IS the work — without a log, the root cause is invisible.
+  - Priority: bucket 1/4 — silent data-flow corruption observability.
+- ACT: 1 test (stubbed `_run_git` + log capture). 387 passed.
+- COMMIT: pending.

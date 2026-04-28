@@ -1209,6 +1209,13 @@ def _commit_and_push(message: str, push: bool) -> bool:
         return False
     status = _run_git("status", "--porcelain", check=False).stdout
     if not status.strip():
+        # Anomalous: caller only invokes us after `_apply_diff` succeeded
+        # and `_changed_paths()` was non-empty, so an empty staged tree
+        # here means the changes were lost between apply and commit
+        # (e.g., an external reset, or all changes were .gitignore'd).
+        # Log so this isn't silently indistinguishable from real commit
+        # failure.
+        _log("git commit skipped: empty staged tree (apply produced no committable changes)")
         return False
     commit = _run_git("commit", "-m", message, check=False)
     if commit.returncode != 0:
