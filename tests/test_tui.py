@@ -1782,3 +1782,66 @@ class TestCdSlash:
             tui.parse_slash("/cd a.txt"), client=_FakeClient(), fs_cfg=cfg,
         )
         assert "not a directory" in text
+
+
+# ----------------------------------------------------------- Loop 152
+class TestGrepTypeFilter:
+    def test_split_extracts_suffix(self) -> None:
+        positionals, suffix = tui._split_grep_flags(["TODO", "src", "--py"])
+        assert positionals == ["TODO", "src"]
+        assert suffix == "py"
+
+    def test_split_no_suffix(self) -> None:
+        positionals, suffix = tui._split_grep_flags(["TODO", "src"])
+        assert positionals == ["TODO", "src"]
+        assert suffix is None
+
+    def test_split_only_pattern(self) -> None:
+        positionals, suffix = tui._split_grep_flags(["TODO", "--md"])
+        assert positionals == ["TODO"]
+        assert suffix == "md"
+
+    def test_grep_filters_to_suffix(self, tmp_path: Path) -> None:
+        (tmp_path / "a.py").write_text("# TODO python\n")
+        (tmp_path / "b.md").write_text("TODO markdown\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/grep TODO --py"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+        )
+        assert "a.py" in text
+        assert "b.md" not in text
+
+    def test_grep_md_filter(self, tmp_path: Path) -> None:
+        (tmp_path / "a.py").write_text("# TODO python\n")
+        (tmp_path / "b.md").write_text("TODO markdown\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/grep TODO --md"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+        )
+        assert "b.md" in text
+        assert "a.py" not in text
+
+    def test_grep_no_filter_keeps_both(self, tmp_path: Path) -> None:
+        (tmp_path / "a.py").write_text("# TODO python\n")
+        (tmp_path / "b.md").write_text("TODO markdown\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/grep TODO"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+        )
+        assert "a.py" in text
+        assert "b.md" in text
+
+    def test_only_flag_without_pattern_is_usage_error(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/grep --py"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+        )
+        assert text.startswith("usage:")

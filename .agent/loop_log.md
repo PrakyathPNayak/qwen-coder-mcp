@@ -2124,3 +2124,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P5.
 - ACT: _CD_SENTINEL constant. _render_cd helper. Dispatcher branch with an empty arg case that just shows the current root. App.on_input_submitted handles the new sentinel by rebuilding FsConfig with the same byte and entry limits and writing a cwd status line to the RichLog. SLASH_COMMANDS gains cd. Help text updated. Five tests cover empty arg showing cwd relative subdir returning sentinel absolute path returning sentinel missing path erroring and a file path erroring with not a directory. Eight hundred fifty two passed.
 
+
+## Loop 152 — /grep --ext suffix filter
+- DECIDE: ripgrep style language filter is the most missed grep feature versus claude code and copilot which both ship type filters. Add a slash grep TODO dash dash py form that filters hits to a single language.
+- DEVIL:
+  - Correctness: filter is applied post search in _render_grep so the underlying shell_tools.grep API stays minimal and other callers (other slash commands the bug finder agent) are unaffected. _split_grep_flags walks args once collecting positionals and the last seen long flag. Unrecognised single dash short flags are dropped so a typo does not silently match every line as a pattern. The empty positional case after flag stripping is caught with the same usage error message.
+  - Scope: ripgrep also has a path glob filter and a count only mode. Those are separate slashes if the user asks for them.
+  - Priority: P5.
+- ACT: _render_grep grew an optional suffix kwarg. _split_grep_flags pure helper. Dispatcher uses the helper to split args. Help text grew the dash dash ext form. Seven new tests cover split extracting suffix split no suffix split with only pattern grep filtering to py grep filtering to md no filter keeping both and a flag without a pattern returning usage error. Eight hundred fifty nine passed.
+

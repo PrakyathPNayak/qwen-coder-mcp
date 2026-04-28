@@ -125,7 +125,8 @@ Slash commands:
   /history [n|clear]   Show the last N chat turns (default 10) or clear them
   /diff <a> <b>        Unified diff between two files (or /diff <path> vs HEAD)
   /run <cmd>           Run a shell command (10s timeout, deny list)
-  /grep <pat> [path]   Recursive regex search through the repo
+  /grep <pat> [path] [--ext]
+                       Recursive regex search; --py/--md/--json filters by suffix
   /find <glob> [path]  Glob search through the repo
   /clear               Clear chat history
   /save <path>         Save the current chat transcript to a file
@@ -425,15 +426,51 @@ def _render_sysinfo(    client: QwenClient,
 
 
 def _render_grep(
-    cfg: fs_tools.FsConfig, pattern: str, path: str = "."
+    cfg: fs_tools.FsConfig,
+    pattern: str,
+    path: str = ".",
+    suffix: str | None = None,
 ) -> str:
+    """Recursive grep with optional file-suffix filter.
+
+    ``suffix`` is a bare extension like ``"py"`` or ``"md"`` (no dot).
+    When supplied, hits on files whose path does not end with
+    ``"." + suffix`` are dropped after the search runs. The filter is
+    applied here rather than in shell_tools.grep so the public grep API
+    stays minimal -- the TUI is the only caller that needs language
+    filtering today.
+    """
     try:
         hits = shell_tools.grep(cfg, pattern, path=path)
     except shell_tools.ShellError as exc:
         return f"grep error: {exc}"
     except fs_tools.FsError as exc:
         return f"grep error: {exc}"
+    if suffix:
+        suffix_dot = "." + suffix.lstrip(".")
+        hits = [h for h in hits if h.path.endswith(suffix_dot)]
     return shell_tools.format_grep(hits)
+
+
+def _split_grep_flags(args: list[str]) -> tuple[list[str], str | None]:
+    """Strip leading-dash flags from ``args`` and return positionals plus
+    the language suffix (without the dot) if a ``--<lang>`` flag appears.
+
+    Pure helper so the dispatcher stays trivial and the parsing is unit
+    testable. Unrecognised long flags are dropped so a typo like
+    ``--pyhton`` does not silently match every line as a pattern.
+    """
+    positionals: list[str] = []
+    suffix: str | None = None
+    for arg in args:
+        if arg.startswith("--") and len(arg) > 2:
+            suffix = arg[2:]
+        elif arg.startswith("-") and len(arg) > 1 and not arg[1].isdigit():
+            # Single-dash short flags currently unused but reserved.
+            continue
+        else:
+            positionals.append(arg)
+    return positionals, suffix
 
 
 def _render_find(
@@ -744,9 +781,13 @@ def dispatch_slash(
         return _render_run(fs_cfg, cmd.rest), False
     if name == "grep":
         if not cmd.args:
-            return "usage: /grep <pattern> [path]", False
-        path = cmd.args[1] if len(cmd.args) >= 2 else "."
-        return _render_grep(fs_cfg, cmd.args[0], path), False
+            return "usage: /grep <pattern> [path] [--ext]", False
+        positionals, suffix = _split_grep_flags(list(cmd.args))
+        if not positionals:
+            return "usage: /grep <pattern> [path] [--ext]", False
+        pattern = positionals[0]
+        path = positionals[1] if len(positionals) >= 2 else "."
+        return _render_grep(fs_cfg, pattern, path, suffix=suffix), False
     if name == "find":
         if not cmd.args:
             return "usage: /find <glob> [path]", False
