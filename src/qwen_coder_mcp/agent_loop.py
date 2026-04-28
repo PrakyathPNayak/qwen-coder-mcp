@@ -140,7 +140,7 @@ def _tool_fs_read(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
 
 
 def _tool_fs_edit(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
-    """Surgical str-replace edit (loop 252)."""
+    """Surgical str-replace edit (loop 252; dry_run added loop 253)."""
     path = str(args.get("path", "")).strip()
     if not path:
         return "error: fs_edit needs a 'path' arg"
@@ -156,9 +156,11 @@ def _tool_fs_edit(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
             count = int(count_arg)
         except (TypeError, ValueError):
             count = 1
-    res = fs_tools.edit_file(cfg, path, old, new, count=count)
+    dry_run = bool(args.get("dry_run", False))
+    res = fs_tools.edit_file(cfg, path, old, new, count=count, dry_run=dry_run)
+    mode = "dry-run" if res.get("dry_run") else "edited"
     return (
-        f"edited {res.get('path')}: {res.get('replacements')} "
+        f"{mode} {res.get('path')}: {res.get('replacements')} "
         f"replacement(s), size {res.get('before_size')} -> {res.get('size')} bytes"
     )
 
@@ -480,12 +482,14 @@ Available tools:
 - fs_write(path: str, content: str, create_parents: bool=False) -- write a
   whole file (only available when the user has opted into write mode;
   prefer fs_edit for surgical changes)
-- fs_edit(path: str, old: str, new: str, count: int|null=1) -- surgical
+- fs_edit(path: str, old: str, new: str, count: int|null=1,
+  dry_run: bool=false) -- surgical
   string-replace in an existing file (write mode only). count=1 enforces
   a unique match (safest); count=null replaces every occurrence; any
-  other integer requires that exact occurrence count. If 'old' is not
-  uniquely matched the call fails with a helpful error so you can
-  re-read with more surrounding context and retry.
+  other integer requires that exact occurrence count. dry_run=true
+  validates the match WITHOUT mutating, so you can preview before
+  committing. If 'old' is not uniquely matched the call fails with a
+  helpful error so you can re-read with more surrounding context and retry.
 - fs_insert(path: str, content: str, after_line: int|None=None,
   before_line: int|None=None) -- insert content at a specific 1-based
   line position (write mode only). Exactly one of after_line/before_line

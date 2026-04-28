@@ -177,6 +177,7 @@ def edit_file(
     *,
     count: int | None = 1,
     create_parents: bool = False,
+    dry_run: bool = False,
 ) -> dict[str, object]:
     """Surgical string-replace in an existing file (loop 252).
 
@@ -191,7 +192,12 @@ def edit_file(
     so a fuzzy match against a generic snippet doesn't accidentally
     rewrite the wrong block.
 
-    Returns ``{path, replacements, size, before_size}``.
+    ``dry_run=True`` (loop 253) validates the match and returns the
+    *would-be* file contents in the result without mutating anything.
+    Useful for the model to preview an edit before committing, and for
+    the operator's ``/edit_preview`` slash command.
+
+    Returns ``{path, replacements, size, before_size, dry_run, preview?}``.
     """
     p = _resolve_inside_root(cfg, rel)
     if p.is_dir():
@@ -231,6 +237,16 @@ def edit_file(
         raise FsError(
             f"edited content too large ({len(encoded)} > {cfg.max_write_bytes})"
         )
+    actual = occurrences if count is None else min(count, occurrences)
+    if dry_run:
+        return {
+            "path": rel,
+            "replacements": actual,
+            "size": len(encoded),
+            "before_size": len(raw),
+            "dry_run": True,
+            "preview": replaced,
+        }
     if create_parents:
         p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(p.suffix + ".tmp")
@@ -249,12 +265,12 @@ def edit_file(
         except OSError:
             pass
         raise FsError(f"edit failed: {exc}") from exc
-    actual = occurrences if count is None else min(count, occurrences)
     return {
         "path": rel,
         "replacements": actual,
         "size": len(encoded),
         "before_size": len(raw),
+        "dry_run": False,
     }
 
 

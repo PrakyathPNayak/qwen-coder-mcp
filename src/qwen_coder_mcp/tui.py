@@ -96,6 +96,7 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/search",
     "/fetch",
     "/read",
+    "/view",
     "/ls",
     "/find_bugs",
     "/explain",
@@ -159,6 +160,8 @@ Slash commands:
   /search <query>      DuckDuckGo web search
   /fetch <url>         Fetch a URL's text body
   /read <path>         Read a file from the repo root
+  /view <path> [s] [e] [--plain]   Read a 1-based inclusive line range
+                                   with "<n> | " prefixes (loop 253)
   /ls [path]           List a directory
   /find_bugs <path>    Qwen review for bugs
   /explain <path>      Qwen explanation of a file
@@ -256,6 +259,60 @@ def _render_read(cfg: fs_tools.FsConfig, path: str) -> str:
     except fs_tools.FsError as exc:
         return f"read_file error: {exc}"
     return fs_tools.format_read(res)
+
+
+def _render_view(cfg: fs_tools.FsConfig, args: list[str]) -> str:
+    """Loop 253: line-range reader with optional line numbers.
+
+    Usage:
+      /view <path>                       full file with "<n> | " prefixes
+      /view <path> <start>               start..start+50 lines
+      /view <path> <start> <end>         inclusive 1-based range
+      /view <path> <start> <end> --plain drop the line-number prefix
+    """
+    if not args:
+        return "usage: /view <path> [start] [end] [--plain]"
+    plain = False
+    pos: list[str] = []
+    for a in args:
+        if a == "--plain":
+            plain = True
+        else:
+            pos.append(a)
+    if not pos:
+        return "usage: /view <path> [start] [end] [--plain]"
+    path = pos[0]
+    start: int | None = None
+    end: int | None = None
+    if len(pos) >= 2:
+        try:
+            start = int(pos[1])
+        except ValueError:
+            return f"view error: invalid start line {pos[1]!r}"
+    if len(pos) >= 3:
+        try:
+            end = int(pos[2])
+        except ValueError:
+            return f"view error: invalid end line {pos[2]!r}"
+    elif start is not None:
+        end = start + 49
+    try:
+        res = fs_tools.read_file(
+            cfg,
+            path,
+            start_line=start,
+            end_line=end,
+            line_numbers=not plain,
+        )
+    except fs_tools.FsError as exc:
+        return f"view error: {exc}"
+    rng = res.get("range")
+    total = res.get("total_lines", "?")
+    if rng:
+        head = f"# {path} lines {rng['start']}-{rng['end']} of {total}\n"
+    else:
+        head = f"# {path} ({total} lines)\n"
+    return head + str(res.get("text", ""))
 
 
 def _render_ls(cfg: fs_tools.FsConfig, path: str) -> str:
@@ -1754,6 +1811,8 @@ def dispatch_slash(
         if not cmd.args:
             return "usage: /read <path>", False
         return _render_read(fs_cfg, cmd.args[0]), False
+    if name == "view":
+        return _render_view(fs_cfg, list(cmd.args)), False
     if name == "ls":
         path = cmd.args[0] if cmd.args else "."
         return _render_ls(fs_cfg, path), False
