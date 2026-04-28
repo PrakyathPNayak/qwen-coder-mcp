@@ -1907,6 +1907,20 @@ def _build_app(
                     return False
                 return holder[0]
 
+            def _agent_checkpoint(hist: list[ChatMessage], step: int) -> None:
+                """Persist mid-agent transcript so a TUI crash mid-multi-step
+                run is recoverable. Writes to ``.agent/agent_state.json``
+                relative to the fs sandbox root. Failures are swallowed by
+                the run_agent contract — we just note them in the log."""
+                try:
+                    target = self.fs_cfg.root / ".agent" / "agent_state.json"
+                    agent_loop.save_agent_checkpoint(target, hist)
+                except Exception as exc:  # noqa: BLE001
+                    self.call_from_thread(
+                        self._agent_status,
+                        f"[yellow]⚠ checkpoint failed at step {step}: {exc}[/yellow]",
+                    )
+
             def runner() -> None:
                 final_text = ""
                 live_buf: list[str] = []
@@ -1915,6 +1929,7 @@ def _build_app(
                     "fs_cfg": self.fs_cfg,
                     "tools": tools,
                     "confirm": _confirm_write,
+                    "checkpoint": _agent_checkpoint,
                 }
                 if max_steps is not None:
                     kwargs["max_steps"] = max_steps

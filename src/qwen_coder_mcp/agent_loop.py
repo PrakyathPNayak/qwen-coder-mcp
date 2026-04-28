@@ -365,6 +365,72 @@ def strip_tool_calls(text: str) -> str:
     return cleaned.strip()
 
 
+def serialize_agent_state(history: list[ChatMessage]) -> dict[str, Any]:
+    """Pack ``history`` into a JSON-safe dict for checkpointing.
+
+    The shape is ``{"version": 1, "messages": [{"role": ..., "content": ...}, ...]}``
+    so older checkpoints stay readable when we add fields later.
+    """
+    return {
+        "version": 1,
+        "messages": [
+            {"role": m.role, "content": m.content} for m in history
+        ],
+    }
+
+
+def deserialize_agent_state(data: dict[str, Any]) -> list[ChatMessage]:
+    """Reverse of ``serialize_agent_state``. Tolerates missing version
+    and silently skips entries with non-string fields rather than
+    raising — a corrupt checkpoint shouldn't block recovery."""
+    msgs: list[ChatMessage] = []
+    for entry in data.get("messages", []):
+        if not isinstance(entry, dict):
+            continue
+        role = entry.get("role")
+        content = entry.get("content")
+        if not isinstance(role, str) or not isinstance(content, str):
+            continue
+        msgs.append(ChatMessage(role=role, content=content))
+    return msgs
+
+
+def save_agent_checkpoint(path: Any, history: list[ChatMessage]) -> None:
+    """Atomically write ``history`` to ``path`` as JSON.
+
+    Writes via a ``.tmp`` sibling + ``os.replace`` so a crash mid-write
+    can never leave a half-written checkpoint on disk.
+    """
+    import os
+    from pathlib import Path
+
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(serialize_agent_state(history), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    os.replace(tmp, p)
+
+
+def load_agent_checkpoint(path: Any) -> list[ChatMessage]:
+    """Load a checkpoint written by ``save_agent_checkpoint``. Returns
+    an empty list if the file is missing or unparseable; never raises."""
+    from pathlib import Path
+
+    p = Path(path)
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    return deserialize_agent_state(data)
+
+
 # ------------------------------------------------------------- driver
 def run_agent(
     history: list[ChatMessage],
@@ -377,6 +443,7 @@ def run_agent(
     tools: dict[str, ToolFn] | None = None,
     stream: bool = True,
     confirm: ConfirmFn | None = None,
+    checkpoint: Callable[[list[ChatMessage], int], None] | None = None,
 ) -> Iterator[AgentEvent]:
     """Run an agentic turn against ``client``, yielding events as they
     happen.
@@ -455,6 +522,14 @@ def run_agent(
 
         feedback = format_tool_results(results)
         history.append(ChatMessage(role="user", content=feedback))
+
+        if checkpoint is not None:
+            try:
+                checkpoint(list(history), _step + 1)
+            except Exception:  # noqa: BLE001
+                # Checkpoint failure must never abort an in-flight agent
+                # turn — disk full, permission errors, etc. are recoverable.
+                pass
 
     cap_msg = (
         f"[agent stopped after {max_steps} steps without final answer]"

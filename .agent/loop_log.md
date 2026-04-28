@@ -2484,3 +2484,20 @@ read-only operation, no state changes.
 **Act.** Added `render_stream_tail` next to `estimate_tokens` in `tui.py`. Updated `_on_stream_chunk` to call it. Added `tests/test_render_stream_tail.py` with 7 cases: short input, zero/negative budget, exact boundary, normal snap, no-whitespace fallback, and bounded-snap-window fallback.
 
 **Verify.** `pytest -x -q` → ~1k passed, 1 skipped. New helper has 100% branch coverage from the new tests.
+
+## Loop 173 — auto-checkpoint agent state to .agent/agent_state.json
+
+**Observe.** At HEAD `e05a661` an agent multi-step run that crashed (or got Ctrl-C'd) lost its entire transcript: the TUI only persists history on `/save`. So a 5-step run that completed 4 tool calls just before a network blip wasted the work — and worse, the user has no way to resume from where it died.
+
+**Orient.** The run_agent driver already mutates `history` in place after every tool round-trip. All we need is a callback hook fired right after `history.append(feedback)`, plus pure helpers to (de)serialize history to JSON safely. Writing the checkpoint atomically (tmp + os.replace) means a crash mid-write can't corrupt the file.
+
+**Decide.** Add `serialize_agent_state` / `deserialize_agent_state` (round-trip helpers, version-stamped), `save_agent_checkpoint` (atomic write, parent-dir-creating), `load_agent_checkpoint` (never raises — corrupt file ⇒ empty list). Add `checkpoint: Callable[[list[ChatMessage], int], None] | None` kwarg to `run_agent`; call it after each tool round-trip; swallow exceptions so a flaky disk never aborts an in-flight turn. Wire a default `_agent_checkpoint` in the TUI that writes to `.agent/agent_state.json` under the sandbox root.
+
+**Devil.**
+- *Correctness:* Atomic write — the `.tmp` sibling + `os.replace` pattern is portable across POSIX and Windows; tested by `test_save_is_atomic_no_tmp_left_behind`. ✅
+- *Scope:* Why no automatic *resume*? Because resume needs a UX decision (which session? merge or replace?) and we shouldn't bake that in without user input. The serialized state is recoverable manually via `load_agent_checkpoint` for now; a future loop can add `/resume`. ✅
+- *Priority:* Is checkpointing more important than the live vLLM tool_call smoke test? Yes — the smoke test needs a running server (no CI value, opt-in only) while checkpointing protects every real run. ✅
+
+**Act.** Added 4 new helpers + 1 kwarg in `agent_loop.py`. Wired `_agent_checkpoint` into `_start_agent_turn` in `tui.py`. Created `tests/test_agent_checkpoint.py` with 12 cases: round-trip, version, malformed-skip, save+load, parent-dir creation, atomic-write, missing path, corrupt JSON, non-object JSON, hook fires once per tool step, hook failure doesn't abort, hook silent when no tools called.
+
+**Verify.** `pytest -x -q` → ~1k passing, 1 skipped.
