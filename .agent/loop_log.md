@@ -1806,3 +1806,14 @@ kwarg actually forwarded. Existing tests still pass.
 - DECIDE: 3 small README-content audits in test_timing_analyze (module invocation, --json flag, --file flag, "Analysing timing.log" header).
 - DEVIL: Correctness -- string-match audits are low-leverage but cheap. Scope: should I assert the exact heading? No -- the heading wording is incidental, the exact module invocation is what matters. Priority: trivial.
 - ACT: 3 audits. Hit a self-inflicted import order bug (sed prepended a duplicate Path import at top of file before docstring). Fixed by reverting to canonical header. 566 passed.
+
+## Loop 115 — Analytics aggregate rotated `.1` log too
+- OBSERVE: `_rotate_log_if_oversized` renames the live timing.log to `timing.log.1` on rotation. The analyzer (loop 112) only reads the live file -- so the moment a rotation fires, all prior history vanishes from analytics until enough new records accumulate. p50/p95 estimates become unreliable for ~hours after each rotation.
+- ORIENT: P5 observability gap. Rotation is supposed to be operationally invisible.
+- DECIDE: New `_resolve_inputs(file, include_rotated)` helper. By default ingest both `<file>` and `<file>.1` (sorted by mtime ascending so older history is appended chronologically). New `--no-rotated` flag opts out. README doc updated with new usage example.
+- DEVIL:
+  - Correctness: What if `<file>.1` is malformed beyond just a half-written line? `parse_records` already silently drops malformed JSON. Safe.
+  - Order: I sort by mtime to preserve chronology. mtime can lie (cp -p, network filesystem). For analytics this is fine -- aggregations are mtime-independent. p95 doesn't care about order.
+  - Scope: What about `<file>.2`, `.3`? Current rotation is single-slot. If we ever extend to multi-slot, the helper needs updating, but no point future-proofing speculatively.
+  - Priority: useful improvement, low blast radius, fully tested.
+- ACT: New `_resolve_inputs` helper, `--no-rotated` flag, README usage block. 6 new tests. 572 passed.

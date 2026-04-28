@@ -218,4 +218,7 @@ python -m agent.timing_analyze --json
 
 # point at a non-default location
 python -m agent.timing_analyze --file /path/to/timing.log
+
+# only the live slot (skip rotated .1 file)
+python -m agent.timing_analyze --no-rotated
 ```

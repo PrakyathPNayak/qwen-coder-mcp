@@ -138,6 +138,22 @@ def format_report(report: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _resolve_inputs(file: Path, include_rotated: bool) -> list[Path]:
+    """Return the list of files to ingest. When `include_rotated`, also
+    include `<file>.1` (the rotation slot from `_rotate_log_if_oversized`)
+    if it exists. Older logs are appended last so chronological order
+    is preserved when rotation slots have higher mtimes than the live
+    file: the helper sorts by mtime ascending."""
+    candidates: list[Path] = [file]
+    if include_rotated:
+        rotated = file.with_suffix(file.suffix + ".1")
+        if rotated.exists():
+            candidates.append(rotated)
+    existing = [p for p in candidates if p.exists()]
+    existing.sort(key=lambda p: p.stat().st_mtime)
+    return existing
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Summarise .loop/timing.log records.")
     p.add_argument(
@@ -151,11 +167,19 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Emit machine-readable JSON instead of a text report.",
     )
+    p.add_argument(
+        "--no-rotated",
+        action="store_true",
+        help="Skip `<file>.1` rotation slot even if it exists.",
+    )
     args = p.parse_args(argv)
-    if not args.file.exists():
+    inputs = _resolve_inputs(args.file, include_rotated=not args.no_rotated)
+    if not inputs:
         print(f"timing log not found: {args.file}", file=sys.stderr)
         return 1
-    records = parse_records(args.file.read_text("utf-8").splitlines())
+    records: list[dict] = []
+    for path in inputs:
+        records.extend(parse_records(path.read_text("utf-8").splitlines()))
     report = analyze(records)
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))

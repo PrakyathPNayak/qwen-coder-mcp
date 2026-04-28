@@ -7,4 +7,4 @@
 5. (P5) Wrap `_abort_rebase_if_any` in a tiny `precheck` phase or document why deliberately untimed.
 6. (P5) Add a third README example showing an early-exit outcome.
 7. (P5) Per-category breakdown of `wall_s_delta_phases` in analytics.
-8. (P5) Analytics: detect rotated logs `.1` and aggregate them too.
+8. (P5) Audit asserting README mentions `--no-rotated` flag.

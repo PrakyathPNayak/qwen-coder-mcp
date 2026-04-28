@@ -219,3 +219,70 @@ class TestReadmeMentionsAnalyzer:
     def test_readme_mentions_file_flag(self):
         readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
         assert "--file" in readme
+
+
+class TestRotatedLogAggregation:
+    """Loop 115: rotation produces `<file>.1`. The CLI should ingest
+    both slots by default so analytics span the full retained
+    history. `--no-rotated` opts out for use cases that want only
+    the current slot."""
+
+    def test_includes_rotated_slot_by_default(self, tmp_path):
+        from agent.timing_analyze import main
+        log = tmp_path / "timing.log"
+        rotated = tmp_path / "timing.log.1"
+        _write_log(rotated, [{"category": "applied", "wall_s": 1.0, "phases": {}}])
+        _write_log(log, [{"category": "clean", "wall_s": 2.0, "phases": {}}])
+        rc = main(["--file", str(log), "--json"])
+        assert rc == 0
+
+    def test_no_rotated_flag_skips_rotation_slot(self, tmp_path, capsys):
+        from agent.timing_analyze import main
+        log = tmp_path / "timing.log"
+        rotated = tmp_path / "timing.log.1"
+        _write_log(rotated, [{"category": "applied", "wall_s": 1.0, "phases": {}}])
+        _write_log(log, [{"category": "clean", "wall_s": 2.0, "phases": {}}])
+        rc = main(["--file", str(log), "--json", "--no-rotated"])
+        assert rc == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["total_records"] == 1
+        assert "applied" not in report["category_counts"]
+
+    def test_default_includes_both(self, tmp_path, capsys):
+        from agent.timing_analyze import main
+        log = tmp_path / "timing.log"
+        rotated = tmp_path / "timing.log.1"
+        _write_log(rotated, [{"category": "applied", "wall_s": 1.0, "phases": {}}])
+        _write_log(log, [{"category": "clean", "wall_s": 2.0, "phases": {}}])
+        rc = main(["--file", str(log), "--json"])
+        assert rc == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["total_records"] == 2
+        assert report["category_counts"]["applied"] == 1
+        assert report["category_counts"]["clean"] == 1
+
+    def test_resolve_inputs_chronological_order(self, tmp_path):
+        from agent.timing_analyze import _resolve_inputs
+        import os, time
+        log = tmp_path / "timing.log"
+        rotated = tmp_path / "timing.log.1"
+        log.write_text("a\n")
+        rotated.write_text("b\n")
+        # Force rotated to have older mtime.
+        old = time.time() - 1000
+        os.utime(rotated, (old, old))
+        out = _resolve_inputs(log, include_rotated=True)
+        assert out[0] == rotated and out[-1] == log
+
+    def test_missing_rotated_slot_is_silent(self, tmp_path):
+        from agent.timing_analyze import _resolve_inputs
+        log = tmp_path / "timing.log"
+        log.write_text("a\n")
+        out = _resolve_inputs(log, include_rotated=True)
+        assert out == [log]
+
+    def test_missing_both_returns_empty(self, tmp_path):
+        from agent.timing_analyze import _resolve_inputs
+        log = tmp_path / "timing.log"
+        out = _resolve_inputs(log, include_rotated=True)
+        assert out == []
