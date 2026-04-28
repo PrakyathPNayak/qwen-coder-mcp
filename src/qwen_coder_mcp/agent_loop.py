@@ -103,12 +103,92 @@ def _tool_fs_read(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     path = str(args.get("path", "")).strip()
     if not path:
         return "error: fs_read needs a 'path' arg"
-    res = fs_tools.read_file(cfg, path)
+    # Loop 252: optional line-range / line-numbered reads. The model
+    # can ask for a tiny slice of a 100k-line file without burning
+    # context on the rest. Numeric args are coerced defensively so a
+    # stringified "10" from a JSON-tool-call still works.
+    def _maybe_int(key: str) -> int | None:
+        if key not in args or args[key] is None:
+            return None
+        try:
+            return int(args[key])
+        except (TypeError, ValueError):
+            return None
+
+    start_line = _maybe_int("start_line")
+    end_line = _maybe_int("end_line")
+    max_lines = _maybe_int("max_lines")
+    line_numbers = bool(args.get("line_numbers", False))
+    res = fs_tools.read_file(
+        cfg,
+        path,
+        start_line=start_line,
+        end_line=end_line,
+        max_lines=max_lines,
+        line_numbers=line_numbers,
+    )
     text = str(res.get("text", ""))
     cap = int(args.get("max_bytes", 16000))
     if len(text) > cap:
         text = text[:cap] + "\n... [truncated]"
+    rng = res.get("range")
+    if rng:
+        total = res.get("total_lines", "?")
+        header = f"# {path} lines {rng['start']}-{rng['end']} of {total}\n"
+        return header + text
     return text
+
+
+def _tool_fs_edit(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    """Surgical str-replace edit (loop 252)."""
+    path = str(args.get("path", "")).strip()
+    if not path:
+        return "error: fs_edit needs a 'path' arg"
+    old = args.get("old", "")
+    new = args.get("new", "")
+    if not isinstance(old, str) or not isinstance(new, str):
+        return "error: fs_edit needs string 'old' and 'new' args"
+    count_arg = args.get("count", 1)
+    if count_arg is None:
+        count: int | None = None
+    else:
+        try:
+            count = int(count_arg)
+        except (TypeError, ValueError):
+            count = 1
+    res = fs_tools.edit_file(cfg, path, old, new, count=count)
+    return (
+        f"edited {res.get('path')}: {res.get('replacements')} "
+        f"replacement(s), size {res.get('before_size')} -> {res.get('size')} bytes"
+    )
+
+
+def _tool_fs_insert(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    """Insert content at a specific line position (loop 252)."""
+    path = str(args.get("path", "")).strip()
+    if not path:
+        return "error: fs_insert needs a 'path' arg"
+    content = args.get("content", "")
+    if not isinstance(content, str):
+        content = str(content)
+
+    def _maybe_int(key: str) -> int | None:
+        if key not in args or args[key] is None:
+            return None
+        try:
+            return int(args[key])
+        except (TypeError, ValueError):
+            return None
+
+    after = _maybe_int("after_line")
+    before = _maybe_int("before_line")
+    res = fs_tools.insert_lines(
+        cfg, path, after_line=after, before_line=before, content=content
+    )
+    return (
+        f"inserted into {res.get('path')} at index {res.get('inserted_at')}, "
+        f"size {res.get('before_size')} -> {res.get('size')} bytes"
+    )
 
 
 def _tool_fs_list(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
@@ -210,6 +290,8 @@ DEFAULT_TOOLS: dict[str, ToolFn] = {
 # or pass ``tools=ALL_TOOLS``. The default registry is read-only.
 WRITE_TOOLS: dict[str, ToolFn] = {
     "fs_write": _tool_fs_write,
+    "fs_edit": _tool_fs_edit,
+    "fs_insert": _tool_fs_insert,
     "apply_patch": _tool_apply_patch,
     "run_shell": _tool_run_shell,
 }
@@ -387,12 +469,27 @@ A reply with NO tool_call block is treated as your final answer.
 Available tools:
 - web_search(query: str, max_results: int=5) -- DuckDuckGo web search
 - web_fetch(url: str, max_bytes: int=8000) -- fetch a URL's text body
-- fs_read(path: str, max_bytes: int=16000) -- read a file from the workspace
+- fs_read(path: str, start_line: int|None=None, end_line: int|None=None,
+  max_lines: int|None=None, line_numbers: bool=false, max_bytes: int=16000)
+  -- read a file (or a 1-based inclusive line range; negative indices
+  count from the end; pass line_numbers=true to get "<n> | " prefixes
+  so subsequent fs_edit calls can quote exact context)
 - fs_list(path: str=".") -- list a workspace directory
 - grep(pattern: str, path: str=".", ext: str|None=None) -- regex search
 - find(glob: str, path: str=".") -- glob search
 - fs_write(path: str, content: str, create_parents: bool=False) -- write a
-  file (only available when the user has opted into write mode)
+  whole file (only available when the user has opted into write mode;
+  prefer fs_edit for surgical changes)
+- fs_edit(path: str, old: str, new: str, count: int|null=1) -- surgical
+  string-replace in an existing file (write mode only). count=1 enforces
+  a unique match (safest); count=null replaces every occurrence; any
+  other integer requires that exact occurrence count. If 'old' is not
+  uniquely matched the call fails with a helpful error so you can
+  re-read with more surrounding context and retry.
+- fs_insert(path: str, content: str, after_line: int|None=None,
+  before_line: int|None=None) -- insert content at a specific 1-based
+  line position (write mode only). Exactly one of after_line/before_line
+  must be provided.
 - apply_patch(diff: str, check_only: bool=False) -- apply a unified diff
   via git apply (only available in write mode; prefer check_only=true first)
 - run_shell(cmd: str, timeout: float=30, cwd: str|None=None) -- run a
