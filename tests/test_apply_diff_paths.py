@@ -346,3 +346,58 @@ def test_diff_paths_safe_rename_passes_path_check():
         "rename to bar.py\n"
     )
     assert loop._has_unsafe_path(diff) is None
+
+
+# --------------------------------------------------- index-line mode tests
+def test_has_unsafe_mode_rejects_symlink_on_index_line():
+    diff = (
+        "diff --git a/link b/link\n"
+        "new file mode 100644\n"  # we'll override below
+        "index 0000000..abc1234 120000\n"
+        "--- /dev/null\n+++ b/link\n@@ -0,0 +1 @@\n+/etc/passwd\n"
+    )
+    msg = loop._has_unsafe_mode(diff)
+    assert msg is not None
+    assert msg.startswith("symlink_mode:")
+
+
+def test_has_unsafe_mode_rejects_gitlink_on_index_line():
+    diff = (
+        "diff --git a/sub b/sub\n"
+        "index 0000000..abc1234 160000\n"
+    )
+    msg = loop._has_unsafe_mode(diff)
+    assert msg is not None
+    assert msg.startswith("gitlink_mode:")
+
+
+def test_has_unsafe_mode_accepts_normal_index_mode():
+    diff = (
+        "diff --git a/foo.py b/foo.py\n"
+        "index 1111111..2222222 100644\n"
+        "--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-x\n+y\n"
+    )
+    assert loop._has_unsafe_mode(diff) is None
+
+
+def test_has_unsafe_mode_ignores_short_index_line_without_mode():
+    """Older git omits the mode on the index line for unchanged-mode
+    edits: `index abc..def`. This must not be flagged."""
+    diff = (
+        "diff --git a/foo.py b/foo.py\n"
+        "index 1111111..2222222\n"
+        "--- a/foo.py\n+++ b/foo.py\n@@ -1 +1 @@\n-x\n+y\n"
+    )
+    assert loop._has_unsafe_mode(diff) is None
+
+
+def test_apply_diff_rejects_symlink_via_index_only():
+    diff = (
+        "diff --git a/link b/link\n"
+        "index 0000000..abc1234 120000\n"
+        "--- /dev/null\n+++ b/link\n@@ -0,0 +1 @@\n+/etc/passwd\n"
+    )
+    ok, msg = loop._apply_diff(diff)
+    assert ok is False
+    assert msg.startswith("unsafe_mode:")
+    assert "symlink_mode" in msg

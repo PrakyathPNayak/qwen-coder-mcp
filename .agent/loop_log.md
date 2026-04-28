@@ -645,3 +645,31 @@ traversal/absolute/backslash all rejected via `unsafe_path:`, and a
 safe rename still passes.
 
 **Result**: 192/192 green.
+
+## Loop 22 — `_has_unsafe_mode` ignored mode encoded on `index` line
+**Bug**: `_has_unsafe_mode` only inspected the four explicit mode-
+header forms. But `git diff` emits the file mode on the `index <sha>
+..<sha> <mode>` line for new files. A minimal symlink-creating diff
+can omit `new file mode 120000` and rely solely on
+`index 0000000..abc 120000`. Our previous defense missed it; only
+`git apply`'s own refusal would have caught it (and that's an opaque
+"apply_failed:").
+
+**Devil**: (a) Correctness — `index <sha>..<sha>` with NO mode
+(short form) must NOT be flagged; tested. (b) The split() count must
+be exactly 3 to avoid matching `index a..b 100644 weird_extra`;
+tested with normal-mode case. (c) Scope — does git ever encode mode
+elsewhere we missed? `<mode>` only appears in (1) explicit mode
+headers, (2) the index line, (3) the `:<mode>` raw-format prefix
+(which we never see — that's diff-tree output, not patch). Closed
+set. (d) Priority — closes the same write-out-of-tree class as loop
+21; necessary completion.
+
+**Fix**: extended `_has_unsafe_mode` to scan `index ` lines, parsing
+the trailing token only when the line has exactly 3 space-separated
+fields and the last is `120000` / `160000`.
+
+**Tests**: 5 new — symlink/gitlink via index, normal mode accepted,
+short index line accepted, end-to-end `_apply_diff` rejection.
+
+**Result**: 197/197 green.

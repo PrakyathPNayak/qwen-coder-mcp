@@ -363,6 +363,15 @@ def _has_unsafe_mode(diff: str) -> str | None:
                 return f"symlink_mode:{s}"
             if mode == "160000":
                 return f"gitlink_mode:{s}"
+        # `index <sha>..<sha> <mode>` — git encodes the file mode on the
+        # index line for new files / mode-only changes when no explicit
+        # `new file mode` header is emitted. A concise diff for a new
+        # symlink can be just `diff --git ...\nindex 0..abc 120000\n...`.
+        if s.startswith("index "):
+            parts = s.split()
+            if len(parts) == 3 and parts[2] in ("120000", "160000"):
+                kind = "symlink_mode" if parts[2] == "120000" else "gitlink_mode"
+                return f"{kind}:{s}"
     return None
 
 
