@@ -322,6 +322,13 @@ class QwenClient:
                 "Content-Type": "application/json",
             },
         )
+        # Loop 242: stats from the most recent _compress_messages_to_fit
+        # call so /sysinfo can show the user when (and how aggressively)
+        # the client is dropping history. Updated on every chat/stream.
+        # Schema:
+        #   {"dropped": int, "prompt_tokens": int,
+        #    "max_tokens": int, "cap": int, "kept": int}
+        self._last_compression: dict[str, int] | None = None
 
     def close(self) -> None:
         self._client.close()
@@ -441,8 +448,17 @@ class QwenClient:
                 "(%d) already exceeds cap (%d); sending max_tokens=1 "
                 "and letting server reject", prompt_t, reserve, cap,
             )
+            self._last_compression = {
+                "dropped": dropped, "kept": len(msgs),
+                "prompt_tokens": prompt_t, "max_tokens": 1, "cap": cap,
+            }
             return msgs, 1
-        return msgs, max(1, min(target, room))
+        final_max = max(1, min(target, room))
+        self._last_compression = {
+            "dropped": dropped, "kept": len(msgs),
+            "prompt_tokens": prompt_t, "max_tokens": final_max, "cap": cap,
+        }
+        return msgs, final_max
 
     def _resolve_max_tokens(
         self,

@@ -296,3 +296,87 @@ class TestSysinfoSlashDispatch:
             history=[],
         )
         assert called == [], "probe must not run unless --probe is passed"
+
+
+class TestSysinfoCompressionVisibilityLoop242:
+    """Loop 242: /sysinfo (text + JSON) surfaces the most recent
+    client-side compression event so operators can SEE that history is
+    being dropped silently. Without this, loop-240 compression was
+    invisible except for warning-log lines that nobody routinely tails."""
+
+    def test_text_no_compression_no_line(self):
+        client = make_mock_qwen_client(lambda r: httpx.Response(200, json={"data": []}))
+        cfg = fs_tools.FsConfig(root=".")
+        out = tui._render_sysinfo(client, cfg, history=[])
+        assert "last_chat:" not in out
+
+    def test_text_shows_drops_when_compression_fired(self):
+        client = make_mock_qwen_client(lambda r: httpx.Response(200, json={"data": []}))
+        cfg = fs_tools.FsConfig(root=".")
+        client._last_compression = {
+            "dropped": 3, "kept": 5, "prompt_tokens": 12000,
+            "max_tokens": 4096, "cap": 16384,
+        }
+        out = tui._render_sysinfo(client, cfg, history=[])
+        assert "last_chat:" in out
+        assert "dropped 3" in out
+        assert "kept 5" in out
+        assert "12000" in out
+        assert "4096" in out
+        assert "16384" in out
+
+    def test_text_shows_no_drops_with_kept_count(self):
+        client = make_mock_qwen_client(lambda r: httpx.Response(200, json={"data": []}))
+        cfg = fs_tools.FsConfig(root=".")
+        client._last_compression = {
+            "dropped": 0, "kept": 7, "prompt_tokens": 800,
+            "max_tokens": 4096, "cap": 16384,
+        }
+        out = tui._render_sysinfo(client, cfg, history=[])
+        assert "no drops" in out
+        assert "kept 7" in out
+
+    def test_json_no_compression_field_when_unset(self):
+        client = make_mock_qwen_client(lambda r: httpx.Response(200, json={"data": []}))
+        cfg = fs_tools.FsConfig(root=".")
+        out = tui._render_sysinfo_json(client, cfg, history=[])
+        data = json.loads(out)
+        assert "last_compression" not in data
+
+    def test_json_includes_compression_when_set(self):
+        client = make_mock_qwen_client(lambda r: httpx.Response(200, json={"data": []}))
+        cfg = fs_tools.FsConfig(root=".")
+        client._last_compression = {
+            "dropped": 2, "kept": 4, "prompt_tokens": 5000,
+            "max_tokens": 2000, "cap": 8192,
+        }
+        out = tui._render_sysinfo_json(client, cfg, history=[])
+        data = json.loads(out)
+        assert data["last_compression"] == {
+            "dropped": 2, "kept": 4, "prompt_tokens": 5000,
+            "max_tokens": 2000, "cap": 8192,
+        }
+
+    def test_compression_stats_recorded_on_chat(self, monkeypatch):
+        """End-to-end: calling chat() must populate _last_compression
+        so /sysinfo immediately reflects what just happened."""
+        from qwen_coder_mcp.qwen_client import ChatMessage
+        from tests.test_qwen_client import _ok_response, TestContextCompressionLoop240
+
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        c = TestContextCompressionLoop240._client(
+            lambda r: _ok_response("ok"),
+            TestContextCompressionLoop240._settings_with_cap(cap=200, max_tokens=20),
+        )
+        msgs = [
+            ChatMessage("system", "x" * 90),
+            ChatMessage("user", "x" * 300),
+            ChatMessage("assistant", "x" * 300),
+            ChatMessage("user", "tail"),
+        ]
+        c.chat(msgs, max_tokens=20)
+        assert c._last_compression is not None
+        assert c._last_compression["dropped"] >= 1
+        assert c._last_compression["cap"] == 200
+        assert c._last_compression["kept"] < len(msgs)

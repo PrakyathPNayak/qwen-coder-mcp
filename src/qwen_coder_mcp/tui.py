@@ -747,6 +747,12 @@ def _render_sysinfo_json(
         "history": {"messages": msgs, "tokens_estimated": tokens},
         "health": check,
     }
+    # Loop 242: surface most recent client-side compression event so
+    # operators can see when (and how aggressively) the client is
+    # dropping history to fit the server's context cap.
+    last_comp = getattr(client, "_last_compression", None)
+    if last_comp is not None:
+        payload["last_compression"] = dict(last_comp)
     if probe:
         try:
             payload["engine_health"] = client.vllm_health_probe()
@@ -800,6 +806,27 @@ def _render_sysinfo(    client: QwenClient,
         f"  history:  {msgs} messages, ~{tokens} tokens",
         f"  health:   {health_line}",
     ]
+    # Loop 242: when the client most recently dropped history to fit
+    # the server cap, surface the stat so operators don't get silently
+    # truncated context.
+    last_comp = getattr(client, "_last_compression", None)
+    if last_comp:
+        dropped = last_comp.get("dropped", 0)
+        kept = last_comp.get("kept", 0)
+        prompt_t = last_comp.get("prompt_tokens", 0)
+        max_t = last_comp.get("max_tokens", 0)
+        cap = last_comp.get("cap", 0)
+        if dropped > 0:
+            comp_line = (
+                f"dropped {dropped} oldest msg(s); kept {kept}; "
+                f"prompt~{prompt_t} + completion={max_t} of cap {cap}"
+            )
+        else:
+            comp_line = (
+                f"no drops; kept {kept}; prompt~{prompt_t} + "
+                f"completion={max_t} of cap {cap}"
+            )
+        lines.append(f"  last_chat:{comp_line}")
     if probe:
         try:
             engine = client.vllm_health_probe()

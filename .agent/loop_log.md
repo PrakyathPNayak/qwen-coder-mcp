@@ -4110,3 +4110,20 @@ under-count), Scope (additive only -- _resolve_max_tokens, chat,
 chat_stream all picked up automatically through _prompt_tokens),
 Priority (P1 -- compounds loop-240's correctness; without it a 50-msg
 history could still slip past compression and 400). Suite ~1.5k green.
+
+## Loop 242 — /sysinfo surfaces last compression event for visibility
+Loop-240 compression was silent except for warning-log lines nobody
+routinely tails. Operators couldn't tell when history was being
+dropped to fit the cap. Fix: QwenClient now stashes per-call stats
+in self._last_compression (dropped, kept, prompt_tokens, max_tokens,
+cap). /sysinfo and /sysinfo --json both surface them. The JSON shape
+is "last_compression": {...} (omitted when never compressed). The
+text shape adds a "last_chat:" line distinguishing "dropped N" vs
+"no drops". +6 unit tests covering both text and JSON code paths,
+plus end-to-end verification that chat() actually populates the
+field. Devil step: Correctness (stats only updated INSIDE
+_compress_messages_to_fit so QWEN_AUTO_COMPRESS=0 leaves field None;
+verified by 'no compression no line' test), Scope (read-only
+attribute exposure -- doesn't change wire payload or compression
+logic), Priority (P2 -- diagnostic only, not behavioural). Suite
+~1.5k green.
