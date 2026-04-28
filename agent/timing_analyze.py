@@ -193,6 +193,20 @@ def filter_since(records: list[dict], since: str | None) -> list[dict]:
     return out
 
 
+def filter_until(records: list[dict], until: str | None) -> list[dict]:
+    """Symmetric counterpart to `filter_since`: keep only `ts <= until`
+    (inclusive). Same UTC Z-suffix lex compare assumption. Records
+    with non-string `ts` are excluded when active."""
+    if not until:
+        return records
+    out: list[dict] = []
+    for rec in records:
+        ts = rec.get("ts")
+        if isinstance(ts, str) and ts <= until:
+            out.append(rec)
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Summarise .loop/timing.log records.")
     p.add_argument(
@@ -223,6 +237,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Only include records with ts >= this ISO-8601 timestamp (UTC Z suffix).",
     )
+    p.add_argument(
+        "--until",
+        type=str,
+        default=None,
+        help="Only include records with ts <= this ISO-8601 timestamp (UTC Z suffix).",
+    )
     args = p.parse_args(argv)
     inputs = _resolve_inputs(args.file, include_rotated=not args.no_rotated)
     if not inputs:
@@ -232,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     for path in inputs:
         records.extend(parse_records(path.read_text("utf-8").splitlines()))
     records = filter_since(records, args.since)
+    records = filter_until(records, args.until)
     report = analyze(records)
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))

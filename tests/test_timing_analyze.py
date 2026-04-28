@@ -422,3 +422,49 @@ class TestSinceFilter:
     def test_readme_mentions_since(self):
         readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
         assert "--since" in readme
+
+
+class TestUntilFilter:
+    """Loop 126: `--until <iso>` symmetric counterpart to --since,
+    inclusive upper bound."""
+
+    def test_filter_until_passthrough_when_none(self):
+        from agent.timing_analyze import filter_until
+        recs = [{"ts": "2026-01-01T00:00:00Z"}]
+        assert filter_until(recs, None) == recs
+        assert filter_until(recs, "") == recs
+
+    def test_filter_until_keeps_only_at_or_before(self):
+        from agent.timing_analyze import filter_until
+        recs = [
+            {"ts": "2026-01-01T00:00:00Z"},
+            {"ts": "2026-04-28T00:00:00Z"},
+            {"ts": "2026-12-31T23:59:59Z"},
+        ]
+        kept = filter_until(recs, "2026-04-28T00:00:00Z")
+        assert [r["ts"] for r in kept] == ["2026-01-01T00:00:00Z", "2026-04-28T00:00:00Z"]
+
+    def test_since_until_compose_to_closed_interval(self):
+        from agent.timing_analyze import filter_since, filter_until
+        recs = [
+            {"ts": "2026-01-01T00:00:00Z"},
+            {"ts": "2026-04-28T00:00:00Z"},
+            {"ts": "2026-04-29T00:00:00Z"},
+            {"ts": "2026-12-31T23:59:59Z"},
+        ]
+        kept = filter_until(filter_since(recs, "2026-04-28T00:00:00Z"), "2026-04-29T00:00:00Z")
+        assert [r["ts"] for r in kept] == ["2026-04-28T00:00:00Z", "2026-04-29T00:00:00Z"]
+
+    def test_cli_accepts_until(self, tmp_path):
+        from agent.timing_analyze import main
+        log = tmp_path / "t.log"
+        log.write_text(
+            json.dumps({"ts": "2026-01-01T00:00:00Z", "category": "applied", "wall_s": 1.0, "phases": {}, "wall_s_delta_phases": 0.0})
+            + "\n"
+        )
+        rc = main(["--file", str(log), "--until", "2026-12-31T00:00:00Z", "--no-rotated", "--json"])
+        assert rc == 0
+
+    def test_readme_mentions_until(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
+        assert "--until" in readme

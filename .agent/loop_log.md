@@ -1895,3 +1895,11 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: should `--until <iso>` symmetric counterpart exist? Not yet -- premature; YAGNI.
   - Priority: P5. Big logs make this useful when triaging "what changed since the last deploy".
 - ACT: helper + CLI flag + 5 tests + README example. 595 passed.
+
+## Loop 126 — `--until <iso>` symmetric counterpart
+- DECIDE: mirror `filter_since` as `filter_until` (`<=` instead of `>=`). CLI flag. Compose: `filter_until(filter_since(recs, since), until)` yields closed `[since, until]` interval.
+- DEVIL:
+  - Correctness: composition order doesn't matter (filters are commutative), but applying since first reduces work for until on the typical case.
+  - Scope: leave as two separate functions rather than a single `filter_range(recs, since, until)` -- composition is honest about the two independent boundaries and `--since` alone or `--until` alone are equally valid.
+  - Priority: P5 ergonomics. Tiny code, big ROI for log triage.
+- ACT: helper + CLI flag + 5 tests + README example. 600 passed (milestone crossed).
