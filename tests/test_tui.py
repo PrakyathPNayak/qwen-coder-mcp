@@ -2234,3 +2234,106 @@ class TestPromptAdvertisesWebTools:
         assert "@web" in CODER_SYSTEM
         assert "@search" in CODER_SYSTEM
         assert "/search" in CODER_SYSTEM
+
+
+# -------------------------------------------------- Loop 161: /search --max
+class TestSearchMaxFlag:
+    """`/search --max <n> <query>` lets the user widen or narrow the
+    result set without dropping into the agent."""
+
+    def test_max_flag_space_form(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, object] = {}
+        from qwen_coder_mcp import web_tools
+
+        def _fake(query: str, max_results: int = 5):
+            captured["query"] = query
+            captured["max"] = max_results
+            return []
+
+        monkeypatch.setattr(web_tools, "web_search", _fake)
+        monkeypatch.setattr(
+            web_tools, "format_search_results", lambda r: "RES"
+        )
+        text, quit_now = tui.dispatch_slash(
+            tui.parse_slash("/search --max 12 textual streaming"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=Path(".")),
+        )
+        assert quit_now is False
+        assert captured["max"] == 12
+        assert captured["query"] == "textual streaming"
+
+    def test_max_flag_equals_form(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, object] = {}
+        from qwen_coder_mcp import web_tools
+
+        def _fake(query: str, max_results: int = 5):
+            captured["max"] = max_results
+            captured["query"] = query
+            return []
+
+        monkeypatch.setattr(web_tools, "web_search", _fake)
+        monkeypatch.setattr(web_tools, "format_search_results", lambda r: "RES")
+        tui.dispatch_slash(
+            tui.parse_slash("/search --max=3 ddg python"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=Path(".")),
+        )
+        assert captured["max"] == 3
+        assert captured["query"] == "ddg python"
+
+    def test_max_flag_clamped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, object] = {}
+        from qwen_coder_mcp import web_tools
+
+        def _fake(query: str, max_results: int = 5):
+            captured["max"] = max_results
+            return []
+
+        monkeypatch.setattr(web_tools, "web_search", _fake)
+        monkeypatch.setattr(web_tools, "format_search_results", lambda r: "RES")
+        tui.dispatch_slash(
+            tui.parse_slash("/search --max 9999 q"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=Path(".")),
+        )
+        # Clamp upper bound so a typo can't hammer DDG.
+        assert captured["max"] == 20
+
+    def test_max_flag_invalid_int(self) -> None:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/search --max foo q"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=Path(".")),
+        )
+        assert "needs an integer" in text
+
+    def test_max_flag_missing_query(self) -> None:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/search --max 5"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=Path(".")),
+        )
+        assert "usage:" in text
+
+
+class TestStreamingStatusIndicator:
+    def test_refresh_status_streaming_flag(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        AppCls = tui._build_app(
+            fs_cfg=fs_tools.FsConfig(root=tmp_path), client_factory=_FakeClient
+        )
+        app = AppCls()
+
+        captured: list[str] = []
+
+        class _Stub:
+            def update(self, text: str) -> None:
+                captured.append(text)
+
+        monkeypatch.setattr(app, "query_one", lambda _id, _cls: _Stub())
+        app._refresh_status(streaming=True)
+        app._refresh_status(streaming=False)
+        assert any("streaming" in s for s in captured)
+        assert any("streaming" not in s for s in captured)

@@ -2230,3 +2230,13 @@ kwarg actually forwarded. Existing tests still pass.
 - *Priority*: still beats CSS micro-tweaks. User explicitly listed internet access second after streaming.
 **ACT:** Added `_AT_WEB_RE`, `_AT_SEARCH_RE`. New keyword args `web_search_fn`/`web_fetch_fn` allow test injection. Body capped at 8KB by default; max 2 web fetches and 2 searches per prompt. Updated `CODER_SYSTEM` to advertise the four entry points. Help text in TUI now lists `@web:` and `@search:`. Header in attached block changed `attached files` -> `attached context`. Existing test updated; 8 new tests covering URL fetch, search render, fetch failure silence, byte cap, max_web cap, mixed file+web, regex non-collision, and prompt advertisement.
 **RESULT:** 930 passed (+8). Commit pending.
+
+## Loop 161 -- /search --max + live streaming indicator
+**OBSERVE:** Loop 159 added a status footer but it didn't actually change while a turn was streaming -- so the user has no visual confirmation the worker is alive. Also `/search` was hardcoded to 5 results.
+**DECIDE:** (1) Add `streaming: bool` kwarg to `_refresh_status` that prefixes a yellow "● streaming…" badge; call with `True` from `_start_streaming_turn`, default `False` everywhere else. (2) Parse `--max <n>` / `--max=<n>` in the search dispatcher, clamp to [1, 20].
+**DEVIL:**
+- *Correctness*: clamp upper bound? Yes, `min(20, ...)` so DDG isn't hammered.
+- *Scope*: streaming indicator should ALSO show during a slow `/search` or `/fetch`? Those are sync and short; not worth the worker dance. Skip for now.
+- *Priority*: footer indicator is the smallest leftover from loop 159. /search --max was already in next.md.
+**ACT:** dispatcher branch rewritten with `--max` parser + integer/clamp errors. `_refresh_status` extended. `_start_streaming_turn` now refreshes status with streaming=True. 6 new tests covering `--max` (space, equals, clamp, invalid, missing query) + indicator.
+**RESULT:** 936 passed (+6). Commit pending.

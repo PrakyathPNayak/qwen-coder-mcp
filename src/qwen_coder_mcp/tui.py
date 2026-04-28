@@ -783,8 +783,28 @@ def dispatch_slash(
         return "bye", True
     if name == "search":
         if not cmd.rest:
-            return "usage: /search <query>", False
-        return _render_search(cmd.rest), False
+            return "usage: /search [--max N] <query>", False
+        # Accept a leading --max <n> / --max=<n> flag.
+        rest = cmd.rest
+        max_results = 5
+        toks = rest.split()
+        if toks and toks[0].startswith("--max"):
+            head = toks[0]
+            if "=" in head:
+                _, _, val = head.partition("=")
+                rest = " ".join(toks[1:])
+            elif len(toks) >= 2:
+                val = toks[1]
+                rest = " ".join(toks[2:])
+            else:
+                return "usage: /search --max <n> <query>", False
+            try:
+                max_results = max(1, min(20, int(val)))
+            except ValueError:
+                return f"/search: --max needs an integer, got {val!r}", False
+            if not rest.strip():
+                return "usage: /search --max <n> <query>", False
+        return _render_search(rest, max_results=max_results), False
     if name == "fetch":
         if not cmd.args:
             return "usage: /fetch <url>", False
@@ -1335,7 +1355,7 @@ def _build_app(
         def action_redraw(self) -> None:  # type: ignore[override]
             self.refresh(layout=True)
 
-        def _refresh_status(self) -> None:
+        def _refresh_status(self, *, streaming: bool = False) -> None:
             try:
                 status = self.query_one("#status", Static)
             except Exception:  # noqa: BLE001
@@ -1344,8 +1364,9 @@ def _build_app(
             model = getattr(settings, "model", None) or "qwen"
             msgs = len(self.history)
             ttok = self.total_tokens
+            prefix = "[yellow]● streaming…[/yellow]  " if streaming else "  "
             line = (
-                f"  {model}  ·  {msgs} msg  ·  ~{ttok} tok total  ·  "
+                f"{prefix}{model}  ·  {msgs} msg  ·  ~{ttok} tok total  ·  "
                 f"last turn ~{self.last_turn_tokens} tok in "
                 f"{self.last_turn_seconds:.1f}s"
             )
@@ -1420,6 +1441,7 @@ def _build_app(
             stream = self.query_one("#stream", Static)
             stream.update("")
             stream.add_class("live")
+            self._refresh_status(streaming=True)
 
             def runner() -> None:
                 full = ""
