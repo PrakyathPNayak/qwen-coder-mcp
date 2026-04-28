@@ -2559,3 +2559,47 @@ class TestEmptyCommitRateLimited:
     def test_empty_commit_logger_documented_in_docstring(self):
         from agent import loop as L
         assert "git_empty_commit" in L.__doc__
+
+
+class TestSwallowLoggerLabelHygiene:
+    """Loop 92: defensive invariant on the swallow-logger registry.
+
+    Two failure modes the aggregate summary cannot recover from:
+    1. An empty / whitespace label produces ambiguous summary lines.
+    2. A duplicate label causes the per-iteration delta channel to
+       merge two distinct sinks under one entry, hiding a real fault.
+
+    Both would silently corrupt diagnostics; this test catches them at
+    registration time. Also paired with the docstring drift audit so a
+    new logger can't be added without updating both."""
+
+    def test_every_swallow_logger_has_nonempty_label(self):
+        from agent import loop as L
+        for lg in L._swallow_loggers():
+            assert isinstance(lg.label, str)
+            assert lg.label.strip() == lg.label
+            assert lg.label, "empty swallow logger label"
+
+    def test_swallow_logger_labels_are_unique(self):
+        from agent import loop as L
+        labels = [lg.label for lg in L._swallow_loggers()]
+        assert len(labels) == len(set(labels)), (
+            f"duplicate swallow logger labels: {labels}"
+        )
+
+    def test_swallow_logger_count_matches_module_count(self):
+        """Cross-check: every `_*_SWALLOW_LOG` module-level binding
+        must be present in `_swallow_loggers()`. Catches the case where
+        a new logger is declared but never registered."""
+        from agent import loop as L
+        module_loggers = {
+            getattr(L, name)
+            for name in dir(L)
+            if name.endswith("_SWALLOW_LOG")
+            and isinstance(getattr(L, name), L._RateLimitedSwallowLogger)
+        }
+        registered = set(L._swallow_loggers())
+        assert module_loggers == registered, (
+            f"unregistered: {module_loggers - registered}; "
+            f"phantom: {registered - module_loggers}"
+        )

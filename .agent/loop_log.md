@@ -1578,3 +1578,13 @@ kwarg actually forwarded. Existing tests still pass.
   - `agent/loop.py`: new logger decl, swallow-loggers tuple updated, docstring updated, `_log(...)` → `_EMPTY_COMMIT_SWALLOW_LOG.report(...)`.
   - `tests/test_iteration.py`: `TestEmptyCommitRateLimited` (3 tests). Loop 62's `TestCommitAndPushEmptyTreeLog` updated to assert the new message format.
 - 493 passed.
+
+## Loop 92 — Swallow logger registry hygiene invariants
+- OBSERVE: 10 swallow loggers now in `_swallow_loggers()`. Loop 91 was a near-miss: had the new logger been declared but not appended to the tuple, the rate-limited `report` calls would still emit per-emission lines but the per-iteration delta channel and aggregate summary would silently skip them (because they iterate the registry, not module globals).
+- ORIENT: Three invariants guard the registry: (1) every label is non-empty stripped string, (2) labels are unique across registry, (3) every `_*_SWALLOW_LOG` module-level binding is registered (and no phantom that isn't a module binding).
+- DECIDE: 3 tests, no production code change.
+- DEVIL:
+  - Correctness: `_RateLimitedSwallowLogger` is a class; the introspection `isinstance(getattr(L, name), L._RateLimitedSwallowLogger)` is the cleanest gate. Module-level filter `name.endswith("_SWALLOW_LOG")` is a naming convention but tests catch it via the isinstance check too.
+  - Scope: Could also assert `schedule in {"linear", "exponential"}` but that's enforced at construction time by the class; redundant.
+  - Priority: Drift audit. Loop 91 demonstrated this gap matters in practice.
+- ACT: `TestSwallowLoggerLabelHygiene` (3 tests). 496 passed.
