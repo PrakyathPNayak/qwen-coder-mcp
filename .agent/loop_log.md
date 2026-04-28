@@ -1349,3 +1349,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 5; was next.md #5.
 - ACT: Helper extended; 3 module instances switched; 2 new tests for exponential mode (powers-of-2 and post-every linear fallback). 414 passed.
 - COMMIT: pending.
+
+## Loop 72 — cache `_now()` as `iter_ts` in `_iteration`
+- OBSERVE: `_iteration` called `_now()` 7 times across state.md/history.md narrative lines. On a slow loop spanning a clock-second boundary (qwen 27B inference is slow), records emitted late could carry a different `ts` than records emitted early — making logs falsely look like multiple iterations.
+- ORIENT: Cause: stale per-call timestamping. The narrative records describe ONE iteration's narrative; they should share one timestamp.
+- DECIDE: Capture `iter_ts = _now()` at top of `_iteration` after `_abort_rebase_if_any()`. Replace all 7 `_now()` calls inside the function body with `iter_ts`. Keep `_write_timing`'s own `_now()` (that field is "when this record was written", not "when this iteration began"). Keep `_log`'s `_now()` (real-time runtime.log).
+- DEVIL:
+  - Correctness: callers that grep state.md for "iteration start" already implicitly assume one ts per iteration; this enforces it. No regression vector.
+  - Scope: addresses cause (per-call drift) not symptom (deduping).
+  - Priority: bucket 5; was next.md #3.
+- ACT: 7 sites edited; 2 new tests using a sequenced fake `_now` to verify only the FIRST timestamp ever appears in state.md across rejected and apply_failed branches. 416 passed.
+- COMMIT: pending.

@@ -1398,6 +1398,13 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
     # the canonical source.
     _abort_rebase_if_any()
 
+    # Cache one timestamp per iteration so all state.md / history-md
+    # records emitted by this iteration share the exact same `ts`.
+    # Without this, a slow iteration could span a clock-second boundary
+    # and produce records that *look* like they came from different
+    # iterations on later log review.
+    iter_ts = _now()
+
     files = _candidate_files()
     if not files:
         return "no_candidate_files"
@@ -1467,7 +1474,7 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
 
     accept, reason = _verdict_accepts(critique)
     history_body = (
-        f"# {_now()} — {rel}\n\n"
+        f"# {iter_ts} — {rel}\n\n"
         f"## Issue\n{issue}\n\n## Proposed diff\n```diff\n{diff_clean}\n```\n\n"
         f"## Devil's advocate\n{critique}\n\n## Outcome\n"
     )
@@ -1478,7 +1485,7 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
             history_body + f"REJECTED ({reason})\n",
         )
         _append_state(
-            f"- {_now()} `{rel}` — rejected fix ({reason[:80]})\n"
+            f"- {iter_ts} `{rel}` — rejected fix ({reason[:80]})\n"
         )
         return _finish(f"rejected:{rel}:{reason[:80]}")
 
@@ -1490,7 +1497,7 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
             f"{int(time.time())}-apply-failed.md",
             history_body + f"APPLY FAILED ({msg})\n",
         )
-        _append_state(f"- {_now()} `{rel}` — apply failed [{category}] ({msg[:80]})\n")
+        _append_state(f"- {iter_ts} `{rel}` — apply failed [{category}] ({msg[:80]})\n")
         return _finish(f"apply_failed:{category}:{rel}:{msg[:60]}")
 
     changed = _changed_paths()
@@ -1501,7 +1508,7 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
             f"{int(time.time())}-out-of-scope.md",
             history_body + f"OUT OF SCOPE ({scope_msg})\n",
         )
-        _append_state(f"- {_now()} `{rel}` — reverted ({scope_msg[:60]})\n")
+        _append_state(f"- {iter_ts} `{rel}` — reverted ({scope_msg[:60]})\n")
         if not rev_ok:
             return _finish(f"revert_failed:{rel}:after_out_of_scope")
         return _finish(f"out_of_scope:{rel}:{scope_msg[:80]}")
@@ -1514,7 +1521,7 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
             f"{int(time.time())}-syntax-failed.md",
             history_body + f"VALIDATION FAILED:\n```\n{syn_msg}\n```\n",
         )
-        _append_state(f"- {_now()} `{rel}` — reverted ({syn_msg[:60]})\n")
+        _append_state(f"- {iter_ts} `{rel}` — reverted ({syn_msg[:60]})\n")
         if not rev_ok:
             return _finish(f"revert_failed:{rel}:after_validation")
         return _finish(f"validation_failed:{rel}")
@@ -1528,14 +1535,14 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
             f"{int(time.time())}-applied.md",
             history_body + "APPLIED + COMMITTED\n",
         )
-        _append_state(f"- {_now()} `{rel}` — applied: {summary_line}\n")
+        _append_state(f"- {iter_ts} `{rel}` — applied: {summary_line}\n")
         return _finish(f"applied:{rel}")
 
     rev_ok = _revert_changes()
     if commit_status == "empty":
-        _append_state(f"- {_now()} `{rel}` — commit skipped: empty staged tree, reverted\n")
+        _append_state(f"- {iter_ts} `{rel}` — commit skipped: empty staged tree, reverted\n")
     else:
-        _append_state(f"- {_now()} `{rel}` — commit/push failed, reverted\n")
+        _append_state(f"- {iter_ts} `{rel}` — commit/push failed, reverted\n")
     if not rev_ok:
         return _finish(f"revert_failed:{rel}:after_commit_push")
     if commit_status == "empty":

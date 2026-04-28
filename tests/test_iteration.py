@@ -1171,3 +1171,67 @@ class TestRateLimitedSwallowLogger:
         assert len(log_lines) == 5
         for expected in (1, 2, 4, 8, 16):
             assert any(f"count={expected})" in l for l in log_lines)
+
+
+class TestIterationTimestampCached:
+    """Loop 72: `_iteration` caches one `_now()` value as `iter_ts` and
+    uses it for every state.md / history.md narrative line so all
+    records emitted by the same iteration share an identical timestamp.
+    """
+
+    def test_rejected_branch_state_and_history_share_ts(self, env, monkeypatch):
+        L, repo = env
+        # Spy on _now so we can verify it's called exactly once during
+        # the iteration (the timing-log path's own _now() is unrelated
+        # because that's inside _write_timing — we patch _write_timing
+        # to a no-op to isolate the iteration body's calls).
+        ts_seq = ["2099-01-01T00:00:00", "WRONG_TS_2", "WRONG_TS_3"]
+        idx = {"i": 0}
+        def fake_now():
+            i = idx["i"]
+            idx["i"] += 1
+            return ts_seq[i] if i < len(ts_seq) else "EXHAUSTED"
+        monkeypatch.setattr(L, "_now", fake_now)
+        # Suppress _write_timing to avoid its own _now() call confusing
+        # the count.
+        monkeypatch.setattr(L, "_write_timing", lambda *a, **kw: None)
+        # Suppress _log to avoid runtime.log _now() calls.
+        monkeypatch.setattr(L, "_log", lambda m: None)
+
+        client = _ScriptedClient([
+            "- bug\n",
+            _diff_for("f.py", "x = 1", "x = 2"),
+            "VERDICT: REJECT — too speculative\n",
+        ])
+        out = L._iteration(client, max_bytes=10_000, push=False)
+        assert out.startswith("rejected:")
+        state_text = (repo / "STATE.md").read_text("utf-8")
+        # The cached timestamp from the FIRST _now() call must appear;
+        # WRONG_TS_2 and WRONG_TS_3 must NOT appear in state.md.
+        assert "2099-01-01T00:00:00" in state_text
+        assert "WRONG_TS_2" not in state_text
+        assert "WRONG_TS_3" not in state_text
+
+    def test_apply_failed_branch_state_and_history_share_ts(self, env, monkeypatch):
+        L, repo = env
+        ts_seq = ["2099-02-02T00:00:00"] + [f"WRONG_TS_{i}" for i in range(2, 20)]
+        idx = {"i": 0}
+        def fake_now():
+            i = idx["i"]
+            idx["i"] += 1
+            return ts_seq[i] if i < len(ts_seq) else "EXHAUSTED"
+        monkeypatch.setattr(L, "_now", fake_now)
+        monkeypatch.setattr(L, "_write_timing", lambda *a, **kw: None)
+        monkeypatch.setattr(L, "_log", lambda m: None)
+
+        client = _ScriptedClient([
+            "- bug\n",
+            "this is not a diff at all",
+            "VERDICT: ACCEPT\n",
+        ])
+        out = L._iteration(client, max_bytes=10_000, push=False)
+        assert out.startswith("apply_failed:")
+        state_text = (repo / "STATE.md").read_text("utf-8")
+        assert "2099-02-02T00:00:00" in state_text
+        for i in range(2, 20):
+            assert f"WRONG_TS_{i}" not in state_text
