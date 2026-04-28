@@ -1,21 +1,20 @@
-# Loop 234 candidates
+# Loop 235 candidates
 
-1. timing_analyze --json: surface pid alongside iteration_count
-   in exit_records so cross-process joins are explicit (loop
-   233 producer side is in; analyzer needs the read side).
+1. timing_analyze --since-last-pid: filter records to those
+   matching the most-recent exit record's pid (current-process
+   scope). Pairs with --since-last-exit (run scope) and gives
+   operators a "what did THIS process do" lens.
 
-2. README documentation pass for the loop-233 pid field --
-   pairs with the loop-232 readme pass; same pattern.
+2. /checkpoints export N <path> --gzip (carried, low priority).
 
-3. /checkpoints export N <path> --gzip (carried, low priority).
-
-4. TUI prefix-buffering for unwrapped streaming </think>
+3. TUI prefix-buffering for unwrapped streaming </think>
    (loop-218 deferred).
 
-5. Real-model E2E for the loop-217 think-strip in streaming
+4. Real-model E2E for the loop-217 think-strip in streaming
    mode (only non-streaming is gated currently).
 
-Recommended next: (1) - direct continuation of the loop-233
-producer-side change. The schema contract for exit_records
-should add 'pid' as a documented key (was {ts, reason,
-iteration_count}, becomes {ts, reason, iteration_count, pid}).
+5. /sysinfo --probe --json: already exists per loop-220
+   investigation -- audit only, no work needed.
+
+Recommended next: (1) - direct continuation of the loop-233/234
+pid arc and natural pairing with --since-last-exit.

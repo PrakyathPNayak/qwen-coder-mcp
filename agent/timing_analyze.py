@@ -95,11 +95,13 @@ def analyze(records: list[dict]) -> dict:
             outcome = rec.get("outcome") if isinstance(rec.get("outcome"), str) else ""
             reason = outcome.split(":", 1)[1] if ":" in outcome else outcome
             iter_count = rec.get("iteration_count")
+            pid = rec.get("pid")
             ts = rec.get("ts") if isinstance(rec.get("ts"), str) else ""
             exit_records.append({
                 "ts": ts,
                 "reason": reason,
                 "iteration_count": iter_count if isinstance(iter_count, int) else None,
+                "pid": pid if isinstance(pid, int) else None,
             })
         phases = rec.get("phases")
         if isinstance(phases, dict):
@@ -184,9 +186,13 @@ def format_report(report: dict, top_n: int | None = None) -> str:
         for ex in exits:
             it = ex.get("iteration_count")
             it_disp = "?" if it is None else str(it)
+            pid = ex.get("pid")
+            pid_disp = "?" if pid is None else str(pid)
             ts = ex.get("ts") or "-"
             reason = ex.get("reason") or "?"
-            lines.append(f"  {ts}  reason={reason:20s} iter={it_disp}")
+            lines.append(
+                f"  {ts}  reason={reason:20s} iter={it_disp} pid={pid_disp}"
+            )
     return "\n".join(lines) + "\n"
 
 

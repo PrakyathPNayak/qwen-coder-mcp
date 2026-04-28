@@ -3980,3 +3980,40 @@ segment). Added four new tests:
   * _write_timing_exit emits pid in the extras dict.
 
 Verify: full suite 1502 passed, 7 skipped (was 1498 + 4).
+
+## Loop 234 - analyzer surfaces the loop-233 pid for cross-process joins
+
+Loop 233 added pid to the producer side (timing.log JSON record
++ runtime.log line). Loop 234 closes the read-side gap: analyze()
+now extracts pid into exit_records, format_report() renders it
+in the shutdown-records section, and the --json schema contract
+expanded to {ts, reason, iteration_count, pid}.
+
+Defensive coercion: a non-int pid value (corrupt record) yields
+None rather than propagating bad data downstream. Records that
+predate loop-233 (no pid field) yield None as well, so the
+contract key is stable across schema versions.
+
+The killer demo: two simultaneous loop processes that would
+collide on iteration_count alone now visibly differ in the text
+report. Test test_two_pids_distinguished_in_report pins this:
+two records with identical iter=5 emerge as pid=100 and pid=200
+in the same shutdown listing.
+
+Devil step. Why not type-coerce a string pid like "12345" to
+int? Because that would mask producer bugs (e.g. a future
+refactor accidentally json.dumps()-ing pid as a string). Strict
+isinstance(pid, int) check forces the producer side to honor
+the contract.
+
+Why update the loop-230 schema contract test rather than add a
+new one? Because the contract IS one set; growing it is the
+cleaner expression. The new test_two_pids_distinguished test
+covers the actual cross-process semantics that pid was added
+for.
+
+README updated to document the {ts, reason, iteration_count,
+pid} key set and the composite (pid, iteration_count) join key.
+
+Six new tests + one updated. Verify: full suite 1508 passed, 7
+skipped (was 1502 + 6).

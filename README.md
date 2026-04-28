@@ -297,10 +297,14 @@ python -m agent.timing_analyze --since-last-exit --category applied
 ```
 
 The text report ends with a `shutdown records` section listing
-every `exit:<reason>` breadcrumb with its `iteration_count`
-field, which joins to the corresponding `loop exit ... iter=N`
-line in `runtime.log` (loop 229). The `--json` report exposes
-this as a top-level `exit_records` array of dicts with the exact
-keys `{ts, reason, iteration_count}` (loop 230 contract pin --
-the `iteration_count` is `null` when the record predates the
-loop-226 schema or was emitted before the first iteration ran).
+every `exit:<reason>` breadcrumb with its `iteration_count` and
+`pid` fields, which together join to the corresponding
+`loop exit reason=R | iter=N | pid=P` line in `runtime.log`
+(loops 229/233). The `--json` report exposes this as a
+top-level `exit_records` array of dicts with the exact keys
+`{ts, reason, iteration_count, pid}` (loops 230/234 contract pin
+-- both `iteration_count` and `pid` are `null` for records that
+predate the corresponding schema version). The composite
+`(pid, iteration_count)` key disambiguates simultaneous loops
+running in different repos -- without `pid`, two processes
+would collide on `iteration_count` alone.

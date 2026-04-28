@@ -622,6 +622,7 @@ class TestExitRecordsJsonOutputLoop230:
                 "outcome": "exit:sigterm",
                 "phases": {},
                 "iteration_count": 99,
+                "pid": 12345,
             }) + "\n"
         )
         rc = main(["--file", str(log), "--no-rotated", "--json"])
@@ -632,10 +633,12 @@ class TestExitRecordsJsonOutputLoop230:
         assert isinstance(report["exit_records"], list)
         assert len(report["exit_records"]) == 1
         rec = report["exit_records"][0]
-        assert set(rec.keys()) == {"ts", "reason", "iteration_count"}
+        # Loop 234: pid added to the contract.
+        assert set(rec.keys()) == {"ts", "reason", "iteration_count", "pid"}
         assert rec["ts"] == "2026-04-28T12:00:00Z"
         assert rec["reason"] == "sigterm"
         assert rec["iteration_count"] == 99
+        assert rec["pid"] == 12345
 
     def test_json_output_exit_records_empty_list_when_none_present(self, tmp_path, capsys):
         from agent.timing_analyze import main
@@ -781,3 +784,93 @@ class TestSinceLastExitLoop231:
         out = capsys.readouterr().out
         report = json.loads(out)
         assert report["total_records"] == 1
+
+
+class TestExitRecordsPidLoop234:
+    """Loop 234: analyzer-side surfacing of the loop-233 pid field
+    in exit records. Pairs with the producer-side change so
+    cross-process joins (pid, iteration_count) flow end-to-end."""
+
+    def test_analyze_collects_pid_from_exit_record(self):
+        from agent.timing_analyze import analyze
+        recs = [{
+            "category": "exit",
+            "outcome": "exit:sigterm",
+            "phases": {},
+            "iteration_count": 7,
+            "pid": 4242,
+        }]
+        rep = analyze(recs)
+        rec = rep["exit_records"][0]
+        assert rec["pid"] == 4242
+
+    def test_analyze_legacy_record_without_pid_yields_none(self):
+        # Records emitted before loop 233 didn't have a pid field.
+        # Analyzer must tolerate them and surface None so the JSON
+        # contract is stable across schema versions.
+        from agent.timing_analyze import analyze
+        recs = [{
+            "category": "exit",
+            "outcome": "exit:sigterm",
+            "phases": {},
+            "iteration_count": 7,
+        }]
+        rep = analyze(recs)
+        rec = rep["exit_records"][0]
+        assert rec["pid"] is None
+
+    def test_analyze_non_int_pid_coerced_to_none(self):
+        # Defensive: if a corrupt record has a string pid, surface
+        # None rather than propagating bad data.
+        from agent.timing_analyze import analyze
+        recs = [{
+            "category": "exit",
+            "outcome": "exit:sigterm",
+            "phases": {},
+            "pid": "bogus",
+        }]
+        rep = analyze(recs)
+        assert rep["exit_records"][0]["pid"] is None
+
+    def test_format_report_includes_pid_in_shutdown_section(self):
+        from agent.timing_analyze import analyze, format_report
+        recs = [{
+            "ts": "2026-04-28T12:00:00Z",
+            "category": "exit",
+            "outcome": "exit:sigterm",
+            "phases": {},
+            "iteration_count": 99,
+            "pid": 4242,
+        }]
+        rep = analyze(recs)
+        out = format_report(rep)
+        assert "iter=99" in out
+        assert "pid=4242" in out
+
+    def test_format_report_renders_missing_pid_as_question_mark(self):
+        from agent.timing_analyze import analyze, format_report
+        recs = [{
+            "ts": "2026-04-28T12:00:00Z",
+            "category": "exit",
+            "outcome": "exit:sigterm",
+            "phases": {},
+            "iteration_count": 99,
+        }]
+        rep = analyze(recs)
+        out = format_report(rep)
+        assert "pid=?" in out
+
+    def test_two_pids_distinguished_in_report(self):
+        # The whole point of pid: distinguishing two simultaneous
+        # loop processes that would collide on iteration_count.
+        from agent.timing_analyze import analyze, format_report
+        recs = [
+            {"category": "exit", "outcome": "exit:sigterm", "phases": {}, "iteration_count": 5, "pid": 100, "ts": "2026-04-28T01:00:00Z"},
+            {"category": "exit", "outcome": "exit:sigterm", "phases": {}, "iteration_count": 5, "pid": 200, "ts": "2026-04-28T02:00:00Z"},
+        ]
+        rep = analyze(recs)
+        out = format_report(rep)
+        # Both pid lines must appear so an operator can see TWO
+        # different shutdowns even though iter is identical.
+        assert "pid=100" in out
+        assert "pid=200" in out
