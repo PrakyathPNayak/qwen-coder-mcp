@@ -399,3 +399,54 @@ class TestTimingRotation:
         assert (tmp_path / "timing.log.1").exists()
         assert f.exists()  # new short file
         assert f.stat().st_size < 1000
+
+
+class TestRuntimeLogRotation:
+    """Loop 50: .loop/runtime.log rotates when oversized."""
+
+    def test_runtime_default_cap(self):
+        from agent import loop as L
+        assert L._runtime_log_max_bytes() == L._RUNTIME_LOG_MAX_BYTES_DEFAULT
+
+    def test_runtime_env_override(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_RUNTIME_LOG_MAX_BYTES", "12345")
+        assert L._runtime_log_max_bytes() == 12345
+
+    def test_runtime_env_clamped(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_RUNTIME_LOG_MAX_BYTES", "9999999999")
+        assert L._runtime_log_max_bytes() == L._RUNTIME_LOG_MAX_BYTES_CAP
+
+    def test_runtime_env_invalid_falls_back(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_RUNTIME_LOG_MAX_BYTES", "abc")
+        assert L._runtime_log_max_bytes() == L._RUNTIME_LOG_MAX_BYTES_DEFAULT
+
+    def test_log_triggers_rotation(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        f = tmp_path / "runtime.log"
+        f.write_text("x" * 5000)
+        monkeypatch.setattr(L, "LOG_FILE", f)
+        monkeypatch.setenv("QWEN_RUNTIME_LOG_MAX_BYTES", "100")
+        L._log("trigger")
+        assert (tmp_path / "runtime.log.1").exists()
+        assert f.stat().st_size < 1000
+
+    def test_generic_rotation_helper_overwrites_old(self, tmp_path):
+        from agent import loop as L
+        f = tmp_path / "x.log"
+        f.write_text("y" * 500)
+        rotated = tmp_path / "x.log.1"
+        rotated.write_text("STALE")
+        L._rotate_log_if_oversized(f, 100)
+        assert rotated.read_text() == "y" * 500
+        assert not f.exists()
+
+    def test_generic_rotation_helper_undersized_noop(self, tmp_path):
+        from agent import loop as L
+        f = tmp_path / "x.log"
+        f.write_text("hi")
+        L._rotate_log_if_oversized(f, 1000)
+        assert f.exists()
+        assert not (tmp_path / "x.log.1").exists()

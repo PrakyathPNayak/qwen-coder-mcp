@@ -1105,3 +1105,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: yes, this is bucket 5 and it's caused by my own loop 48; can't be deferred.
 - ACT: 10 new tests covering env parsing (default/override/clamp/invalid/nonpositive), undersized noop, oversized rename, overwriting old rotated, missing-file noop, write-triggers-rotation. 320 passed, 1 skipped.
 - COMMIT: pending.
+
+## Loop 50 — `.loop/runtime.log` rotation + helper extraction
+- OBSERVE: `_log()` writes to runtime.log unbounded; same class as loop 49 but on the older logger. Worse: every iteration writes ≥1 line, indefinitely.
+- ORIENT: bucket 5 again. Best fix: extract a generic `_rotate_log_if_oversized(path, max_bytes)` and reuse from both call sites — DRY and consistent semantics.
+- DECIDE: extract helper, add `_runtime_log_max_bytes()` (default 5MB, cap 100MB, env `QWEN_RUNTIME_LOG_MAX_BYTES`), call rotation before append in `_log`.
+- DEVIL:
+  - Correctness: `_log` is called by error paths; if rotation raises, the error swallow keeps the loop alive. The new helper has its own bare `except` so it cannot escape.
+  - Scope: refactor of timing rotation to delegate — verified by pre-existing 10 tests still passing.
+  - Priority: yes, bucket 5; introduced by the original loop, latent for many iterations now.
+- ACT: 7 new tests, 327 passed, 1 skipped. All previous loop-49 timing-rotation tests still green via delegation.
+- COMMIT: pending.

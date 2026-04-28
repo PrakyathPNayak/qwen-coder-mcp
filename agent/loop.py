@@ -55,11 +55,45 @@ def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+_RUNTIME_LOG_MAX_BYTES_DEFAULT = 5_000_000
+_RUNTIME_LOG_MAX_BYTES_CAP = 100_000_000
+
+
+def _runtime_log_max_bytes() -> int:
+    """Cap for `.loop/runtime.log` size before rotation. Env-tunable."""
+    raw = os.environ.get("QWEN_RUNTIME_LOG_MAX_BYTES")
+    if raw is None:
+        return _RUNTIME_LOG_MAX_BYTES_DEFAULT
+    try:
+        n = int(float(raw))
+    except (TypeError, ValueError):
+        return _RUNTIME_LOG_MAX_BYTES_DEFAULT
+    if n <= 0:
+        return _RUNTIME_LOG_MAX_BYTES_DEFAULT
+    return min(n, _RUNTIME_LOG_MAX_BYTES_CAP)
+
+
+def _rotate_log_if_oversized(path: Path, max_bytes: int) -> None:
+    """Generic single-slot rotation: rename `path` to `path.1` when oversized."""
+    try:
+        if not path.exists():
+            return
+        if path.stat().st_size <= max_bytes:
+            return
+        rotated = path.with_suffix(path.suffix + ".1")
+        if rotated.exists():
+            rotated.unlink()
+        path.rename(rotated)
+    except Exception:  # never break the loop on logging
+        pass
+
+
 def _log(msg: str) -> None:
     line = f"[{_now()}] {msg}"
     print(line, flush=True)
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _rotate_log_if_oversized(LOG_FILE, _runtime_log_max_bytes())
         with LOG_FILE.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
     except OSError:
@@ -1048,23 +1082,8 @@ def _timing_max_bytes() -> int:
 
 
 def _rotate_timing_if_oversized() -> None:
-    """If the timing log exceeds the cap, rename it to `.1` and start fresh.
-
-    Single rotation slot only — older `.1` is overwritten. The loop has
-    no business retaining unbounded telemetry; the most recent window is
-    what matters for tuning.
-    """
-    try:
-        if not TIMING_FILE.exists():
-            return
-        if TIMING_FILE.stat().st_size <= _timing_max_bytes():
-            return
-        rotated = TIMING_FILE.with_suffix(TIMING_FILE.suffix + ".1")
-        if rotated.exists():
-            rotated.unlink()
-        TIMING_FILE.rename(rotated)
-    except Exception as exc:  # never break the loop on logging
-        _log(f"_rotate_timing_if_oversized failed: {exc}")
+    """If the timing log exceeds the cap, rename it to `.1` and start fresh."""
+    _rotate_log_if_oversized(TIMING_FILE, _timing_max_bytes())
 
 
 def _write_timing(rel: Path, outcome: str, phases: dict[str, float]) -> None:
