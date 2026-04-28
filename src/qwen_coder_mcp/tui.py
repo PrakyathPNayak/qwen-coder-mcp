@@ -150,7 +150,7 @@ Slash commands:
   /git <subcmd>        Read-only git status / log / diff / show / branch
   /tests [args]        Run pytest in the repo
   /tokens              Estimate total tokens in current chat history
-  /lat [N]             Show the last N agent turns' timing breakdown
+  /lat [N|reset]       Show the last N agent turns' timing breakdown
                        (TTFT, per-tool latencies, summary). Default N=1.
   /sysprompt [text]    Show or replace the system prompt
   /model [id]          Show or switch the served model id
@@ -1261,13 +1261,34 @@ def dispatch_slash(
             f"(rough estimate, four characters per token)"
         ), False
     if name == "lat":
-        # Optional N argument: number of recent turns to display.
+        # Optional first argument: integer N (turn count) or "reset".
         n = 1
         if cmd.args:
+            arg0 = cmd.args[0]
+            if arg0.lower() == "reset":
+                cleared = 0
+                if app is not None:
+                    cleared = len(getattr(app, "turn_profiles", []) or [])
+                    try:
+                        app.turn_profiles.clear()
+                    except AttributeError:
+                        # Older stubs without the buffer attribute.
+                        try:
+                            app.turn_profiles = []  # type: ignore[attr-defined]
+                        except Exception:  # noqa: BLE001
+                            pass
+                    try:
+                        app.last_turn_profile = None  # type: ignore[attr-defined]
+                    except Exception:  # noqa: BLE001
+                        pass
+                return (
+                    f"/lat: cleared {cleared} turn profile(s)",
+                    False,
+                )
             try:
-                n = int(cmd.args[0])
+                n = int(arg0)
             except ValueError:
-                return f"/lat: expected integer, got {cmd.args[0]!r}", False
+                return f"/lat: expected integer, got {arg0!r}", False
             if n < 1:
                 return "/lat: count must be >= 1", False
         profiles: list[TurnProfile] = []

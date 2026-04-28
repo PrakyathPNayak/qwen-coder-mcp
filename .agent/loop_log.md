@@ -2773,3 +2773,20 @@ read-only operation, no state changes.
 **Act.** One block edit in `tui.py` replacing the `with path.open("w") as fh:` body with the `.tmp` dance. New `tests/test_history_atomic_write.py` with 8 cases: round-trip, no `.tmp` left after success, original file preserved when `os.replace` fails (monkey-patched to OSError), original file preserved when serialisation raises mid-loop, `.tmp` cleaned up after replace failure, the spy assertion that the live data is in `.tmp` at the moment of replace, max_messages still truncates, each line is independently parseable JSON.
 
 **Verify.** `pytest tests/test_history_atomic_write.py -x -q` → 8 passed. Full suite → ~1.2k passed, 1 skipped.
+
+## Loop 190 — `/lat reset` clears the ring buffer
+
+**Observe.** The turn-profile ring buffer (loop 188) accumulates without a manual escape hatch. Users running mixed workloads — e.g. switching from "exploring the repo" to "benchmarking a specific tool call" — want to scope `/lat` output to the new phase without restarting the TUI.
+
+**Orient.** Smallest possible knob: a `reset` subcommand on `/lat`. Already part of the next.md candidate list. The rest of the queue (`/checkpoints diff N`, TTY-width formatting) is meatier; `/lat reset` keeps the cadence and is the natural completion of the buffer story.
+
+**Decide.** Treat the first arg of `/lat` as polymorphic: integer N (existing) OR the literal token `reset` (case-insensitive). On reset, clear `app.turn_profiles` in place, set `app.last_turn_profile = None`, return how many profiles were cleared. Tolerate older stubs without the buffer attribute. Update HELP_TEXT to `/lat [N|reset]`.
+
+**Devil.**
+- *Correctness:* Could a user have a session where they meant to type `5` but typed `reset` and lose data they wanted? Possible but cheap — the only state lost is timing telemetry, no chat history. ✅
+- *Scope:* Should this also have a confirmation prompt? Overengineered for this surface — `/lat` data is purely observational. ✅
+- *Priority:* `/checkpoints diff N` is more interesting; but it requires designing a meaningful diff format and is a 100+ LoC change. `/lat reset` is the natural smallest next step in the same code area we just touched in loop 188. Keeps the cadence. ✅
+
+**Act.** Edit the `if name == "lat":` branch: before the int parse, peek at `cmd.args[0]` and case-insensitively match `reset`. Update HELP_TEXT. New `tests/test_lat_reset.py` with 7 cases: clears populated buffer (cleared count), no-op on empty (cleared 0), case-insensitive (RESET/Reset/ReSeT), no crash with `app=None`, old-stub fallback (clears `last_turn_profile`), `/lat` after reset shows placeholder, non-exact token like `resetx` still falls through to the int parser and produces the original error.
+
+**Verify.** All `/lat` tests pass (33). Full suite ~1.2k passed.
