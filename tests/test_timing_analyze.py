@@ -324,3 +324,55 @@ class TestPerCategoryDeltaPhases:
         from agent.timing_analyze import analyze, format_report
         text = format_report(analyze([]))
         assert "wall_s_delta_phases by category" not in text
+
+
+class TestTopNFlag:
+    """Loop 124: `--top-n` limits the per-phase block to the N phases
+    with highest p95 wall-clock so high-volume timing logs don't drown
+    the user in cosmetic detail when triaging slow phases."""
+
+    def test_top_n_keeps_only_n_phases(self):
+        from agent.timing_analyze import analyze, format_report
+        recs = [
+            {"category": "applied", "wall_s": 1.0, "phases": {"a": 0.1, "b": 5.0, "c": 0.5, "d": 9.0}, "wall_s_delta_phases": 0.0},
+        ]
+        text = format_report(analyze(recs), top_n=2)
+        assert "  d " in text
+        assert "  b " in text
+        assert "  a " not in text
+        assert "  c " not in text
+        assert "top 2" in text
+
+    def test_top_n_none_keeps_all_alphabetical(self):
+        from agent.timing_analyze import analyze, format_report
+        recs = [
+            {"category": "applied", "wall_s": 1.0, "phases": {"zeta": 0.1, "alpha": 9.0}, "wall_s_delta_phases": 0.0},
+        ]
+        text = format_report(analyze(recs))
+        assert text.index("alpha") < text.index("zeta")
+
+    def test_top_n_sorts_descending_by_p95(self):
+        from agent.timing_analyze import analyze, format_report
+        recs = [
+            {"category": "applied", "wall_s": 1.0, "phases": {"slow": 9.0, "fast": 0.1}, "wall_s_delta_phases": 0.0},
+        ]
+        text = format_report(analyze(recs), top_n=5)
+        assert text.index("slow") < text.index("fast")
+
+    def test_cli_accepts_top_n(self, tmp_path):
+        from agent.timing_analyze import main
+        log = tmp_path / "t.log"
+        log.write_text(
+            json.dumps({"category": "applied", "wall_s": 1.0, "phases": {"a": 1.0, "b": 2.0}, "wall_s_delta_phases": 0.0})
+            + "\n"
+        )
+        rc = main(["--file", str(log), "--top-n", "1", "--no-rotated"])
+        assert rc == 0
+
+
+class TestReadmeMentionsTopNFlag:
+    """Loop 124: README documents `--top-n` so the flag is discoverable."""
+
+    def test_readme_mentions_top_n(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
+        assert "--top-n" in readme

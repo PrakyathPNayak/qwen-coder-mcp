@@ -106,7 +106,7 @@ def analyze(records: list[dict]) -> dict:
     }
 
 
-def format_report(report: dict) -> str:
+def format_report(report: dict, top_n: int | None = None) -> str:
     lines: list[str] = []
     lines.append(f"timing.log analysis -- {report['total_records']} records")
     lines.append("")
@@ -122,9 +122,15 @@ def format_report(report: dict) -> str:
         else:
             lines.append(f"  {cat:30s} count={n:4d}  (no wall_s)")
     lines.append("")
-    lines.append("by phase (per-phase wall-clock):")
-    for ph in sorted(report["phase_wall_s"]):
-        s = report["phase_wall_s"][ph]
+    phase_items = list(report["phase_wall_s"].items())
+    if top_n is not None and top_n > 0:
+        phase_items.sort(key=lambda kv: kv[1].get("p95", 0.0), reverse=True)
+        phase_items = phase_items[:top_n]
+        lines.append(f"by phase (top {top_n} by p95 wall-clock):")
+    else:
+        phase_items.sort(key=lambda kv: kv[0])
+        lines.append("by phase (per-phase wall-clock):")
+    for ph, s in phase_items:
         lines.append(
             f"  {ph:20s} count={s['count']:4d}  total={s['total']:.2f}s  "
             f"mean={s['mean']:.3f} p50={s['p50']:.3f} p95={s['p95']:.3f}"
@@ -188,6 +194,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip `<file>.1` rotation slot even if it exists.",
     )
+    p.add_argument(
+        "--top-n",
+        type=int,
+        default=None,
+        help="Limit the per-phase block to the N phases with highest p95 wall-clock.",
+    )
     args = p.parse_args(argv)
     inputs = _resolve_inputs(args.file, include_rotated=not args.no_rotated)
     if not inputs:
@@ -200,7 +212,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))
     else:
-        sys.stdout.write(format_report(report))
+        sys.stdout.write(format_report(report, top_n=args.top_n))
     return 0
 
 

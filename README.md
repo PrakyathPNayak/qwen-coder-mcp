@@ -236,4 +236,7 @@ python -m agent.timing_analyze --file /path/to/timing.log
 
 # only the live slot (skip rotated .1 file)
 python -m agent.timing_analyze --no-rotated
+
+# show only the 5 slowest phases by p95 wall-clock
+python -m agent.timing_analyze --top-n 5
 ```

@@ -1878,3 +1878,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: new audit asserts at least one example has `phases == {}` so future README rewrites can't drop the early-exit example silently.
   - Priority: P5 docs hardening.
 - ACT: New JSON fence + 1 audit. 585 passed.
+
+## Loop 124 — `--top-n` flag for analytics
+- OBSERVE: real timing.log eventually accumulates 8+ phases. Per-phase block alphabetical-sorted means triaging "what is slow" requires eye-grepping. The phase distributions are the highest-leverage signal in the report.
+- DECIDE: Add optional `top_n` arg to `format_report` that re-sorts phase items by p95 desc and slices. CLI flag `--top-n N` passes through. When unset, behavior unchanged (alphabetical). Header line changes to "by phase (top N by p95 wall-clock):" when active.
+- DEVIL:
+  - Correctness: tests assert (a) only N kept (b) descending order (c) None preserves alphabetical.
+  - Scope: should `--top-n` also limit category block? No -- categories are bounded at 16, the phase block is the one that grows.
+  - Priority: P5 ergonomics. Strict superset of prior CLI (default unchanged).
+- ACT: format_report signature extended, CLI flag added, README usage example added, 5 tests. 590 passed.
