@@ -50,11 +50,30 @@ class TestScenarioInventory:
         names = {sc["name"] for sc in bench_module.SCENARIOS}
         assert "agent_run_shell_bracket" in names
 
+    def test_regex_edit_scenario_present(self, bench_module):
+        # Loop 270: ensures the fs_regex_edit (loop 267) exercise is wired
+        # into the bench so future loops can't silently drop coverage of
+        # the whitespace-tolerant edit path.
+        names = {sc["name"] for sc in bench_module.SCENARIOS}
+        assert "agent_regex_edit_indent_drift" in names
+
+    def test_regex_edit_scenario_is_writes_enabled(self, bench_module):
+        for sc in bench_module.SCENARIOS:
+            if sc["name"] == "agent_regex_edit_indent_drift":
+                assert sc.get("writes") is True
+                assert sc.get("kind") == "agent"
+                # Task must mention the tool name so the model is steered
+                # toward fs_regex_edit (and not just fs_edit).
+                assert "fs_regex_edit" in sc["task"]
+                return
+        pytest.fail("agent_regex_edit_indent_drift scenario missing")
+
     def test_write_scenarios_marked_writes(self, bench_module):
         for sc in bench_module.SCENARIOS:
             if sc["name"] in (
                 "agent_write_bracket_file",
                 "agent_run_shell_bracket",
+                "agent_regex_edit_indent_drift",
             ):
                 assert sc.get("writes") is True, f"{sc['name']} missing writes=True"
             elif sc["kind"] == "agent":

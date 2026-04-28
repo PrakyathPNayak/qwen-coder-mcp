@@ -4557,3 +4557,19 @@ logic), Priority (P2 -- diagnostic only, not behavioural). Suite
 - *Scope*: did NOT change behaviour when `--gzip` is absent. The flag stripping uses list comprehension `[a for a in args if a != "--gzip"]` so positional arg parsing remains identical.
 - *Priority*: low-risk additive change; high user-facing utility for anyone running long autonomous loops. Defensible.
 - *Backward-compat hole*: `_resolve_inside_root` is called AFTER suffix mutation, so escape attempts via `--gzip ../escape.json` still get caught (locked by `test_gzip_path_escape_rejected`).
+
+## Loop 270 — bench scenario for `fs_regex_edit`
+
+**Why**: Loop 267 added `fs_regex_edit` to the agent registry and unit-tested it exhaustively, but no real-model benchmark scenario exercises the model's *use* of the tool. Without that, a future regression in the system-prompt block or alias resolution would silently land — unit tests can't tell us whether the model actually picks up and uses the tool when given an indent-drift task.
+
+**Change**:
+- `scripts/benchmark_real_model.py`: appended `agent_regex_edit_indent_drift` scenario. Task: write a 3-line indented Python file, then use `fs_regex_edit` to mutate the indented `print(...)` line WITHOUT requiring the model to reproduce the indent exactly. Tests both the whitespace-tolerant match path and that the model can find the tool from the system prompt. `writes=True` so the bench wires `ALL_TOOLS` + `always_allow`. Default `--tag` bumped to `loop270`.
+- `tests/test_benchmark_scenarios.py`: 2 new gating tests — `test_regex_edit_scenario_present` and `test_regex_edit_scenario_is_writes_enabled` (asserts `writes=True`, `kind="agent"`, and that the task literally mentions `fs_regex_edit` so the model is steered correctly). Updated `test_write_scenarios_marked_writes` to include the new name in its set.
+
+**Tests**: around 2.06k passed, 7 skipped (+2 gating tests, +0 net registry breakage).
+
+**Devil**:
+- *Correctness*: the gating tests don't run the live model — they verify the bench DEFINITION. That's intentional: live runs are operator-driven (`./scripts/benchmark_real_model.py`) and depend on vLLM being up. Tests guarantee the harness is wired correctly so the next live run actually exercises the new path.
+- *Scope*: did not extend `_summarise` for regex-edit-specific aggregation. `tool_results_checked` already aggregates across all writes-mode scenarios, so the new scenario gets coverage automatically.
+- *Priority*: medium. Without this scenario, loop 267's tool could silently rot (e.g. someone removes it from `TOOL_PROTOCOL_DOC` and the model stops using it; unit tests stay green; only live tasks fail). Now it's locked.
+- *Backward-compat hole*: the bench script's edit-restore-edit dance during this loop (accidentally collapsed run_shell into regex-edit, restored, re-appended) demonstrates the importance of the gating tests — they caught the missing scenario in <1s. Without those tests the bench would have shipped broken.

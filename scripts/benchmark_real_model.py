@@ -108,6 +108,10 @@ SCENARIOS: list[dict[str, Any]] = [
     # mode ('run_shell missing'/'run_command not in parser') makes
     # this dispatch path worth gating: alias resolution + bracket-heavy
     # stdout going through the tool-result render path.
+    # Loop 265 -- run_shell scenario. The operator's earlier failure
+    # mode ('run_shell missing'/'run_command not in parser') makes
+    # this dispatch path worth gating: alias resolution + bracket-heavy
+    # stdout going through the tool-result render path.
     {
         "name": "agent_run_shell_bracket",
         "kind": "agent",
@@ -117,6 +121,30 @@ SCENARIOS: list[dict[str, Any]] = [
             "Then state in one sentence what the command printed."
         ),
         "max_steps": 4,
+        "writes": True,
+    },
+    # Loop 270 -- fs_regex_edit scenario. Exercises the new (loop 267)
+    # whitespace-tolerant regex-edit tool through the full registry
+    # with confirmation auto-allowed. Catches: alias resolution at
+    # dispatch (`regex_edit` -> `fs_regex_edit`), whitespace-tolerant
+    # matching when the model's quoted snippet has different indent
+    # from the file, and that the tool participates in the destructive-
+    # confirm gate without false-allow.
+    {
+        "name": "agent_regex_edit_indent_drift",
+        "kind": "agent",
+        "task": (
+            "First use fs_write to create '.agent/benchmarks/_bench_regex_probe.py' "
+            "with these exact 3 lines (note the 4-space indent):\n"
+            "def greet(name):\n"
+            "    print('hello, ' + name)\n"
+            "    return None\n\n"
+            "Then use fs_regex_edit to change the print line so it says "
+            "'HI, ' instead of 'hello, '. Quote the old snippet without "
+            "worrying about exact whitespace. Then fs_read the file and "
+            "confirm the change in one sentence."
+        ),
+        "max_steps": 6,
         "writes": True,
     },
 ]
@@ -260,7 +288,7 @@ def main() -> int:
     ap.add_argument("--base-url", default=os.environ.get("QWEN_BASE_URL", "http://127.0.0.1:8000/v1"))
     ap.add_argument("--api-key", default=os.environ.get("QWEN_API_KEY", "EMPTY"))
     ap.add_argument("--model", default=os.environ.get("QWEN_MODEL"))
-    ap.add_argument("--tag", default="loop265")
+    ap.add_argument("--tag", default="loop270")
     ap.add_argument("--out-dir", default=str(ROOT / ".agent" / "benchmarks"))
     args = ap.parse_args()
 
