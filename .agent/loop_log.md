@@ -3075,3 +3075,18 @@ Despite ~1.28k tests passing. Root cause: vLLM 0.11 removed `--swap-space` (repl
 **Act.** Dispatcher in `/tokens` parses `--top K` and `--top=K`; rejects `--top` without `--json`, negative values, non-integer values, missing value, unknown args. Adds `top` (sorted desc by tokens, idx tiebreak) and `top_k` to the JSON payload. 14 new tests in `test_tokens_json_top.py` covering basics, edges (zero/oversized/coexists), errors (5 paths), and backwards compat (bare `/tokens` and bare `--json` paths unchanged).
 
 **Verify.** 14 new + all 1299 prior tests green. Test count around 1.30k → 1.31k.
+
+## Loop 208 — `/lat --json --top K` mirrors loop 207 for latency profiles
+
+**Observe.** Loop 207 added `--top K` to `/tokens --json`. The same pattern applies cleanly to `/lat --json` — operators want the slowest turns, not all of them.
+
+**Orient.** Pure mirror of 207. Confidence high; cost low.
+
+**Devil.**
+- *Correctness:* Sort key is `total_s()` (computed property), not `summary_total_s` (which can be None when telemetry is partial). Stable sort preserves ring-buffer order on ties. Slicing happens *after* the existing `last N` slice so `/lat 5 --json --top 2` means "last 5 turns, slowest 2 of those" — the most useful composition. ✅
+- *Scope:* Should we expose top across the *entire* ring buffer regardless of N? That's already what `/lat 10 --json --top K` (or any N ≥ buffer size) does. ✅
+- *Priority:* Low-bug/high-utility. Acceptable when no priority-1 issues are open. ✅
+
+**Act.** Dispatcher now parses `--top K` / `--top=K` interleaved anywhere in the args; same five error paths as loop 207. Eleven new tests in `test_lat_json_top.py` covering basics, edges, errors, and backwards compat (bare `/lat` and `/lat 10 --json` paths regression-pinned).
+
+**Verify.** 11 new + all 1313 prior tests green. Test count around 1.31k → 1.32k.

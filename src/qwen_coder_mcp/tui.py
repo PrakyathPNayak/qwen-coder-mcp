@@ -1660,16 +1660,41 @@ def dispatch_slash(
             f"(rough estimate, four characters per token)"
         ), False
     if name == "lat":
-        # Strip --format=json / --json wherever it appears.
+        # Strip --format=json / --json and parse --top K wherever they appear.
         rest_args = list(cmd.args)
         as_json = False
+        top_k: int | None = None
         new_rest: list[str] = []
-        for tok in rest_args:
+        i = 0
+        while i < len(rest_args):
+            tok = rest_args[i]
             if tok in {"--json", "--format=json"}:
                 as_json = True
-            else:
-                new_rest.append(tok)
+                i += 1
+                continue
+            if tok == "--top":
+                if i + 1 >= len(rest_args):
+                    return "usage: /lat [N] --json --top K", False
+                try:
+                    top_k = int(rest_args[i + 1])
+                except ValueError:
+                    return f"--top: not an integer: {rest_args[i + 1]!r}", False
+                i += 2
+                continue
+            if tok.startswith("--top="):
+                try:
+                    top_k = int(tok.split("=", 1)[1])
+                except ValueError:
+                    return f"--top: not an integer: {tok!r}", False
+                i += 1
+                continue
+            new_rest.append(tok)
+            i += 1
         rest_args = new_rest
+        if top_k is not None and top_k < 0:
+            return "--top: must be non-negative", False
+        if top_k is not None and not as_json:
+            return "--top requires --json", False
         # Optional first argument: integer N (turn count) or "reset".
         n = 1
         if rest_args:
@@ -1713,7 +1738,13 @@ def dispatch_slash(
                 return turn_profiles_as_json([single] if single else []), False
             return format_turn_profile(single), False
         if as_json:
-            return turn_profiles_as_json(profiles[-n:]), False
+            sliced = profiles[-n:]
+            if top_k is not None:
+                # Sort desc by total time; stable sort preserves order on ties.
+                sliced = sorted(
+                    sliced, key=lambda p: p.total_s(), reverse=True
+                )[:top_k]
+            return turn_profiles_as_json(sliced), False
         return format_turn_profiles(profiles, n=n), False
     if name == "sysprompt":
         if history is None:
