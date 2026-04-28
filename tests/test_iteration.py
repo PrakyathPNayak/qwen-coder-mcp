@@ -2819,3 +2819,68 @@ class TestReadmeRuntimeIntrospectionSection:
         from pathlib import Path
         readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
         assert "QWEN_AGGREGATE_SUMMARY_EVERY" in readme
+
+
+class TestAbortRebaseHardenedRecovery:
+    """Loop 98: `_abort_rebase_if_any` previously called `reset --hard
+    HEAD` and ignored the return code. If HEAD is broken (corrupted ref,
+    missing object), the tree stays dirty and the next iteration starts
+    from compromised state with no diagnostic. Hardened to mirror the
+    `_revert_changes` recovery: on HEAD reset failure, fall back to
+    `reset --hard origin/main`, log every failure through
+    `_REVERT_SWALLOW_LOG`."""
+
+    def test_reset_head_failure_falls_back_to_origin(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        import subprocess
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        calls = []
+        def fake(*args, check=True):
+            calls.append(args)
+            sub = args[0]
+            if sub == "status":
+                return subprocess.CompletedProcess(args=list(args), returncode=0, stdout=" M dirty.py\n", stderr="")
+            if sub == "reset" and "HEAD" in args:
+                return subprocess.CompletedProcess(args=list(args), returncode=1, stdout="", stderr="ref broken")
+            if sub == "reset":
+                return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(L, "_run_git", fake)
+        L._abort_rebase_if_any()
+        reset_calls = [c for c in calls if c[0] == "reset"]
+        assert any("HEAD" in c for c in reset_calls)
+        assert any("origin/main" in c for c in reset_calls)
+        # _REVERT_SWALLOW_LOG records the HEAD-reset failure.
+        assert L._REVERT_SWALLOW_LOG.count >= 1
+
+    def test_both_resets_fail_logs_both_and_returns(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        import subprocess
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        def fake(*args, check=True):
+            sub = args[0]
+            if sub == "status":
+                return subprocess.CompletedProcess(args=list(args), returncode=0, stdout=" M dirty.py\n", stderr="")
+            if sub == "reset":
+                return subprocess.CompletedProcess(args=list(args), returncode=1, stdout="", stderr="busted")
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(L, "_run_git", fake)
+        # Should not raise -- best-effort recovery.
+        L._abort_rebase_if_any()
+        assert L._REVERT_SWALLOW_LOG.count == 2
+
+    def test_clean_tree_skips_recovery_path(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        import subprocess
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        calls = []
+        def fake(*args, check=True):
+            calls.append(args)
+            sub = args[0]
+            if sub == "status":
+                return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(L, "_run_git", fake)
+        L._abort_rebase_if_any()
+        assert not any(c[0] == "reset" for c in calls)
+        assert not any(c[0] == "clean" for c in calls)

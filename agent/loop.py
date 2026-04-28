@@ -1412,15 +1412,41 @@ _EMPTY_COMMIT_SWALLOW_LOG = _RateLimitedSwallowLogger("git_empty_commit", schedu
 def _abort_rebase_if_any() -> None:
     """Best-effort: if a rebase is in progress, abort it. Then if the tree
     is still dirty, hard-reset to the current HEAD to guarantee a clean
-    working tree before the next iteration."""
+    working tree before the next iteration.
+
+    Loop 98 hardened the recovery path: if `reset --hard HEAD` fails
+    (e.g., HEAD is broken), fall back to `reset --hard origin/main` --
+    same ground truth used by `_revert_changes`. Failures are logged
+    through `_REVERT_SWALLOW_LOG` (rate-limited) so a persistent
+    corruption surfaces in the per-iteration delta channel.
+    """
     rebase_dir_a = _REPO / ".git" / "rebase-merge"
     rebase_dir_b = _REPO / ".git" / "rebase-apply"
     if rebase_dir_a.exists() or rebase_dir_b.exists():
         _run_git("rebase", "--abort", check=False)
     status = _run_git("status", "--porcelain", check=False).stdout
-    if status.strip():
-        _run_git("reset", "--hard", "HEAD", check=False)
-        _run_git("clean", "-fd", check=False)
+    if not status.strip():
+        return
+    rs = _run_git("reset", "--hard", "HEAD", check=False)
+    if rs.returncode != 0:
+        _REVERT_SWALLOW_LOG.report(
+            RuntimeError(rs.stderr.strip()[:200]),
+            context=f"abort_rebase reset --hard HEAD rc={rs.returncode}",
+        )
+        rs2 = _run_git("reset", "--hard", "origin/main", check=False)
+        if rs2.returncode != 0:
+            _REVERT_SWALLOW_LOG.report(
+                RuntimeError(rs2.stderr.strip()[:200]),
+                context=(
+                    f"abort_rebase reset --hard origin/main "
+                    f"rc={rs2.returncode}"
+                ),
+            )
+            # Tree stays dirty; downstream `_diff_in_scope` will reject
+            # any diff that touches the orphaned files, so the loop
+            # remains correct -- just slower until the operator
+            # intervenes.
+    _run_git("clean", "-fd", check=False)
 
 
 def _commit_and_push(message: str, push: bool) -> str:

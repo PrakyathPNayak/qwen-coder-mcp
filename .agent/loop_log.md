@@ -1636,3 +1636,13 @@ kwarg actually forwarded. Existing tests still pass.
 - DECIDE: New README section with the recipe, what the dump contains, sensitivity note, and a small tunables table.
 - DEVIL: SIGUSR1 is POSIX-only; Windows lacks it (handled by `hasattr(signal, "SIGUSR1")`). Dump is safe -- only label/count/schedule/last_log_message bounded-size strings.
 - ACT: README +21 lines. 3-test docstring drift audit. 510 passed.
+
+## Loop 98 — _abort_rebase_if_any silent reset failure (CORRECTNESS GAP)
+- OBSERVE: `_abort_rebase_if_any` called `_run_git("reset", "--hard", "HEAD", check=False)` and ignored the rc. If HEAD is broken or the reset fails, tree stays dirty, next iteration starts compromised, no diagnostic emitted.
+- ORIENT: P4 priority. Mirrors the loop-96 fix shape (`_revert_changes` already does HEAD->origin/main fallback with rate-limited logging). Symmetry restoration.
+- DECIDE: Lift the `_revert_changes` recovery pattern: try HEAD reset, log failure on rate-limited swallow logger, fall back to origin/main reset, log that failure too if it also fails. `clean -fd` runs unconditionally at the end (since loop 96, post-reset clean is mandatory to remove untracked).
+- DEVIL:
+  - Correctness: If even origin/main reset fails (worst case: detached HEAD with no remote), tree stays dirty. Comment notes: downstream `_diff_in_scope` rejects diffs touching the orphaned files, so the loop remains correct -- just slower.
+  - Scope: Could escalate to `clean -fdx` (also remove ignored files) but that destroys legitimate local untracked artifacts.
+  - Rate-limit: Every reset failure goes through `_REVERT_SWALLOW_LOG` with a distinct context label so the per-iteration delta channel can distinguish abort_rebase failures from `_revert_changes` failures.
+- ACT: ~25-line code change plus expanded docstring. 3 new tests. 513 passed.
