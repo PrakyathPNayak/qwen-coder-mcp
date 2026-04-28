@@ -179,8 +179,26 @@ def _save_cursor(idx: int) -> None:
 
 
 def _read_file(path: Path, max_bytes: int) -> str | None:
+    """Read a candidate file from the repo. Refuses to read content
+    whose resolved target is outside `_REPO`, so an in-repo symlink
+    pointing at e.g. `/etc/passwd` cannot leak host content into a
+    model prompt."""
     try:
-        data = path.read_bytes()
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    repo_resolved = _REPO.resolve()
+    try:
+        if not resolved.is_relative_to(repo_resolved):
+            return None
+    except AttributeError:
+        # Python < 3.9 fallback (we target 3.11+, but be defensive).
+        try:
+            resolved.relative_to(repo_resolved)
+        except ValueError:
+            return None
+    try:
+        data = resolved.read_bytes()
     except OSError:
         return None
     if len(data) > max_bytes:
