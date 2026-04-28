@@ -111,3 +111,35 @@ Tunables relevant to introspection:
 | -------- | ------- | ------- |
 | `QWEN_AGGREGATE_SUMMARY_EVERY` | `100` | Iterations between cumulative swallow-logger summaries (0 disables). Capped at 100k. |
 | `QWEN_TIMING_MAX_BYTES` | `1_000_000` | Size cap for `.loop/timing.log` before rotation. Capped at 100MB. |
+
+## Iteration outcome schema
+
+Every loop iteration ends with an outcome string that maps to a stable
+leading category (the part before the first `:`). `_outer_outcome_category`
+extracts this for log aggregation; the full set of valid leading categories
+is `OUTER_OUTCOME_CATEGORIES` in `agent/loop.py`. The categories are:
+
+| Category | Meaning |
+| -------- | ------- |
+| `applied` | Diff applied, validated, committed, pushed. |
+| `clean` | Reviewer found no actionable issue in the file. |
+| `skip` | File was unreadable or too large. |
+| `rejected` | Devil's-advocate rejected the proposed fix. |
+| `out_of_scope` | Diff touched paths outside the iteration's scope. |
+| `validation_failed` | Apply succeeded but the post-apply validator (compileall, json/toml/yaml parse, etc.) found the result invalid. |
+| `commit_failed` | Local commit failed after a clean apply. |
+| `commit_skipped_empty` | Apply produced no committable changes (empty staged tree). |
+| `revert_failed` | After a rejection or validation failure, the revert path (clean + reset) couldn't restore a clean state. |
+| `apply_failed` | `git apply` rejected the diff. |
+| `qwen_error_find_bugs` / `qwen_error_propose_fix` / `qwen_error_devils_advocate` | Backend failure on one of the three Qwen calls. |
+| `budget_exceeded` | Per-iteration wall-clock budget (`QWEN_LOOP_ITER_BUDGET_S`) was exceeded between phases. |
+| `no_candidate_files` | `_candidate_files()` returned an empty list (no eligible files). |
+| `crashed` | `_iteration` raised an unhandled exception; the main loop's crash branch synthesized this record. |
+
+Each record in `.loop/timing.log` is a JSON line with:
+
+- `ts` (ISO timestamp), `file`, `outcome`, `category` (the leading token),
+  `phases` (per-phase wall-clock seconds), `wall_s` (whole-iteration
+  wall-clock seconds; emitted only when `iter_monotonic` was provided),
+  and `wall_s_delta_phases` (`wall_s - sum(phases)`, floored at 0; flags
+  unaccounted-for time outside the named phases).

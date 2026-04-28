@@ -1716,3 +1716,13 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: should I emit `_log_swallow_summaries` BEFORE `_write_timing(crashed)` so the summary line precedes the timing record? Yes -- that's the order I implemented (matches `_finish`'s order: write_timing first then log_swallow_summaries -- wait actually `_finish` is the opposite, let me recheck). `_finish`: write_timing then log_swallow_summaries. My crash branch: log_swallow_summaries then write_timing. Slight asymmetry. But the crash flush prevents the summary going dark in the next iteration's finish, and the timing record is purely for analytics -- order doesn't matter for either consumer. Leave as is.
   - Risk: `_write_timing` is rate-limited internally so the crash emission could itself be suppressed. Wrapped the call in try/except as a belt-and-suspenders for the case where rate-limited rotation itself raises after emitting the swallow log.
 - ACT: 1 frozenset addition + ~14-line main() crash branch + audit extension to walk `_write_timing` literals + 3 new tests. 527 passed.
+
+## Loop 106 — Document outcome schema and timing.log fields in README
+- OBSERVE: After loops 99/103/105 all changed outcome semantics, an operator using SIGUSR1 dumps + timing.log analytics has no canonical reference for what the categories mean or what fields each timing record contains. README was silent.
+- ORIENT: P5 documentation, with drift-audit shape borrowed from loop 97 (README runtime-introspection audit). High value because the schema HAS been changing fast (3 loops in this segment touched it).
+- DECIDE: New "## Iteration outcome schema" section in README covering all 16 OUTER_OUTCOME_CATEGORIES tokens (each as backticked) and the timing.log JSON-line field set. Add `TestReadmeOutcomeSchemaDocumented` with two tests: (a) every category in the frozenset appears in the section as a backticked token, (b) every timing.log field is mentioned somewhere in the README.
+- DEVIL:
+  - Drift cost: README is now coupled to OUTER_OUTCOME_CATEGORIES via the audit. Future categories must be documented OR the audit fails -- which is the whole point.
+  - Granularity: `apply_failed:{category}:{rel}:{msg[:60]}` has internal sub-categories not documented. Out of scope -- the main contract is the leading token.
+  - Risk: backticked-token search could false-positive if a category name appears backticked elsewhere in the section for a different reason. Acceptable -- the table format is deterministic.
+- ACT: ~33 README lines + 2 audit tests. 529 passed.

@@ -3158,3 +3158,29 @@ class TestCrashedOutcomeTimingRecord:
         assert found, (
             "main()'s crash branch must call _write_timing with outcome='crashed'"
         )
+
+
+class TestReadmeOutcomeSchemaDocumented:
+    """Loop 106: README documents the outcome schema. Drift audit:
+    every category in `OUTER_OUTCOME_CATEGORIES` must appear in the
+    README's outcome schema section, fenced as a backticked token. If
+    a future loop adds a new category but forgets to document it,
+    this test fails."""
+
+    def test_every_category_in_readme_schema_section(self):
+        from agent import loop as L
+        readme = (Path(L.__file__).parent.parent / "README.md").read_text(encoding="utf-8")
+        # Anchor on the section header
+        assert "## Iteration outcome schema" in readme
+        section = readme.split("## Iteration outcome schema", 1)[1]
+        for cat in L.OUTER_OUTCOME_CATEGORIES:
+            assert f"`{cat}`" in section, (
+                f"OUTER_OUTCOME_CATEGORIES contains {cat!r} but the README "
+                f"outcome schema section doesn't document it as `{cat}`"
+            )
+
+    def test_timing_log_fields_documented(self):
+        from agent import loop as L
+        readme = (Path(L.__file__).parent.parent / "README.md").read_text(encoding="utf-8")
+        for field in ("ts", "file", "outcome", "category", "phases", "wall_s", "wall_s_delta_phases"):
+            assert f"`{field}`" in readme, f"timing.log field `{field}` not documented in README"
