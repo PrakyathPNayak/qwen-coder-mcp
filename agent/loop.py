@@ -1284,13 +1284,24 @@ def _rotate_timing_if_oversized() -> None:
     _rotate_log_if_oversized(TIMING_FILE, _timing_max_bytes())
 
 
+_TIMING_FAILURE_COUNT = 0
+_TIMING_FAILURE_LOG_EVERY = 100
+
+
 def _write_timing(rel: Path, outcome: str, phases: dict[str, float]) -> None:
     """Append one JSON line per iteration capturing per-phase wallclock.
 
     Phases are recorded only when actually entered, so an early-exit
     iteration produces a partial record. Failures are swallowed: timing
     is observability, not correctness, and must never break the loop.
+
+    Failure logging is rate-limited via a module-level counter so a
+    persistent fault (disk full, permission denied) doesn't fill
+    runtime.log with one swallow line per iteration. The first failure
+    and every Nth subsequent failure are logged together with the
+    cumulative count.
     """
+    global _TIMING_FAILURE_COUNT
     try:
         import json
         TIMING_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1305,7 +1316,14 @@ def _write_timing(rel: Path, outcome: str, phases: dict[str, float]) -> None:
         with TIMING_FILE.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
     except Exception as exc:  # never break the loop on logging
-        _log(f"_write_timing failed: {exc}")
+        _TIMING_FAILURE_COUNT += 1
+        if (
+            _TIMING_FAILURE_COUNT == 1
+            or _TIMING_FAILURE_COUNT % _TIMING_FAILURE_LOG_EVERY == 0
+        ):
+            _log(
+                f"_write_timing failed (count={_TIMING_FAILURE_COUNT}): {exc}"
+            )
 
 
 class _PhaseTimer:

@@ -1316,3 +1316,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 5, parallel to loop 67.
 - ACT: 5 tests covering OSError, RuntimeError, success, prune-failure-after-write. 403 passed.
 - COMMIT: pending.
+
+## Loop 69 — `_write_timing` rate-limited swallow-log
+- OBSERVE: After loops 67–68 hardened `_log`, `_append_state`, `_write_history`, the remaining swallow-log site `_write_timing` would emit one log line per iteration on persistent failure (e.g., disk full). On a 24h run with 1k loops that's 1k spam lines.
+- ORIENT: Bucket 5 — observability cliff. We want the FIRST failure visible (so the operator notices) and Nth subsequent failures (so the count is observable) but not 1k duplicates.
+- DECIDE: Module-level `_TIMING_FAILURE_COUNT` + `_TIMING_FAILURE_LOG_EVERY=100`. Log when count==1 or count%N==0. Includes count in message.
+- DEVIL:
+  - Correctness: global counter; loop is single-threaded so no race. ✓
+  - Scope: addresses cause (log spam) not symptom (rotate runtime.log).
+  - Priority: bucket 5, was next.md #1.
+- ACT: 4 tests (first-failure, rate-limit, every-Nth-with-different-N, success-doesn't-increment). 407 passed.
+- COMMIT: pending.

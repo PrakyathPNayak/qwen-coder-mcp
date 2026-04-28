@@ -1013,3 +1013,63 @@ class TestObservabilityNeverRaises:
         # Note: prune raises BEFORE return path runs — so result is None.
         # The contract is "swallow exceptions, log, return None".
         assert result is None
+
+
+class TestWriteTimingFailureCounter:
+    """Loop 69: `_write_timing` rate-limits its swallow-log so a
+    persistent disk fault doesn't spam runtime.log."""
+
+    def test_first_failure_is_logged_with_count_1(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        from pathlib import Path
+        monkeypatch.setattr(L, "_TIMING_FAILURE_COUNT", 0)
+        monkeypatch.setattr(L, "TIMING_FILE", tmp_path / "x" / "timing.log")
+        # Force failure: rotate raises.
+        monkeypatch.setattr(L, "_rotate_timing_if_oversized", lambda: (_ for _ in ()).throw(OSError("disk full")))
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        L._write_timing(Path("a.py"), "applied:a.py", {})
+        assert any("_write_timing failed" in l and "count=1" in l for l in log_lines)
+        assert L._TIMING_FAILURE_COUNT == 1
+
+    def test_repeated_failures_are_rate_limited(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        from pathlib import Path
+        monkeypatch.setattr(L, "_TIMING_FAILURE_COUNT", 0)
+        monkeypatch.setattr(L, "_TIMING_FAILURE_LOG_EVERY", 100)
+        monkeypatch.setattr(L, "TIMING_FILE", tmp_path / "x" / "timing.log")
+        monkeypatch.setattr(L, "_rotate_timing_if_oversized", lambda: (_ for _ in ()).throw(OSError("disk full")))
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        for _ in range(50):
+            L._write_timing(Path("a.py"), "applied:a.py", {})
+        # Only first failure logged — counts 2..50 are silent.
+        assert len(log_lines) == 1
+        assert L._TIMING_FAILURE_COUNT == 50
+
+    def test_logs_every_nth_failure(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        from pathlib import Path
+        monkeypatch.setattr(L, "_TIMING_FAILURE_COUNT", 0)
+        monkeypatch.setattr(L, "_TIMING_FAILURE_LOG_EVERY", 5)
+        monkeypatch.setattr(L, "TIMING_FILE", tmp_path / "x" / "timing.log")
+        monkeypatch.setattr(L, "_rotate_timing_if_oversized", lambda: (_ for _ in ()).throw(OSError("disk full")))
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        for _ in range(15):
+            L._write_timing(Path("a.py"), "applied:a.py", {})
+        # Logs at: count=1, 5, 10, 15 → 4 total.
+        assert len(log_lines) == 4
+        assert "count=1" in log_lines[0]
+        assert "count=5" in log_lines[1]
+        assert "count=10" in log_lines[2]
+        assert "count=15" in log_lines[3]
+
+    def test_success_does_not_increment_counter(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        from pathlib import Path
+        monkeypatch.setattr(L, "_TIMING_FAILURE_COUNT", 0)
+        monkeypatch.setattr(L, "TIMING_FILE", tmp_path / "timing.log")
+        L._write_timing(Path("a.py"), "applied:a.py", {"phase1": 0.5})
+        assert L._TIMING_FAILURE_COUNT == 0
+        assert (tmp_path / "timing.log").exists()
