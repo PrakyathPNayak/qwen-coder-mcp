@@ -1,0 +1,374 @@
+"""Self-improving agentic loop for qwen-coder-mcp.
+
+For each iteration:
+  1. Pick a candidate file (rotating cursor across the repo).
+  2. Ask Qwen to find issues.
+  3. Pick the top issue and ask Qwen to produce a unified diff fix.
+  4. Run a "devil's advocate" pass to challenge the diff.
+  5. If ACCEPT and `git apply --check` passes (and Python syntax check passes
+     for *.py), apply, commit, and push.
+  6. Append to STATE.md and .loop/history/<timestamp>.md.
+  7. Sleep and repeat. Errors never break the loop.
+"""
+from __future__ import annotations
+
+import datetime as _dt
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import traceback
+from pathlib import Path
+from typing import Iterable
+
+# Allow `python -m agent.loop` from repo root.
+_REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_REPO / "src"))
+
+from qwen_coder_mcp import prompts  # noqa: E402
+from qwen_coder_mcp.qwen_client import QwenClient, QwenError  # noqa: E402
+
+LOOP_DIR = _REPO / ".loop"
+HISTORY_DIR = LOOP_DIR / "history"
+CURSOR_FILE = LOOP_DIR / "cursor.json"
+LOG_FILE = LOOP_DIR / "runtime.log"
+STATE_FILE = _REPO / "STATE.md"
+
+# Paths excluded from candidate file selection.
+EXCLUDE_DIRS = {".git", ".loop", ".venv", "venv", "__pycache__", "dist", "build"}
+EXCLUDE_FILES = {"STATE.md", "LICENSE"}
+TEXT_SUFFIXES = {
+    ".py", ".md", ".toml", ".yaml", ".yml", ".json", ".cfg", ".ini",
+    ".txt", ".sh", ".js", ".ts",
+}
+
+
+# ---------------------------------------------------------------- utilities
+def _now() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _log(msg: str) -> None:
+    line = f"[{_now()}] {msg}"
+    print(line, flush=True)
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass
+
+
+def _run_git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=_REPO,
+        check=check,
+        text=True,
+        capture_output=True,
+    )
+
+
+def _candidate_files() -> list[Path]:
+    out: list[Path] = []
+    for root, dirs, files in os.walk(_REPO):
+        rel_root = Path(root).relative_to(_REPO)
+        # prune excluded dirs in-place
+        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS and not d.startswith(".")]
+        for name in files:
+            if name in EXCLUDE_FILES or name.startswith("."):
+                continue
+            p = Path(root) / name
+            if p.suffix.lower() not in TEXT_SUFFIXES:
+                continue
+            try:
+                if p.stat().st_size == 0:
+                    continue
+            except OSError:
+                continue
+            out.append(p.relative_to(_REPO))
+        # don't recurse into excluded
+    out.sort()
+    return out
+
+
+def _load_cursor() -> int:
+    try:
+        return int(json.loads(CURSOR_FILE.read_text("utf-8")).get("idx", 0))
+    except Exception:
+        return 0
+
+
+def _save_cursor(idx: int) -> None:
+    CURSOR_FILE.parent.mkdir(parents=True, exist_ok=True)
+    CURSOR_FILE.write_text(json.dumps({"idx": idx}), "utf-8")
+
+
+def _read_file(path: Path, max_bytes: int) -> str | None:
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if len(data) > max_bytes:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+# ------------------------------------------------------------- model output
+_FENCE_RE = re.compile(r"^```[a-zA-Z0-9_+\-]*\s*\n(.*?)\n```\s*$", re.DOTALL)
+
+
+def _strip_fence(text: str) -> str:
+    text = text.strip()
+    m = _FENCE_RE.match(text)
+    return m.group(1) if m else text
+
+
+def _parse_first_issue(text: str) -> str | None:
+    text = text.strip()
+    if not text or text.upper().startswith("NO_ISSUES"):
+        return None
+    # numbered list: "1. ...". Capture first item.
+    m = re.search(r"(?ms)^\s*1[.)]\s+(.+?)(?=^\s*2[.)]\s+|\Z)", text)
+    if m:
+        return m.group(1).strip()
+    # bullet list fallback.
+    m = re.search(r"(?ms)^\s*[-*]\s+(.+?)(?=^\s*[-*]\s+|\Z)", text)
+    if m:
+        return m.group(1).strip()
+    return text.splitlines()[0].strip() or None
+
+
+def _verdict_accepts(text: str) -> tuple[bool, str]:
+    upper = text.upper()
+    if "VERDICT: ACCEPT" in upper:
+        return True, "accept"
+    if "VERDICT: REJECT" in upper:
+        m = re.search(r"VERDICT:\s*REJECT\s*(.*)", text, re.IGNORECASE)
+        return False, (m.group(1).strip() if m else "reject")
+    # No clear verdict -> reject conservatively.
+    return False, "no_verdict"
+
+
+# ------------------------------------------------------------- diff handling
+def _apply_diff(diff_text: str) -> tuple[bool, str]:
+    """Try `git apply --check` then `git apply`. Returns (ok, message)."""
+    diff = _strip_fence(diff_text)
+    if not diff.lstrip().startswith(("diff --git", "--- ")):
+        return False, "not_a_unified_diff"
+    if not diff.endswith("\n"):
+        diff += "\n"
+    proc = subprocess.run(
+        ["git", "apply", "--check", "-"],
+        cwd=_REPO,
+        input=diff,
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return False, f"apply_check_failed: {proc.stderr.strip()[:300]}"
+    proc = subprocess.run(
+        ["git", "apply", "-"],
+        cwd=_REPO,
+        input=diff,
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return False, f"apply_failed: {proc.stderr.strip()[:300]}"
+    return True, "applied"
+
+
+def _python_syntax_ok(paths: Iterable[Path]) -> tuple[bool, str]:
+    py = [str(_REPO / p) for p in paths if str(p).endswith(".py")]
+    if not py:
+        return True, "no_py"
+    proc = subprocess.run(
+        [sys.executable, "-m", "compileall", "-q", *py],
+        cwd=_REPO,
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return False, proc.stdout + proc.stderr
+    return True, "ok"
+
+
+def _changed_paths() -> list[Path]:
+    proc = _run_git("diff", "--name-only", check=False)
+    return [Path(line) for line in proc.stdout.splitlines() if line.strip()]
+
+
+def _revert_changes() -> None:
+    _run_git("checkout", "--", ".", check=False)
+
+
+# ------------------------------------------------------------------- state
+def _append_state(entry: str) -> None:
+    header = "# qwen-coder-mcp — Rolling State\n\n"
+    if not STATE_FILE.exists():
+        STATE_FILE.write_text(header, "utf-8")
+    with STATE_FILE.open("a", encoding="utf-8") as fh:
+        fh.write(entry)
+
+
+def _write_history(name: str, body: str) -> Path:
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    path = HISTORY_DIR / name
+    path.write_text(body, "utf-8")
+    return path
+
+
+# -------------------------------------------------------------------- core
+def _commit_and_push(message: str, push: bool) -> bool:
+    add = _run_git("add", "-A", check=False)
+    if add.returncode != 0:
+        _log(f"git add failed: {add.stderr.strip()}")
+        return False
+    status = _run_git("status", "--porcelain", check=False).stdout
+    if not status.strip():
+        return False
+    commit = _run_git("commit", "-m", message, check=False)
+    if commit.returncode != 0:
+        _log(f"git commit failed: {commit.stderr.strip()}")
+        return False
+    if not push:
+        return True
+    # Best-effort sync with remote.
+    _run_git("pull", "--rebase", "--autostash", "origin", "main", check=False)
+    push_proc = _run_git("push", "origin", "HEAD:main", check=False)
+    if push_proc.returncode != 0:
+        _log(f"git push failed: {push_proc.stderr.strip()}")
+        return False
+    return True
+
+
+def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
+    files = _candidate_files()
+    if not files:
+        return "no_candidate_files"
+    idx = _load_cursor() % len(files)
+    rel = files[idx]
+    _save_cursor((idx + 1) % len(files))
+
+    code = _read_file(_REPO / rel, max_bytes)
+    if code is None:
+        return f"skip:{rel} (unreadable_or_too_large)"
+
+    _log(f"scanning {rel}")
+    try:
+        issues = client.system_user(
+            prompts.REVIEWER_SYSTEM,
+            prompts.find_bugs_user(str(rel), code),
+            temperature=0.1,
+        )
+    except QwenError as exc:
+        return f"qwen_error_find_bugs:{exc}"
+
+    issue = _parse_first_issue(issues)
+    if not issue:
+        return f"clean:{rel}"
+
+    try:
+        diff = client.system_user(
+            prompts.CODER_SYSTEM,
+            prompts.propose_fix_user(str(rel), code, issue),
+            temperature=0.1,
+        )
+    except QwenError as exc:
+        return f"qwen_error_propose_fix:{exc}"
+
+    diff_clean = _strip_fence(diff)
+
+    try:
+        critique = client.system_user(
+            prompts.DEVILS_ADVOCATE_SYSTEM,
+            prompts.devils_advocate_user(str(rel), code, diff_clean, issue),
+            temperature=0.0,
+        )
+    except QwenError as exc:
+        return f"qwen_error_devils_advocate:{exc}"
+
+    accept, reason = _verdict_accepts(critique)
+    history_body = (
+        f"# {_now()} — {rel}\n\n"
+        f"## Issue\n{issue}\n\n## Proposed diff\n```diff\n{diff_clean}\n```\n\n"
+        f"## Devil's advocate\n{critique}\n\n## Outcome\n"
+    )
+
+    if not accept:
+        _write_history(
+            f"{int(time.time())}-rejected.md",
+            history_body + f"REJECTED ({reason})\n",
+        )
+        _append_state(
+            f"- {_now()} `{rel}` — rejected fix ({reason[:80]})\n"
+        )
+        return f"rejected:{rel}:{reason[:80]}"
+
+    ok, msg = _apply_diff(diff_clean)
+    if not ok:
+        _write_history(
+            f"{int(time.time())}-apply-failed.md",
+            history_body + f"APPLY FAILED ({msg})\n",
+        )
+        _append_state(f"- {_now()} `{rel}` — apply failed ({msg[:80]})\n")
+        return f"apply_failed:{rel}:{msg[:80]}"
+
+    changed = _changed_paths()
+    syn_ok, syn_msg = _python_syntax_ok(changed)
+    if not syn_ok:
+        _revert_changes()
+        _write_history(
+            f"{int(time.time())}-syntax-failed.md",
+            history_body + f"SYNTAX FAILED:\n```\n{syn_msg}\n```\n",
+        )
+        _append_state(f"- {_now()} `{rel}` — reverted (syntax)\n")
+        return f"syntax_failed:{rel}"
+
+    summary_line = issue.splitlines()[0][:72]
+    commit_msg = f"fix({rel.as_posix()}): {summary_line}"
+    if _commit_and_push(commit_msg, push):
+        _write_history(
+            f"{int(time.time())}-applied.md",
+            history_body + "APPLIED + COMMITTED\n",
+        )
+        _append_state(f"- {_now()} `{rel}` — applied: {summary_line}\n")
+        return f"applied:{rel}"
+
+    _revert_changes()
+    _append_state(f"- {_now()} `{rel}` — commit/push failed, reverted\n")
+    return f"commit_failed:{rel}"
+
+
+def main() -> None:
+    from qwen_coder_mcp.config import load_settings  # local import
+    settings = load_settings()
+    LOOP_DIR.mkdir(parents=True, exist_ok=True)
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    _log(
+        f"loop starting | model={settings.model} base={settings.base_url} "
+        f"interval={settings.loop_interval_seconds}s push={settings.loop_push}"
+    )
+    client = QwenClient(settings)
+    try:
+        while True:
+            try:
+                outcome = _iteration(
+                    client, settings.loop_max_file_bytes, settings.loop_push
+                )
+                _log(f"iteration -> {outcome}")
+            except Exception:  # never break the loop
+                _log("iteration crashed:\n" + traceback.format_exc())
+            time.sleep(max(1, settings.loop_interval_seconds))
+    finally:
+        client.close()
+
+
+if __name__ == "__main__":
+    main()
