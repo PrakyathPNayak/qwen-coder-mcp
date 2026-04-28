@@ -3517,3 +3517,30 @@ otherwise be catastrophic on the autonomous-loop host where a real
 serve may be running. Priority P2; symmetry with the loop-205 surface.
 
 Verify: full suite 1438 passed, 6 skipped (was 1431 + 7). Total ~87s.
+
+## Loop 223 - wait_ready.sh test coverage
+
+Completes the scripts/ test arc started in loop 205 (serve_qwen.sh)
+and continued in loop 222 (stop_qwen.sh). Ten tests across three
+classes: static invariants (shebang, syntax, strict-mode, /v1/models
+endpoint, Bearer auth header), happy path (immediate readiness, URL
++ auth header pinning, default host/port/api-key fallbacks), and
+timeout branch (exit 1 + stderr message + 600s mention).
+
+Test technique: tempdir prepended to PATH containing fake curl and
+fake seq stand-ins. Fake curl writes its argv to a side-channel
+file so tests can pin the outgoing request shape (URL, Authorization
+header). Fake seq truncates the scripts 1..600 loop to a single
+iteration, which makes the timeout test take ~1s instead of 10
+minutes. Script-syntax invariant locks /v1/models choice (rather
+than /health) and the Bearer auth pattern in place.
+
+Devil step. Why /v1/models and not /health? Loop 215 added a
+separate /health probe in QwenClient because /v1/models can return
+200 long before the engine actually init-finishes (loops 211/216).
+But this script intentionally polls /v1/models because operators
+running wait_ready.sh want to know the API is consumable, not
+just that the engine process started. Documented in the test as
+load-bearing.
+
+Verify: full suite 1448 passed, 6 skipped (was 1438 + 10).
