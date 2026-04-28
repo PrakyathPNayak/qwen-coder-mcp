@@ -2603,3 +2603,75 @@ class TestSwallowLoggerLabelHygiene:
             f"unregistered: {module_loggers - registered}; "
             f"phantom: {registered - module_loggers}"
         )
+
+
+class TestWallSecondsDeltaPhases:
+    """Loop 93: `wall_s_delta_phases = max(0, wall_s - sum(phases))`
+    surfaces unnamed scaffolding overhead per iteration. Floored at 0
+    to defend against rounding artefacts when wall_s is rounded to 4dp
+    and the phase sum is not."""
+
+    def test_delta_phases_emitted_when_wall_present(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        import json
+        timing_path = tmp_path / "timing.log"
+        monkeypatch.setattr(L, "TIMING_FILE", timing_path)
+        monkeypatch.setattr(L, "_rotate_timing_if_oversized", lambda: None)
+        # 100s wall, 3.5s of named phases => 96.5s scaffolding.
+        fake_now = [1100.0]
+        monkeypatch.setattr(L.time, "monotonic", lambda: fake_now[0])
+        L._write_timing(
+            L.Path("foo.py"),
+            "ok",
+            {"qwen": 2.0, "apply": 1.5},
+            iter_monotonic=1000.0,
+        )
+        rec = json.loads(timing_path.read_text().strip().splitlines()[-1])
+        assert rec["wall_s"] == 100.0
+        assert rec["wall_s_delta_phases"] == 96.5
+
+    def test_delta_phases_zero_for_empty_phases(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        import json
+        timing_path = tmp_path / "timing.log"
+        monkeypatch.setattr(L, "TIMING_FILE", timing_path)
+        monkeypatch.setattr(L, "_rotate_timing_if_oversized", lambda: None)
+        monkeypatch.setattr(L.time, "monotonic", lambda: 1042.0)
+        L._write_timing(L.Path("x.py"), "ok", {}, iter_monotonic=1040.0)
+        rec = json.loads(timing_path.read_text().strip().splitlines()[-1])
+        assert rec["wall_s"] == 2.0
+        assert rec["wall_s_delta_phases"] == 2.0
+
+    def test_delta_phases_floored_at_zero(self, tmp_path, monkeypatch):
+        """wall_s rounded to 4dp; an unrounded phase sum slightly above
+        the rounded wall_s would yield a tiny negative value if not
+        floored. Engineer that scenario explicitly."""
+        from agent import loop as L
+        import json
+        timing_path = tmp_path / "timing.log"
+        monkeypatch.setattr(L, "TIMING_FILE", timing_path)
+        monkeypatch.setattr(L, "_rotate_timing_if_oversized", lambda: None)
+        monkeypatch.setattr(L.time, "monotonic", lambda: 1000.00001)
+        # Phase sum is 1.00005 (not roundable to 4dp the same way).
+        L._write_timing(
+            L.Path("x.py"),
+            "ok",
+            {"a": 1.00005},
+            iter_monotonic=999.0,
+        )
+        rec = json.loads(timing_path.read_text().strip().splitlines()[-1])
+        # wall_s rounds to 1.0; phase sum is 1.00005 => raw delta is
+        # negative tiny dust => clamped to 0.0.
+        assert rec["wall_s"] == 1.0
+        assert rec["wall_s_delta_phases"] >= 0.0
+
+    def test_delta_phases_absent_when_iter_monotonic_missing(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        import json
+        timing_path = tmp_path / "timing.log"
+        monkeypatch.setattr(L, "TIMING_FILE", timing_path)
+        monkeypatch.setattr(L, "_rotate_timing_if_oversized", lambda: None)
+        L._write_timing(L.Path("x.py"), "ok", {"a": 1.0})
+        rec = json.loads(timing_path.read_text().strip().splitlines()[-1])
+        assert "wall_s" not in rec
+        assert "wall_s_delta_phases" not in rec

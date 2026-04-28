@@ -1588,3 +1588,13 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: Could also assert `schedule in {"linear", "exponential"}` but that's enforced at construction time by the class; redundant.
   - Priority: Drift audit. Loop 91 demonstrated this gap matters in practice.
 - ACT: `TestSwallowLoggerLabelHygiene` (3 tests). 496 passed.
+
+## Loop 93 — wall_s_delta_phases for fast scaffolding-overhead detection
+- OBSERVE: `wall_s` and per-phase wallclock are emitted, but every analytics consumer that wants "scaffolding overhead" (file IO, history.md write, git ops outside of named phases) has to recompute `wall_s - sum(phases.values())`. The loop 90 invariant test guards `wall_s >= sum(phases)`; surfacing the delta directly makes scaffolding spikes queryable with one field.
+- ORIENT: Tiny additive change. Float-dust risk when `wall_s` is rounded to 4dp but phase sum is not -- floor at 0.
+- DECIDE: Add `wall_s_delta_phases = round(max(0.0, wall_s - sum(phases)), 4)` next to `wall_s`. Same gate (only when iter_monotonic provided).
+- DEVIL:
+  - Correctness: floor at 0 is defensive; the loop 90 invariant says raw delta is always >= 0, but rounding asymmetry can produce negative dust. Test `test_delta_phases_floored_at_zero` engineers that case explicitly.
+  - Scope: Could also emit `wall_s_phase_ratio = sum(phases) / wall_s` but that requires nonzero division and is trivially derivable. Skipping.
+  - Priority: P6 from next.md, but cheap and pairs naturally with the loop 90 invariant.
+- ACT: 1-line code change, 4 tests. 500 passed.

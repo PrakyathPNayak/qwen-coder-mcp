@@ -1559,7 +1559,12 @@ def _write_timing(
     ``wall_s`` field with the total iteration wallclock. Unlike
     ``sum(phases.values())`` this also captures unnamed scaffolding time
     (between phases, error paths) so analytics can distinguish "slow
-    Qwen response" from "slow setup/teardown".
+    Qwen response" from "slow setup/teardown". A companion
+    ``wall_s_delta_phases`` field records ``max(0, wall_s - sum(phases))``
+    so the scaffolding overhead is directly queryable without recomputing
+    in every analytics consumer; the floor at 0 protects against
+    sub-millisecond float dust where the rounded ``wall_s`` could be
+    fractionally below the unrounded phase sum.
 
     Failure logging is rate-limited via `_RateLimitedSwallowLogger` so a
     persistent fault (disk full, permission denied) doesn't fill
@@ -1579,7 +1584,12 @@ def _write_timing(
             "phases": {k: round(v, 4) for k, v in phases.items()},
         }
         if iter_monotonic is not None:
-            record["wall_s"] = round(time.monotonic() - iter_monotonic, 4)
+            wall_s = round(time.monotonic() - iter_monotonic, 4)
+            record["wall_s"] = wall_s
+            phase_sum = sum(phases.values())
+            record["wall_s_delta_phases"] = round(
+                max(0.0, wall_s - phase_sum), 4
+            )
         with TIMING_FILE.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
     except Exception as exc:  # never break the loop on logging
