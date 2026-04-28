@@ -594,3 +594,86 @@ class TestExitRecordsLoop229:
         rep = analyze(recs)
         out = format_report(rep)
         assert "shutdown records" not in out
+
+
+class TestExitRecordsJsonOutputLoop230:
+    """Loop 230: pin the --json schema for the loop-229 exit_records
+    field so downstream consumers (dashboards, alerting) can rely on
+    the exact key set. If a future loop renames a key, the contract
+    test fires before the consumer breaks."""
+
+    def test_json_output_includes_exit_records_field(self, tmp_path, capsys):
+        from agent.timing_analyze import main
+        log = tmp_path / "t.log"
+        log.write_text(
+            json.dumps({
+                "ts": "2026-04-28T12:00:00Z",
+                "category": "exit",
+                "outcome": "exit:sigterm",
+                "phases": {},
+                "iteration_count": 99,
+            }) + "\n"
+        )
+        rc = main(["--file", str(log), "--no-rotated", "--json"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        report = json.loads(out)
+        assert "exit_records" in report
+        assert isinstance(report["exit_records"], list)
+        assert len(report["exit_records"]) == 1
+        rec = report["exit_records"][0]
+        assert set(rec.keys()) == {"ts", "reason", "iteration_count"}
+        assert rec["ts"] == "2026-04-28T12:00:00Z"
+        assert rec["reason"] == "sigterm"
+        assert rec["iteration_count"] == 99
+
+    def test_json_output_exit_records_empty_list_when_none_present(self, tmp_path, capsys):
+        from agent.timing_analyze import main
+        log = tmp_path / "t.log"
+        log.write_text(
+            json.dumps({"category": "applied", "outcome": "applied", "wall_s": 1.0, "phases": {}}) + "\n"
+        )
+        rc = main(["--file", str(log), "--no-rotated", "--json"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        report = json.loads(out)
+        assert report["exit_records"] == []
+
+    def test_json_output_serializes_iteration_count_none_as_null(self, tmp_path, capsys):
+        from agent.timing_analyze import main
+        log = tmp_path / "t.log"
+        log.write_text(
+            json.dumps({
+                "ts": "2026-04-28T12:00:00Z",
+                "category": "exit",
+                "outcome": "exit:keyboard-interrupt",
+                "phases": {},
+            }) + "\n"
+        )
+        rc = main(["--file", str(log), "--no-rotated", "--json"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        report = json.loads(out)
+        rec = report["exit_records"][0]
+        assert rec["iteration_count"] is None
+        assert rec["reason"] == "keyboard-interrupt"
+
+    def test_json_output_preserves_all_four_canonical_reasons(self, tmp_path, capsys):
+        from agent.timing_analyze import main
+        reasons = ["sigterm", "keyboard-interrupt", "system-exit", "unhandled-exception"]
+        log = tmp_path / "t.log"
+        with log.open("w") as f:
+            for i, r in enumerate(reasons):
+                f.write(json.dumps({
+                    "ts": f"2026-04-28T12:00:{i:02d}Z",
+                    "category": "exit",
+                    "outcome": f"exit:{r}",
+                    "phases": {},
+                    "iteration_count": i,
+                }) + "\n")
+        rc = main(["--file", str(log), "--no-rotated", "--json"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        report = json.loads(out)
+        observed = [rec["reason"] for rec in report["exit_records"]]
+        assert observed == reasons

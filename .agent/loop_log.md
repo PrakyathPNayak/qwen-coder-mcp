@@ -3798,3 +3798,45 @@ Five new tests across the analyze() and format_report() pairs:
   * absence of exit records omits the section entirely
 
 Verify: full suite 1485 passed, 7 skipped (was 1480 + 5).
+
+## Loop 230 - JSON schema pin for the loop-229 exit_records field
+
+Loop 229 added exit_records to the analyze() report. The --json
+output already serialized it correctly because the list-of-dicts
+shape is naturally JSON-friendly, but no test pinned the wire
+format. A future loop could rename a field (reason -> kind, or
+iteration_count -> iter_count) without any existing test
+catching it -- and a downstream dashboard/alert would silently
+break.
+
+Loop 230 adds four schema contract tests against the CLI's
+--json mode:
+
+  * exit_records present in JSON output, exact key set is
+    {ts, reason, iteration_count} (caught by set equality);
+  * empty exit_records emit [] not omitted (consumers can
+    rely on field presence);
+  * missing iteration_count in source emits JSON null (not
+    omitted, not 0);
+  * all four canonical loop-225 reasons (sigterm,
+    keyboard-interrupt, system-exit, unhandled-exception)
+    survive the round trip in stable order.
+
+Devil step. Why test the CLI rather than analyze() directly?
+Because the schema contract is what consumers see -- a future
+refactor could move serialization between analyze() and the
+CLI shim and silently change the JSON shape. The CLI is the
+contract surface.
+
+Why not also pin the JSON dict's top-level key names with set
+equality? Because that would be over-eager: total_records,
+category_counts, phase_wall_s, etc are widely depended on but
+not exclusively defined here. exit_records is the new field,
+the loop-229 addition is what needs pinning.
+
+Why all four reasons in one test? Because order preservation
+matters for chronological analytics and would fail if a future
+loop sorted exit_records (e.g., by timestamp without thinking
+about insertion order). One test catches both shape and order.
+
+Verify: full suite 1489 passed, 7 skipped (was 1485 + 4).
