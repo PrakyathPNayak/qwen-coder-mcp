@@ -873,3 +873,36 @@ re-raises, timeout kwarg forwarded, `_revert_changes` survives
 double-timeout.
 
 **Result**: 230/230 green.
+
+## Loop 30 — `_validate_changed_files` had no timeout on `compileall`
+**Bug**: `_validate_changed_files` ran `python -m compileall -q ...`
+with no timeout. compileall imports the target modules (it
+byte-compiles them — but does NOT execute their top-level code; OK).
+Wait — no: `compileall` does NOT import; it parses and writes
+.pyc. But `py_compile` similarly. However: pathological inputs
+(extremely large file, recursive globs of cyclic symlinks) could
+still hang the subprocess. And since validation runs INSIDE the
+loop's recovery window, a hang here wedges the iteration.
+
+Also confirmed: `_pick_target_file` is called via `_iteration` with
+the `if not files: return "no_candidate_files"` guard already in
+place — empty-list case was a non-bug. Pivoted to validator
+timeout.
+
+**Devil**: (a) Correctness — what if compileall genuinely takes >30s
+on a large set? Within the loop the change-set is bounded by the
+diff scope (already capped by `_diff_in_scope` and oversized check),
+realistically a single file. 30s is plenty. (b) Could the timeout
+mask a real syntax error? No — TimeoutExpired is distinct from a
+non-zero return code; we tag the message `timed_out_after_<N>s`
+inside `py_invalid:` so logs are unambiguous. (c) Priority — same
+class as loops 28/29; symmetric backstop.
+
+**Fix**: `_VALIDATE_TIMEOUT_SECONDS = 30`, threaded into the
+compileall subprocess.run; on TimeoutExpired return
+`(False, "py_invalid: timed_out_after_30s")`.
+
+**Tests**: 2 new — TimeoutExpired -> py_invalid:timed_out, timeout
+kwarg actually forwarded. Existing tests still pass.
+
+**Result**: 232/232 green.

@@ -378,3 +378,37 @@ class TestStripFenceUnclosedSalvage:
     def test_unclosed_fence_strips_dangling_close_at_end(self):
         text = "```diff\nbody1\nbody2\n```"
         assert L._strip_fence(text) == "body1\nbody2"
+
+
+# ------------------------------------------- _validate_changed_files timeout
+class TestValidateChangedFilesTimeout:
+    def test_py_compile_timeout_returns_py_invalid_timed_out(self, tmp_path, monkeypatch):
+        import subprocess as sp
+        (tmp_path / "good.py").write_text("x = 1\n")
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+
+        def fake_run(*a, **kw):
+            raise sp.TimeoutExpired(cmd="compileall", timeout=kw.get("timeout"))
+
+        monkeypatch.setattr(L.subprocess, "run", fake_run)
+        ok, msg = L._validate_changed_files([Path("good.py")])
+        assert ok is False
+        assert msg.startswith("py_invalid:")
+        assert "timed_out_after_" in msg
+
+    def test_py_compile_passes_timeout_kwarg(self, tmp_path, monkeypatch):
+        (tmp_path / "good.py").write_text("x = 1\n")
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        captured = {}
+
+        def fake_run(args, *a, **kw):
+            captured.update(kw)
+            class P:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+            return P()
+
+        monkeypatch.setattr(L.subprocess, "run", fake_run)
+        L._validate_changed_files([Path("good.py")])
+        assert captured.get("timeout") == L._VALIDATE_TIMEOUT_SECONDS
