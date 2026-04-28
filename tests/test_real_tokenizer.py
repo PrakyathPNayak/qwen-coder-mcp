@@ -171,3 +171,12 @@ class TestReadmeAndDocs:
         from qwen_coder_mcp.qwen_client import _real_tokenizer_name, _real_tokenizer
         assert callable(_real_tokenizer_name)
         assert callable(_real_tokenizer)
+
+    def test_readme_documents_real_tokenizer_knob(self):
+        # Loop 271: README must mention the env var so operators
+        # can discover it. Locks against accidental doc drift.
+        from pathlib import Path
+        readme = Path(__file__).resolve().parents[1] / "README.md"
+        text = readme.read_text(encoding="utf-8")
+        assert "`QWEN_REAL_TOKENIZER`" in text
+        assert "transformers" in text.lower()

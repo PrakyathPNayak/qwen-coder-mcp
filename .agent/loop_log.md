@@ -4573,3 +4573,19 @@ logic), Priority (P2 -- diagnostic only, not behavioural). Suite
 - *Scope*: did not extend `_summarise` for regex-edit-specific aggregation. `tool_results_checked` already aggregates across all writes-mode scenarios, so the new scenario gets coverage automatically.
 - *Priority*: medium. Without this scenario, loop 267's tool could silently rot (e.g. someone removes it from `TOOL_PROTOCOL_DOC` and the model stops using it; unit tests stay green; only live tasks fail). Now it's locked.
 - *Backward-compat hole*: the bench script's edit-restore-edit dance during this loop (accidentally collapsed run_shell into regex-edit, restored, re-appended) demonstrates the importance of the gating tests — they caught the missing scenario in <1s. Without those tests the bench would have shipped broken.
+
+## Loop 271 — README docs for `QWEN_REAL_TOKENIZER`
+
+**Why**: Loop 268 added the env var but didn't surface it in the README env-var table. Operators reading the README can't discover the optional dependency-on-demand path; the knob is effectively invisible.
+
+**Change**:
+- `README.md`: new row right under `QWEN_CHARS_PER_TOKEN` documenting `QWEN_REAL_TOKENIZER` (purpose, example HF model id, lazy-load semantics, fallback behaviour, why it stays unset by default).
+- `tests/test_real_tokenizer.py`: added `test_readme_documents_real_tokenizer_knob` mirroring the existing `test_readme_documents_chars_per_token_knob` pattern. Locks the doc against drift.
+
+**Tests**: around 2.06k passed, 7 skipped (+1 doc-drift lock).
+
+**Devil**:
+- *Correctness*: doc test asserts both the env var name AND a `transformers` mention so an operator skimming the row gets the dependency hint without having to read the source.
+- *Scope*: pure docs + 1 test. Zero code change beyond the README. Cannot regress runtime.
+- *Priority*: low impact in isolation but compounds with the env-var-discoverability pattern that loops 240/241 set up. Without docs, loop 268's tokenizer hook is operator-invisible.
+- *Backward-compat hole*: none. README-only changes.
