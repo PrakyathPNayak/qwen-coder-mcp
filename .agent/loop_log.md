@@ -2910,3 +2910,20 @@ read-only operation, no state changes.
 **Act.** Edit `/resume` branch to handle `--preview`/`--dry-run`. Update HELP_TEXT entry. New `tests/test_resume_preview.py` with 5 cases: preview doesn't mutate, --dry-run alias, no-checkpoint message, non-preview /resume still loads, no-history safety.
 
 **Verify.** All 5 new tests pass. Full suite ~1.2k passed, 1 skipped.
+
+## Loop 198 — `/lat --json` for downstream tooling
+
+**Observe.** `/lat` renders human-readable text. Anyone wanting to ship timing data into a dashboard, jq pipeline, or log shipper has to parse the formatted output — and that format is documentation-by-example with no stability guarantees.
+
+**Orient.** A `--json` (alias `--format=json`) flag emits the same data as a stable JSON shape. Indent=2 so it's human-skimmable too.
+
+**Decide.** New `turn_profiles_as_json(profiles) -> str`. Tool-call tuples flatten to `{"name": ..., "elapsed_s": ...}` (more self-documenting than a 2-element array). Each row also includes the derived `total_s()` so consumers don't have to recompute. Strip `--json`/`--format=json` from args wherever they appear; the integer N and `reset` token still parse normally.
+
+**Devil.**
+- *Correctness:* Empty buffer + `--json` should return `[]`, not the `format_turn_profile(None)` placeholder string — the latter is unparseable. Pinned by `test_json_empty_buffer`. ✅
+- *Scope:* Should `reset` also support JSON? No — it's an admin command with a one-line confirmation; downstream tooling doesn't need it. Left as plain text. ✅
+- *Priority:* This unblocks integration without changing the human path. Lowest risk in the next.md list. ✅
+
+**Act.** New `turn_profiles_as_json` next to `format_turn_profiles`. Strip flags before integer/reset parse. JSON path branches in both the empty-buffer and populated-buffer paths. HELP_TEXT entry expanded. New `tests/test_lat_json.py` with 11 cases: 4 for the renderer (empty, single, tool-calls flattened, indent), 7 for dispatch (--json no-N, --json with N, --format=json alias, empty buffer, position-independent, plain-text default still text-not-json).
+
+**Verify.** All 11 new tests pass. Full suite ~1.2k passed, 1 skipped.

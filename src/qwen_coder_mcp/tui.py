@@ -155,7 +155,8 @@ Slash commands:
   /git <subcmd>        Read-only git status / log / diff / show / branch
   /tests [args]        Run pytest in the repo
   /tokens              Estimate total tokens in current chat history
-  /lat [N|reset]       Show the last N agent turns' timing breakdown
+  /lat [N|reset] [--json]
+                       Show the last N agent turns' timing breakdown
                        (TTFT, per-tool latencies, summary). Default N=1.
   /sysprompt [text]    Show or replace the system prompt
   /model [id]          Show or switch the served model id
@@ -1480,10 +1481,20 @@ def dispatch_slash(
             f"(rough estimate, four characters per token)"
         ), False
     if name == "lat":
+        # Strip --format=json / --json wherever it appears.
+        rest_args = list(cmd.args)
+        as_json = False
+        new_rest: list[str] = []
+        for tok in rest_args:
+            if tok in {"--json", "--format=json"}:
+                as_json = True
+            else:
+                new_rest.append(tok)
+        rest_args = new_rest
         # Optional first argument: integer N (turn count) or "reset".
         n = 1
-        if cmd.args:
-            arg0 = cmd.args[0]
+        if rest_args:
+            arg0 = rest_args[0]
             if arg0.lower() == "reset":
                 cleared = 0
                 if app is not None:
@@ -1519,7 +1530,11 @@ def dispatch_slash(
             single = (
                 getattr(app, "last_turn_profile", None) if app is not None else None
             )
+            if as_json:
+                return turn_profiles_as_json([single] if single else []), False
             return format_turn_profile(single), False
+        if as_json:
+            return turn_profiles_as_json(profiles[-n:]), False
         return format_turn_profiles(profiles, n=n), False
     if name == "sysprompt":
         if history is None:
@@ -1753,6 +1768,32 @@ def format_turn_profiles(
         blocks.append(f"=== turn -{offset} ===")
         blocks.append(format_turn_profile(prof))
     return "\n".join(blocks)
+
+
+def turn_profiles_as_json(profiles: list[TurnProfile]) -> str:
+    """Serialise ``profiles`` as a JSON array suitable for downstream
+    tooling (jq, log shippers, custom dashboards). Each tool-call tuple
+    is flattened to ``{"name": ..., "elapsed_s": ...}``. Empty input
+    returns ``"[]"``."""
+    import json
+
+    rows: list[dict[str, object]] = []
+    for prof in profiles:
+        rows.append(
+            {
+                "started_at": prof.started_at,
+                "ended_at": prof.ended_at,
+                "ttft_s": prof.ttft_s,
+                "summary_text": prof.summary_text,
+                "summary_total_s": prof.summary_total_s,
+                "total_s": prof.total_s(),
+                "tool_calls": [
+                    {"name": name, "elapsed_s": elapsed}
+                    for name, elapsed in prof.tool_calls
+                ],
+            }
+        )
+    return json.dumps(rows, indent=2)
 
 
 def format_tool_latency(elapsed_s: float) -> str:
