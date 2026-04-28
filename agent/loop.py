@@ -1132,20 +1132,26 @@ def _revert_changes() -> bool:
     co = _run_git("checkout", "--", ".", check=False)
     if co.returncode != 0:
         ok = False
-        _log(f"_revert_changes: checkout failed rc={co.returncode}: {co.stderr.strip()[:200]}")
+        _REVERT_SWALLOW_LOG.report(
+            RuntimeError(co.stderr.strip()[:200]),
+            context=f"checkout rc={co.returncode}",
+        )
     cl = _run_git("clean", "-fd", check=False)
     if cl.returncode != 0:
         ok = False
-        _log(f"_revert_changes: clean failed rc={cl.returncode}: {cl.stderr.strip()[:200]}")
+        _REVERT_SWALLOW_LOG.report(
+            RuntimeError(cl.stderr.strip()[:200]),
+            context=f"clean rc={cl.returncode}",
+        )
     if not ok:
         rs = _run_git("reset", "--hard", "HEAD", check=False)
         if rs.returncode == 0:
             _log("_revert_changes: recovered via reset --hard")
             ok = True
         else:
-            _log(
-                "_revert_changes: reset --hard fallback FAILED rc="
-                f"{rs.returncode}: {rs.stderr.strip()[:200]}"
+            _REVERT_SWALLOW_LOG.report(
+                RuntimeError(rs.stderr.strip()[:200]),
+                context=f"reset --hard HEAD rc={rs.returncode}",
             )
             # Final fallback: HEAD itself may be broken. Try the
             # remote-tracking ref `origin/main` as the ground truth
@@ -1160,9 +1166,9 @@ def _revert_changes() -> bool:
                 )
                 ok = True
             else:
-                _log(
-                    "_revert_changes: reset --hard origin/main FAILED rc="
-                    f"{rs2.returncode}: {rs2.stderr.strip()[:200]}"
+                _REVERT_SWALLOW_LOG.report(
+                    RuntimeError(rs2.stderr.strip()[:200]),
+                    context=f"reset --hard origin/main rc={rs2.returncode}",
                 )
     return ok
 
@@ -1310,6 +1316,7 @@ _PRUNE_SWALLOW_LOG = _RateLimitedSwallowLogger("_prune_dir_oldest", schedule="ex
 _CURSOR_SWALLOW_LOG = _RateLimitedSwallowLogger("_save_cursor", schedule="exponential")
 _GIT_REMOTE_SWALLOW_LOG = _RateLimitedSwallowLogger("git_remote", schedule="exponential")
 _GIT_LOCAL_SWALLOW_LOG = _RateLimitedSwallowLogger("git_local", schedule="exponential")
+_REVERT_SWALLOW_LOG = _RateLimitedSwallowLogger("_revert_changes", schedule="exponential")
 
 
 # -------------------------------------------------------------------- core
@@ -1410,6 +1417,7 @@ def _swallow_loggers() -> tuple["_RateLimitedSwallowLogger", ...]:
         _CURSOR_SWALLOW_LOG,
         _GIT_REMOTE_SWALLOW_LOG,
         _GIT_LOCAL_SWALLOW_LOG,
+        _REVERT_SWALLOW_LOG,
     )
 
 

@@ -1418,3 +1418,15 @@ kwarg actually forwarded. Existing tests still pass.
   - Edge: tests for stderr text format ("commit-err", "pull-err") still pass — exception str is the bare stderr.
 - ACT: 5 new tests covering push, pull, add, commit rate limits + logger registration. 441 passed.
 - COMMIT: pending.
+
+## Loop 78 — rate-limit `_revert_changes` failure paths
+- OBSERVE: Final piece of the `_log` audit. `_revert_changes` has 4 failure-path `_log` calls (checkout/clean/reset HEAD/reset origin/main). On a persistently corrupt repo, all 4 fire each iteration.
+- ORIENT: Same fix shape. Add `_REVERT_SWALLOW_LOG` exponential. Keep the SUCCESS "recovered via reset --hard..." info logs as bare `_log` so successful recoveries stay maximally visible to operators.
+- DECIDE: Convert all 4 failure paths; preserve success info logs.
+- DEVIL:
+  - Correctness: success info logs intentionally not rate-limited so a single recovery still announces itself. ✓
+  - Scope: addresses the spam class. Rate-limiter context strings preserve rc and stderr snippet. ✓
+  - Priority: bucket 5/6; was next.md #7.
+  - Edge: existing loop-73 test asserted exact "reset --hard fallback FAILED" text which no longer exists. Updated assertions to substring "reset --hard HEAD" / "reset --hard origin/main" + forced linear cadence in the test so all 4 failures still log there.
+- ACT: 3 new tests (registration, repeated-failures rate-limited, success recovery info still logs). Migrated 1 loop-73 test. 444 passed.
+- COMMIT: pending.

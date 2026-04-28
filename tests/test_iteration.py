@@ -639,9 +639,14 @@ class TestRevertChanges:
         assert any("recovered via reset --hard origin/main" in l for l in log_lines)
 
     def test_returns_false_when_origin_main_fallback_also_fails(self, monkeypatch):
-        """Loop 73: both HEAD and origin/main failures still return False."""
+        """Loop 73: both HEAD and origin/main failures still return False.
+        Loop 78: forces linear cadence so all 4 failures log."""
         from agent import loop as L
         import subprocess
+
+        L._REVERT_SWALLOW_LOG.reset()
+        monkeypatch.setattr(L._REVERT_SWALLOW_LOG, "schedule", "linear")
+        monkeypatch.setattr(L._REVERT_SWALLOW_LOG, "every", 1)
 
         def fake_run(*a, **kw):
             return subprocess.CompletedProcess(
@@ -652,9 +657,10 @@ class TestRevertChanges:
         log_lines = []
         monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
         assert L._revert_changes() is False
-        # Both fallback failure logs must appear.
-        assert any("reset --hard fallback FAILED" in l for l in log_lines)
-        assert any("reset --hard origin/main FAILED" in l for l in log_lines)
+        # Both fallback failure logs must appear (loop 78: now via _REVERT_SWALLOW_LOG).
+        assert any("reset --hard HEAD" in l for l in log_lines)
+        assert any("reset --hard origin/main" in l for l in log_lines)
+        L._REVERT_SWALLOW_LOG.reset()
 
     def test_origin_main_fallback_skipped_when_head_reset_succeeds(self, monkeypatch):
         """Loop 73: don't try origin/main if HEAD reset already worked."""
@@ -1634,3 +1640,58 @@ class TestGitFailureRateLimited:
         labels = {lg.label for lg in L._swallow_loggers()}
         assert "git_remote" in labels
         assert "git_local" in labels
+
+
+class TestRevertChangesRateLimited:
+    """Loop 78: `_revert_changes` failure paths route through
+    `_REVERT_SWALLOW_LOG` so persistent corrupt-repo states stop
+    spamming."""
+
+    def test_revert_logger_registered(self):
+        from agent import loop as L
+        labels = {lg.label for lg in L._swallow_loggers()}
+        assert "_revert_changes" in labels
+
+    def test_repeated_failures_rate_limited(self, monkeypatch):
+        from agent import loop as L
+        import subprocess
+        L._REVERT_SWALLOW_LOG.reset()
+        monkeypatch.setattr(L._REVERT_SWALLOW_LOG, "schedule", "linear")
+        monkeypatch.setattr(L._REVERT_SWALLOW_LOG, "every", 100)
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+
+        def fake_run(*a, **kw):
+            return subprocess.CompletedProcess(
+                args=["git", *a], returncode=128, stdout="",
+                stderr="fatal: bad object",
+            )
+        monkeypatch.setattr(L, "_run_git", fake_run)
+        L._revert_changes()
+        # 4 failures (checkout, clean, HEAD reset, origin reset).
+        # With linear every=100: count=1 logs (checkout), 2-4 suppressed.
+        first_pass_lines = [l for l in log_lines if "_revert_changes failed" in l]
+        assert len(first_pass_lines) == 1
+        assert L._REVERT_SWALLOW_LOG.count == 4
+        L._REVERT_SWALLOW_LOG.reset()
+
+    def test_success_recovery_log_not_rate_limited(self, monkeypatch):
+        """The 'recovered via' info logs are still bare _log calls so
+        operators always see successful recoveries."""
+        from agent import loop as L
+        import subprocess
+        L._REVERT_SWALLOW_LOG.reset()
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        # checkout fails, clean fails, reset HEAD succeeds.
+        rcs = {"checkout": 1, "clean": 1, "reset": 0}
+        def fake_run(*a, **kw):
+            sub = a[0]
+            return subprocess.CompletedProcess(
+                args=["git", *a], returncode=rcs.get(sub, 0),
+                stdout="", stderr="boom",
+            )
+        monkeypatch.setattr(L, "_run_git", fake_run)
+        assert L._revert_changes() is True
+        assert any("recovered via reset --hard" in l for l in log_lines)
+        L._REVERT_SWALLOW_LOG.reset()
