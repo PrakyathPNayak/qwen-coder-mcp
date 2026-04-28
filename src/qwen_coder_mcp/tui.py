@@ -156,6 +156,8 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/run_on",
     "/run_off",
     "/runs",
+    "/yes",
+    "/no",
     "/grep",
     "/find",
     "/clear",
@@ -221,8 +223,14 @@ Slash commands:
   /history [n|clear]   Show the last N chat turns (default 10) or clear them
   /diff <a> <b>        Unified diff between two files (or /diff <path> vs HEAD)
   /run [--yes] <cmd>   Run a shell command (10s timeout, deny list).
-                       Default-DENY: add --yes for one-shot approval or
-                       /run_on to auto-approve every /run this session.
+                       Default behaviour (loop 266): two-phase preview.
+                       /run <cmd> stages the command with a stage_id
+                       and shows a preview; confirm with /yes <id> or
+                       cancel with /no <id>. Add --yes to bypass
+                       staging and execute immediately, or /run_on
+                       to auto-approve every /run this session.
+  /yes [stage_id]      Execute a staged /run (latest if id omitted)
+  /no  [stage_id]      Cancel a staged /run (latest if id omitted)
   /run_on              Auto-approve every /run for this session (loop 250)
   /run_off             Disable /run auto-approve (default; --yes still works)
   /runs [N|--json]     Show last N (default 10) /run audit records (loop 251)
@@ -1109,6 +1117,136 @@ def _parse_run_body(body: str) -> tuple[bool, str]:
     if head in {"--yes", "-y"}:
         return True, tail.lstrip()
     return False, raw
+
+
+# ----------------------------------------------------------- two-phase /run
+# Loop 266: stage the command, show a preview, require /yes <stage_id>.
+# Pure data + helpers so unit tests can drive them without a TUI App.
+
+RUN_STAGE_TTL_S: int = 600  # 10 minutes is plenty; a stale stage is worthless
+RUN_STAGE_MAX: int = 16  # cap pending queue so a runaway agent can't OOM us
+
+
+@dataclass
+class _StagedRun:
+    stage_id: str
+    cmd: str
+    created_at: float
+
+
+def _new_stage_id(cmd: str, now: float, table: dict[str, "_StagedRun"]) -> str:
+    """Return a 6-char hex id derived from cmd + timestamp.
+
+    Collisions are avoided by extending the slice if the prefix is
+    already in ``table``. Pure / deterministic given inputs.
+    """
+    import hashlib
+
+    digest = hashlib.sha256(f"{cmd}|{now:.6f}".encode()).hexdigest()
+    for n in (6, 8, 10, 12, 16, 64):
+        sid = digest[:n]
+        if sid not in table:
+            return sid
+    return digest  # full hex -- astronomically unlikely
+
+
+def _stage_run_command(
+    table: dict[str, "_StagedRun"],
+    cmd: str,
+    *,
+    now: float | None = None,
+    ttl_s: int = RUN_STAGE_TTL_S,
+    cap: int = RUN_STAGE_MAX,
+) -> tuple[str, str]:
+    """Insert ``cmd`` into ``table`` and return ``(stage_id, preview)``.
+
+    Side effect: prunes expired entries first, evicts oldest if the
+    queue is at ``cap``. Returns the freshly minted stage_id and a
+    plain-text preview block ready to show the operator. The preview
+    is intentionally NOT styled with markup -- the caller pipes it
+    through ``_safe_log_write`` so any brackets in ``cmd`` (regex
+    arguments, JSON args, etc.) don't crash the RichLog.
+    """
+    if now is None:
+        now = time.time()
+    # Prune expired stages.
+    expired = [sid for sid, st in table.items() if now - st.created_at > ttl_s]
+    for sid in expired:
+        table.pop(sid, None)
+    # Evict oldest if at cap.
+    if len(table) >= cap:
+        oldest = min(table.values(), key=lambda s: s.created_at)
+        table.pop(oldest.stage_id, None)
+    sid = _new_stage_id(cmd, now, table)
+    table[sid] = _StagedRun(stage_id=sid, cmd=cmd, created_at=now)
+    preview = _format_run_preview(sid, cmd, ttl_s)
+    return sid, preview
+
+
+def _format_run_preview(stage_id: str, cmd: str, ttl_s: int) -> str:
+    """Render the operator-facing preview block for a staged /run.
+
+    Contains: stage_id, the literal command, the TTL window, and the
+    confirm/cancel hint. No Rich markup tags so the dynamic ``cmd``
+    can't accidentally close a styled tag mid-string.
+    """
+    lines = [
+        f"staged /run [stage={stage_id}]  (expires in {ttl_s}s)",
+        f"  cmd: {cmd}",
+        f"  to execute: /yes {stage_id}",
+        f"  to cancel:  /no  {stage_id}",
+        "  hint: /run --yes <cmd> bypasses staging; /run_on auto-approves all.",
+    ]
+    return "\n".join(lines)
+
+
+def _consume_stage(
+    table: dict[str, "_StagedRun"],
+    stage_id: str | None,
+    *,
+    now: float | None = None,
+    ttl_s: int = RUN_STAGE_TTL_S,
+) -> tuple[str, str | None]:
+    """Pop a staged run by id (or most-recent if id is None/empty).
+
+    Returns ``(status, cmd_or_none)`` where status is one of
+    ``"ok" | "missing" | "expired" | "empty"``. ``"ok"`` means the
+    caller should now execute ``cmd``. The entry is removed from
+    ``table`` only on ``"ok"`` and ``"expired"`` (so a missing id
+    doesn't accidentally clobber unrelated stages).
+    """
+    if now is None:
+        now = time.time()
+    if not table:
+        return "empty", None
+    if not stage_id:
+        # Most-recent stage.
+        latest = max(table.values(), key=lambda s: s.created_at)
+        stage_id = latest.stage_id
+    st = table.get(stage_id)
+    if st is None:
+        return "missing", None
+    if now - st.created_at > ttl_s:
+        table.pop(stage_id, None)
+        return "expired", None
+    table.pop(stage_id, None)
+    return "ok", st.cmd
+
+
+def _cancel_stage(
+    table: dict[str, "_StagedRun"],
+    stage_id: str | None,
+) -> tuple[str, str | None]:
+    """Remove a staged run from the queue without executing it."""
+    if not table:
+        return "empty", None
+    if not stage_id:
+        latest = max(table.values(), key=lambda s: s.created_at)
+        stage_id = latest.stage_id
+    st = table.pop(stage_id, None)
+    if st is None:
+        return "missing", None
+    return "ok", st.cmd
 
 
 def _render_open(cfg: fs_tools.FsConfig, path: str) -> str:
@@ -2158,9 +2296,49 @@ def dispatch_slash(
         session_auto = bool(getattr(app, "run_auto_approve", False))
         if approve_inline or session_auto:
             confirm: Callable[[str], bool] | None = lambda _c: True
-        else:
-            confirm = lambda _c: False
+            return _render_run(fs_cfg, body, confirm=confirm, audit_source="slash"), False
+        # Loop 266: two-phase preview. If the app exposes a
+        # ``pending_runs`` dict we stage the command and show a
+        # preview; operator confirms with ``/yes <stage_id>``. When
+        # ``pending_runs`` is missing (legacy callers, stub Apps in
+        # older tests), fall back to the loop-250 immediate-deny path
+        # so prior contracts hold.
+        stage_table = getattr(app, "pending_runs", None)
+        if isinstance(stage_table, dict):
+            sid, preview = _stage_run_command(stage_table, body)
+            return preview, False
+        confirm = lambda _c: False
         return _render_run(fs_cfg, body, confirm=confirm, audit_source="slash"), False
+    if name == "yes":
+        stage_table = getattr(app, "pending_runs", None)
+        if not isinstance(stage_table, dict):
+            return "no /run staging on this session", False
+        sid = cmd.args[0] if cmd.args else None
+        status, staged_cmd = _consume_stage(stage_table, sid)
+        if status == "empty":
+            return "no staged /run to confirm (use /run <cmd> first)", False
+        if status == "missing":
+            return f"no staged run with id '{sid}'", False
+        if status == "expired":
+            return f"staged run '{sid}' expired (re-run /run <cmd>)", False
+        # status == "ok"
+        return _render_run(
+            fs_cfg, staged_cmd or "", confirm=lambda _c: True, audit_source="slash"
+        ), False
+    if name == "no":
+        stage_table = getattr(app, "pending_runs", None)
+        if not isinstance(stage_table, dict):
+            return "no /run staging on this session", False
+        sid = cmd.args[0] if cmd.args else None
+        status, staged_cmd = _cancel_stage(stage_table, sid)
+        if status == "empty":
+            return "no staged /run to cancel", False
+        if status == "missing":
+            return f"no staged run with id '{sid}'", False
+        # Audit the explicit cancellation so it shows up in /runs.
+        if staged_cmd is not None:
+            _audit_run(fs_cfg, cmd=staged_cmd, approved=False, source="slash")
+        return f"cancelled staged /run: {staged_cmd}", False
     if name == "run_on":
         if app is not None:
             try:
@@ -3288,6 +3466,15 @@ def _build_app(
             # type ``/run --yes <cmd>`` for one-shot approval or run
             # ``/run_on`` to auto-approve every /run for the session.
             self.run_auto_approve: bool = False
+            # Loop 266: two-phase /run preview. When non-empty (a dict
+            # attribute, even if empty), the slash-dispatcher stages
+            # /run <cmd> commands here with a short stage_id and shows
+            # a dry-run preview; operator confirms with /yes <id> or
+            # cancels with /no <id>. Auto-vivifying the dict here is
+            # what tells dispatch_slash to use staging rather than the
+            # legacy "denied" path. Tests that don't want staging just
+            # don't expose this attribute on their stub app.
+            self.pending_runs: dict[str, _StagedRun] = {}
 
         def compose(self) -> ComposeResult:  # type: ignore[override]
             yield Header(show_clock=True)

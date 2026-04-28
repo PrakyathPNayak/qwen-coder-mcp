@@ -4479,3 +4479,33 @@ logic), Priority (P2 -- diagnostic only, not behavioural). Suite
 - *Bench takes ~3.5 minutes now*: acceptable for an on-demand validation gate, not a per-loop test.
 
 **Suite**: 1988 passed, 7 skipped (up from 1979 → +9 new bench-script tests).
+
+---
+
+## Loop 266 — two-phase /run preview with stage_id + /yes/no
+
+**Why**: backlog item carried over from loop 265 ("two-phase /run preview: /run shows stage_id + dry-run preview, operator confirms with /yes <stage_id>"). Currently `/run --yes <cmd>` is one-shot; bare `/run <cmd>` immediately denies, which means the operator can't see the literal command they're about to approve before pulling the trigger. A staging step with a short TTL closes that gap and matches the typical MCP-UI shell-approval pattern.
+
+**Change**:
+- New pure helpers in tui.py just under `_parse_run_body`:
+  - `_StagedRun` dataclass (stage_id, cmd, created_at)
+  - `_stage_run_command(table, cmd, *, now=None, ttl_s=600, cap=16)` -> (sid, preview). Prunes expired stages first, evicts oldest when at cap, mints a 6-char hex id derived from `sha256(cmd + ts)[:6]` (extends to :8/:10 etc on collision).
+  - `_consume_stage(table, sid, *, now=None, ttl_s=600)` -> (status, cmd_or_none) where status ∈ {"ok", "missing", "expired", "empty"}. Removes entry only on "ok"/"expired" so a typo doesn't clobber unrelated stages. None/empty sid picks the most-recent stage.
+  - `_cancel_stage(table, sid)` -> same status shape, no TTL (cancellation is always allowed).
+  - `_format_run_preview(sid, cmd, ttl_s)` -> plain-text preview block (no markup tags) so brackets in `cmd` (regex args, JSON args) survive verbatim through `_safe_log_write`.
+- `/run` dispatcher now branches: `--yes` or `run_auto_approve=True` -> immediate execute (unchanged); otherwise if `app.pending_runs` is a dict, stage and return preview; otherwise (legacy stub apps without that attribute) fall through to the loop-250 deny path.
+- New `/yes [stage_id]` and `/no [stage_id]` slash commands. /yes consumes and executes via `_render_run(... confirm=lambda: True ...)`. /no removes from queue and audits the cancellation as approved=False source="slash". Both surface "no /run staging on this session" when `app.pending_runs` is missing.
+- `App.pending_runs: dict[str, _StagedRun] = {}` initialised in __init__, alongside `run_auto_approve`.
+- SLASH_COMMANDS gains `/yes`, `/no`. HELP_TEXT updated to describe two-phase flow.
+- New `tests/test_run_two_phase.py` (24 tests): pure helper roundtrip (stage/consume/cancel/expire/cap-eviction/most-recent-pick/hex-id), dispatcher integration (stages + executes + cancels + expired + unknown id + empty stage queue + missing pending_runs attribute + inline --yes still bypasses + run_on still bypasses + bracket-heavy cmd survives preview round-trip), and registration smoke tests (SLASH_COMMANDS + HELP_TEXT).
+
+**Devil step**:
+- *Could the operator's prior `/run --yes <cmd>` muscle memory break?* No -- inline `--yes` short-circuits before staging, exact same execute path as before. Existing 11 test_run_approval tests + 14 test_run_audit tests still green.
+- *What if a runaway agent emits 1000 /run commands in a row?* Stage cap of 16 + oldest-eviction prevents queue growth. Each preview is rendered & returned immediately, no resource growth.
+- *Can a stale stage_id bite us?* TTL of 600s; consume drops expired entries automatically. A stage_id that survived past TTL returns "expired" status which surfaces to the operator.
+- *Race: /yes <id> vs concurrent /run cancelling the same id by cap-eviction*. Single-threaded slash dispatch in TUI, so impossible. Even if it happened, /yes would return "missing" -- safe.
+- *Stage id collision across two different /run commands?* `_new_stage_id` extends the slice (8/10/12/16 chars) until unique, ultimately falls back to full sha256 hex. Astronomically unlikely.
+- *Why not pipe the preview through `_audit_run` as a "stage" event?* The audit log records approve/deny *decisions*, not "preview shown". Staging isn't a decision; the operator hasn't decided yet. The eventual /yes or /no logs the actual decision via the existing `_render_run`/`_audit_run` paths. Cleaner.
+- *Backward-compat hole*: if a future test or external caller constructs an `app` shape with `pending_runs={}` to opt INTO staging, they must also handle the preview output. Documented via the test suite's `test_legacy_app_without_pending_runs_keeps_deny_path`.
+
+**Suite**: 2012 passed, 7 skipped (up from 1988 → +24 new).
