@@ -471,3 +471,47 @@ class TestGitCmdTimeoutEnv:
     def test_at_max(self, monkeypatch):
         monkeypatch.setenv("QWEN_GIT_CMD_TIMEOUT_S", "600")
         assert L._git_cmd_timeout_seconds() == 600
+
+
+class TestApplyAndValidateTimeoutEnv:
+    """Loop 44: env-tunable timeouts for git apply and validate."""
+
+    def test_apply_default(self, monkeypatch):
+        monkeypatch.delenv("QWEN_GIT_APPLY_TIMEOUT_S", raising=False)
+        assert L._git_apply_timeout_seconds() == 30
+
+    def test_apply_override(self, monkeypatch):
+        monkeypatch.setenv("QWEN_GIT_APPLY_TIMEOUT_S", "90")
+        assert L._git_apply_timeout_seconds() == 90
+
+    def test_apply_clamp(self, monkeypatch):
+        monkeypatch.setenv("QWEN_GIT_APPLY_TIMEOUT_S", "99999")
+        assert L._git_apply_timeout_seconds() == 600
+
+    def test_apply_invalid_falls_back(self, monkeypatch):
+        monkeypatch.setenv("QWEN_GIT_APPLY_TIMEOUT_S", "x")
+        assert L._git_apply_timeout_seconds() == 30
+        monkeypatch.setenv("QWEN_GIT_APPLY_TIMEOUT_S", "0")
+        assert L._git_apply_timeout_seconds() == 30
+
+    def test_validate_default(self, monkeypatch):
+        monkeypatch.delenv("QWEN_VALIDATE_TIMEOUT_S", raising=False)
+        assert L._validate_timeout_seconds() == 30
+
+    def test_validate_override_and_clamp(self, monkeypatch):
+        monkeypatch.setenv("QWEN_VALIDATE_TIMEOUT_S", "120")
+        assert L._validate_timeout_seconds() == 120
+        monkeypatch.setenv("QWEN_VALIDATE_TIMEOUT_S", "99999")
+        assert L._validate_timeout_seconds() == 600
+
+    def test_env_timeout_helper_directly(self, monkeypatch):
+        monkeypatch.setenv("X_TEST_T", "42")
+        assert L._env_timeout_seconds("X_TEST_T", 1, 100) == 42
+        monkeypatch.setenv("X_TEST_T", "5000")
+        assert L._env_timeout_seconds("X_TEST_T", 1, 100) == 100
+        monkeypatch.setenv("X_TEST_T", "-1")
+        assert L._env_timeout_seconds("X_TEST_T", 7, 100) == 7
+        monkeypatch.setenv("X_TEST_T", "")
+        assert L._env_timeout_seconds("X_TEST_T", 7, 100) == 7
+        monkeypatch.delenv("X_TEST_T", raising=False)
+        assert L._env_timeout_seconds("X_TEST_T", 7, 100) == 7

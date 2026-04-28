@@ -68,6 +68,22 @@ def _log(msg: str) -> None:
 _GIT_CMD_TIMEOUT_SECONDS = 60  # legacy alias; use _git_cmd_timeout_seconds()
 
 
+def _env_timeout_seconds(env_key: str, default: int, max_value: int) -> int:
+    """Generic env-configurable subprocess timeout reader with clamping.
+    Bad/non-positive falls back to default; values above max are
+    clamped to max."""
+    raw = os.environ.get(env_key, str(default))
+    try:
+        v = int(float(raw))
+    except (TypeError, ValueError):
+        return default
+    if v <= 0:
+        return default
+    if v > max_value:
+        return max_value
+    return v
+
+
 _LOOP_ITER_BUDGET_DEFAULT = 600.0
 _LOOP_ITER_BUDGET_MAX = 24 * 60 * 60.0  # 24 hours
 
@@ -106,16 +122,11 @@ def _git_cmd_timeout_seconds() -> int:
     falls back to the default. The cap prevents a typo from disabling
     the timeout entirely on a slow `git push` against a flaky remote.
     """
-    raw = os.environ.get("QWEN_GIT_CMD_TIMEOUT_S", str(_GIT_CMD_TIMEOUT_DEFAULT))
-    try:
-        v = int(float(raw))
-    except (TypeError, ValueError):
-        return _GIT_CMD_TIMEOUT_DEFAULT
-    if v <= 0:
-        return _GIT_CMD_TIMEOUT_DEFAULT
-    if v > _GIT_CMD_TIMEOUT_MAX:
-        return _GIT_CMD_TIMEOUT_MAX
-    return v
+    return _env_timeout_seconds(
+        "QWEN_GIT_CMD_TIMEOUT_S",
+        _GIT_CMD_TIMEOUT_DEFAULT,
+        _GIT_CMD_TIMEOUT_MAX,
+    )
 
 
 def _run_git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -643,15 +654,28 @@ def _has_oversized_diff(diff: str) -> str | None:
     return None
 
 
-_GIT_APPLY_TIMEOUT_SECONDS = 30
+_GIT_APPLY_TIMEOUT_DEFAULT = 30
+_GIT_APPLY_TIMEOUT_MAX = 600
+_GIT_APPLY_TIMEOUT_SECONDS = 30  # legacy alias
+
+
+def _git_apply_timeout_seconds() -> int:
+    """Hard timeout for one `git apply` subprocess invocation.
+    Configurable via `QWEN_GIT_APPLY_TIMEOUT_S`. Clamped to (0, 600s]."""
+    return _env_timeout_seconds(
+        "QWEN_GIT_APPLY_TIMEOUT_S",
+        _GIT_APPLY_TIMEOUT_DEFAULT,
+        _GIT_APPLY_TIMEOUT_MAX,
+    )
 
 
 def _run_git_apply(args: list[str], diff: str) -> tuple[int, str]:
     """Run `git <args>` feeding `diff` on stdin with a hard timeout.
 
     Returns (returncode, stderr-text). On TimeoutExpired the process is
-    killed and (124, "timed_out_after_<N>s") is returned.
+    terminated and (124, "timed_out_after_<N>s") is returned.
     """
+    timeout = _git_apply_timeout_seconds()
     try:
         proc = subprocess.run(
             ["git", *args],
@@ -659,12 +683,12 @@ def _run_git_apply(args: list[str], diff: str) -> tuple[int, str]:
             input=diff,
             text=True,
             capture_output=True,
-            timeout=_GIT_APPLY_TIMEOUT_SECONDS,
+            timeout=timeout,
             errors="surrogateescape",
         )
         return proc.returncode, proc.stderr.strip()[:300]
     except subprocess.TimeoutExpired:
-        return 124, f"timed_out_after_{_GIT_APPLY_TIMEOUT_SECONDS}s"
+        return 124, f"timed_out_after_{timeout}s"
 
 
 def _apply_diff(diff_text: str) -> tuple[bool, str]:
@@ -706,7 +730,19 @@ def _apply_diff(diff_text: str) -> tuple[bool, str]:
     return True, "applied"
 
 
-_VALIDATE_TIMEOUT_SECONDS = 30
+_VALIDATE_TIMEOUT_DEFAULT = 30
+_VALIDATE_TIMEOUT_MAX = 600
+_VALIDATE_TIMEOUT_SECONDS = 30  # legacy alias
+
+
+def _validate_timeout_seconds() -> int:
+    """Hard timeout for the per-file validate (`compileall`) subprocess.
+    Configurable via `QWEN_VALIDATE_TIMEOUT_S`. Clamped to (0, 600s]."""
+    return _env_timeout_seconds(
+        "QWEN_VALIDATE_TIMEOUT_S",
+        _VALIDATE_TIMEOUT_DEFAULT,
+        _VALIDATE_TIMEOUT_MAX,
+    )
 
 
 def _validate_changed_files(paths: Iterable[Path]) -> tuple[bool, str]:
@@ -718,17 +754,18 @@ def _validate_changed_files(paths: Iterable[Path]) -> tuple[bool, str]:
     paths = [Path(p) for p in paths]
     py = [str(_REPO / p) for p in paths if p.suffix == ".py"]
     if py:
+        timeout = _validate_timeout_seconds()
         try:
             proc = subprocess.run(
                 [sys.executable, "-m", "compileall", "-q", *py],
                 cwd=_REPO,
                 text=True,
                 capture_output=True,
-                timeout=_VALIDATE_TIMEOUT_SECONDS,
+                timeout=timeout,
                 errors="surrogateescape",
             )
         except subprocess.TimeoutExpired:
-            return False, f"py_invalid: timed_out_after_{_VALIDATE_TIMEOUT_SECONDS}s"
+            return False, f"py_invalid: timed_out_after_{timeout}s"
         if proc.returncode != 0:
             return False, f"py_invalid: {(proc.stdout + proc.stderr).strip()[:300]}"
         # compileall returncode=0 even when SyntaxWarning fires (e.g.
