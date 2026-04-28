@@ -97,6 +97,7 @@ def _run_git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]
             text=True,
             capture_output=True,
             timeout=_GIT_CMD_TIMEOUT_SECONDS,
+            errors="surrogateescape",
         )
     except subprocess.TimeoutExpired:
         if check:
@@ -509,6 +510,7 @@ def _run_git_apply(args: list[str], diff: str) -> tuple[int, str]:
             text=True,
             capture_output=True,
             timeout=_GIT_APPLY_TIMEOUT_SECONDS,
+            errors="surrogateescape",
         )
         return proc.returncode, proc.stderr.strip()[:300]
     except subprocess.TimeoutExpired:
@@ -570,6 +572,7 @@ def _validate_changed_files(paths: Iterable[Path]) -> tuple[bool, str]:
                 text=True,
                 capture_output=True,
                 timeout=_VALIDATE_TIMEOUT_SECONDS,
+                errors="surrogateescape",
             )
         except subprocess.TimeoutExpired:
             return False, f"py_invalid: timed_out_after_{_VALIDATE_TIMEOUT_SECONDS}s"

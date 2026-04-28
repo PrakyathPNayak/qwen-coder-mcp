@@ -176,3 +176,23 @@ def test_diff_in_scope_catches_untracked_new_file(repo):
     ok, msg = L._diff_in_scope(changed, Path("tracked.py"))
     assert not ok
     assert "stray.py" in msg or "out_of_scope" in msg
+
+
+def test_changed_paths_handles_non_utf8_filename(repo):
+    """`subprocess.run(text=True)` with default error handling raises
+    UnicodeDecodeError on filenames with raw bytes outside the locale's
+    encoding. `_run_git` now uses `errors='surrogateescape'`, so
+    `_changed_paths` must round-trip such names without crashing."""
+    import agent.loop as L
+
+    # 0xFF is invalid as standalone UTF-8.
+    weird_name = b"weird-\xff.txt"
+    full = os.path.join(str(repo).encode(), weird_name)
+    with open(full, "wb") as fh:
+        fh.write(b"hello\n")
+
+    paths = L._changed_paths()  # must not raise
+    # Path is preserved (with surrogate escapes) — exact name comparison
+    # via os.fsencode round-trip.
+    encoded = [os.fsencode(str(p)) for p in paths]
+    assert weird_name in encoded
