@@ -32,9 +32,11 @@ from qwen_coder_mcp.qwen_client import QwenClient, QwenError  # noqa: E402
 
 LOOP_DIR = _REPO / ".loop"
 HISTORY_DIR = LOOP_DIR / "history"
+STATE_ARCHIVE_DIR = LOOP_DIR / "state_archive"
 CURSOR_FILE = LOOP_DIR / "cursor.json"
 LOG_FILE = LOOP_DIR / "runtime.log"
 STATE_FILE = _REPO / "STATE.md"
+STATE_MAX_BYTES = 256 * 1024  # rotate STATE.md when it exceeds this
 
 # Paths excluded from candidate file selection.
 EXCLUDE_DIRS = {".git", ".loop", ".venv", "venv", "__pycache__", "dist", "build"}
@@ -489,7 +491,50 @@ def _revert_changes() -> None:
 
 
 # ------------------------------------------------------------------- state
+def _rotate_state_if_needed() -> Path | None:
+    """If STATE.md is over the threshold, archive it to
+    `.loop/state_archive/STATE.<UTC>.md` and leave a fresh header in
+    place. Returns the archive path, or None if no rotation occurred.
+
+    Rotation is best-effort: any error returns None and leaves
+    STATE.md untouched. Archive directory is under `.loop/`, which is
+    `.gitignore`d AND in `_INTERNAL_PATHS`, so the archive never
+    enters a commit nor trips scope/internal-path filtering.
+    """
+    try:
+        size = STATE_FILE.stat().st_size
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+    if size <= STATE_MAX_BYTES:
+        return None
+    try:
+        STATE_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+        ts = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        archive = STATE_ARCHIVE_DIR / f"STATE.{ts}.md"
+        # If a same-second archive already exists (clock skew, fast loop),
+        # de-duplicate with a counter suffix rather than overwriting.
+        if archive.exists():
+            i = 1
+            while (STATE_ARCHIVE_DIR / f"STATE.{ts}.{i}.md").exists():
+                i += 1
+            archive = STATE_ARCHIVE_DIR / f"STATE.{ts}.{i}.md"
+        # Move the body atomically; replace it with a small header that
+        # references the archive so future readers know history exists.
+        os.replace(STATE_FILE, archive)
+        header = (
+            "# qwen-coder-mcp — Rolling State\n\n"
+            f"_Previous entries archived to `{archive.relative_to(_REPO).as_posix()}`._\n\n"
+        )
+        STATE_FILE.write_text(header, "utf-8")
+        return archive
+    except OSError:
+        return None
+
+
 def _append_state(entry: str) -> None:
+    _rotate_state_if_needed()
     header = "# qwen-coder-mcp — Rolling State\n\n"
     if not STATE_FILE.exists():
         STATE_FILE.write_text(header, "utf-8")

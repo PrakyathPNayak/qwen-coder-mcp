@@ -487,3 +487,37 @@ auto-constructs only when `client is None`.
 - handlers registered ≥2 (list_tools + call_tool).
 
 **Result**: 164/164 green.
+
+## Loop 17 — STATE.md rotation
+**Bug**: `STATE.md` was append-only. Over months of loop runs it would
+grow unbounded — slowing every read of the file, eventually pushing
+file system limits, and crowding `git status` even though it's
+internally filtered. (Discovery: candidate #1 from next.md —
+JSON/TOML/YAML validation — turned out to already be implemented;
+audit-as-OBSERVE caught the stale next.md entry. Pivoted to candidate
+#2.)
+
+**Devil**: (a) Could rotation lose data? `os.replace` is atomic on the
+same filesystem; archive lives under `.loop/state_archive/` (same
+volume as STATE.md). Tests verify body integrity end-to-end.
+(b) Could rotation expose archived state to git? `.loop/` is in
+`.gitignore` and in `_INTERNAL_PATHS`, so the archive is filtered
+twice. Verified via `test_archive_dir_is_under_loop`.
+(c) Could same-second rotations collide? Yes: dedupe via
+`STATE.<ts>.<N>.md` suffix; verified by
+`test_rotation_dedupes_same_second_collision`.
+(d) Could the freshly-rotated file (with header) re-trigger rotation
+on the next call? Yes if threshold < header size (~130 bytes); in
+production threshold is 256 KB so this is impossible. The two tests
+that probe this use threshold ≥ 500 to stay above the header.
+
+**Fix**: added `STATE_MAX_BYTES=256*1024`, `STATE_ARCHIVE_DIR`,
+`_rotate_state_if_needed()`. Wired into `_append_state` so every
+write checks size first.
+
+**Tests**: 8 in `tests/test_state_rotation.py` —
+no-op-under-threshold, rotation-when-over, missing-file, append-
+triggers-rotation, same-second-collision, archive-is-internal-path,
+threshold-default-sane, idempotent-when-fresh.
+
+**Result**: 172/172 green.
