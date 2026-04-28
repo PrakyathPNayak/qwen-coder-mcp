@@ -2944,3 +2944,18 @@ read-only operation, no state changes.
 **Act.** New `export` branch in `/checkpoints` dispatch, between `diff` and `prune`. HELP_TEXT updated. Unknown-subcommand message lists `export` (pinned by test). 11 new tests in `test_checkpoints_export.py`: usage error, no-snapshots, invalid index, out-of-range, byte-identical copy, path-escape rejection, history non-mutation, parent dir auto-creation, unknown-subcommand listing, no-tmp-leftover, overwrite-existing.
 
 **Verify.** All 11 pass. Full suite ~1.25k passed, 1 skipped.
+
+## Loop 200 — `/sysinfo --json`
+
+**Observe.** `/sysinfo` was a free-form bug-report dump; `/lat --json` (loop 198) proved structured-data export is useful for downstream tooling. `/sysinfo` data is even more dashboard-shaped — health status, model name, history size — than `/lat`'s timing tuples.
+
+**Orient.** Mirror loop 198: a `--json`/`--format=json` flag that swaps the renderer. New `_render_sysinfo_json` next to `_render_sysinfo`. Health failures surface as a structured `{"ok": False, "error": ..., "hint": ...}` rather than a string with an inline newline.
+
+**Devil.**
+- *Correctness:* The free-form text encoded the hint via `\n  hint: ...` inside the health line. JSON path keeps the hint as its own field — better, but a regression risk for any user grepping `hint:` from text. Pinned: text path unchanged. ✅
+- *Scope:* Should the JSON include a schema_version? Premature — no consumers yet. Adding it later is non-breaking. ✅
+- *Priority:* Same justification as loop 198: makes the data programmable without touching the human path. Low-risk, narrow surface. ✅
+
+**Act.** New `_render_sysinfo_json` returning `json.dumps(payload, indent=2)`. Dispatch detects `--json` or `--format=json` in `cmd.args`. HELP_TEXT updated. 6 new tests in `test_sysinfo_json.py`: healthy parses, format=json alias, unhealthy preserves error+hint, exception caught & encoded, no-flag keeps text+header, None history yields zero counts.
+
+**Verify.** All 6 pass. Full suite ~1.26k passed, 1 skipped. Existing TestSysInfoSlash text-path tests still green — no regression.

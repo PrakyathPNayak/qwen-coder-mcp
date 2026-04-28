@@ -162,7 +162,7 @@ Slash commands:
   /model [id]          Show or switch the served model id
   /undo                Pop the last user/assistant exchange
   /retry               Re-send the last user message
-  /sysinfo             Snapshot of backend health, model, root, history
+  /sysinfo [--json]    Snapshot of backend health, model, root, history
   /export <path>       Export full chat as Markdown
   /pin <path> [path...]
                        Attach one or more files to the system prompt for the
@@ -637,6 +637,42 @@ def _render_cd(cfg: fs_tools.FsConfig, path: str) -> str:
     if not target.is_dir():
         return f"cd error: not a directory: {path}"
     return f"{_CD_SENTINEL}{target}"
+
+
+def _render_sysinfo_json(
+    client: QwenClient,
+    cfg: fs_tools.FsConfig,
+    history: list[ChatMessage] | None,
+) -> str:
+    """JSON counterpart to ``_render_sysinfo`` for downstream tooling.
+
+    Same data; structured shape. Health failures surface as
+    ``{"ok": false, "error": ..., "hint": ...}`` rather than a free-form
+    string. Tokens and message counts are integers.
+    """
+    import json
+
+    settings = getattr(client, "settings", None)
+    model = getattr(settings, "model", None) or None
+    base_url = getattr(settings, "base_url", None) or None
+    try:
+        check = client.health_check()
+    except Exception as exc:  # noqa: BLE001
+        check = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    msgs = len(history) if history is not None else 0
+    tokens = (
+        sum(estimate_tokens(m.content) for m in history)
+        if history is not None
+        else 0
+    )
+    payload = {
+        "model": model,
+        "base_url": base_url,
+        "fs_root": str(cfg.root),
+        "history": {"messages": msgs, "tokens_estimated": tokens},
+        "health": check,
+    }
+    return json.dumps(payload, indent=2)
 
 
 def _render_sysinfo(    client: QwenClient,
@@ -1640,6 +1676,8 @@ def dispatch_slash(
         del history[last_user_idx:]
         return f"__RETRY__{prompt}", False
     if name == "sysinfo":
+        if "--json" in cmd.args or "--format=json" in cmd.args:
+            return _render_sysinfo_json(client, fs_cfg, history), False
         return _render_sysinfo(client, fs_cfg, history), False
     if name == "export":
         if history is None:
