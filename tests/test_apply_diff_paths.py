@@ -640,3 +640,93 @@ def test_non_letter_colon_prefix_is_allowed():
     drive (drive letters are ASCII letters only)."""
     import agent.loop as L
     assert L._has_unsafe_path(_diff_with_path("1:foo.py")) is None
+
+
+# ----------------------------------------- quoted-path bypass (loop 38)
+def test_quoted_path_traversal_in_diff_git_header_rejected():
+    diff = (
+        'diff --git "a/../etc/passwd" "b/../etc/passwd"\n'
+        '--- "a/../etc/passwd"\n'
+        '+++ "b/../etc/passwd"\n'
+        '@@ -0,0 +1 @@\n'
+        '+x\n'
+    )
+    msg = loop._has_unsafe_path(diff)
+    assert msg is not None and "path_traversal" in msg
+
+
+def test_quoted_path_traversal_in_minus_plus_headers_rejected():
+    diff = (
+        'diff --git a/x.py b/x.py\n'
+        '--- "a/../etc/secret"\n'
+        '+++ "b/../etc/secret"\n'
+        '@@ -0,0 +1 @@\n'
+        '+x\n'
+    )
+    msg = loop._has_unsafe_path(diff)
+    assert msg is not None and "path_traversal" in msg
+
+
+def test_quoted_path_octal_escapes_decoded():
+    # `caf\303\251.py` decodes to `café.py` — legal, no traversal.
+    diff = (
+        'diff --git "a/caf\\303\\251.py" "b/caf\\303\\251.py"\n'
+        '--- "a/caf\\303\\251.py"\n'
+        '+++ "b/caf\\303\\251.py"\n'
+        '@@ -0,0 +1 @@\n'
+        '+x\n'
+    )
+    paths = loop._diff_paths(diff)
+    assert all(p == "café.py" for p in paths)
+    assert loop._has_unsafe_path(diff) is None
+
+
+def test_quoted_rename_to_traversal_rejected():
+    diff = (
+        'diff --git a/x.py b/x.py\n'
+        'similarity index 100%\n'
+        'rename from x.py\n'
+        'rename to "../etc/passwd"\n'
+    )
+    msg = loop._has_unsafe_path(diff)
+    assert msg is not None and "path_traversal" in msg
+
+
+def test_quoted_path_with_space_decoded():
+    # Path with a space — git wraps it in quotes.
+    diff = (
+        'diff --git "a/my file.py" "b/my file.py"\n'
+        '--- "a/my file.py"\n'
+        '+++ "b/my file.py"\n'
+        '@@ -0,0 +1 @@\n'
+        '+x\n'
+    )
+    paths = loop._diff_paths(diff)
+    assert all(p == "my file.py" for p in paths)
+    assert loop._has_unsafe_path(diff) is None
+
+
+def test_unquoted_paths_still_parsed():
+    # Loop 38 must not regress the plain unquoted case.
+    diff = (
+        'diff --git a/src/foo.py b/src/foo.py\n'
+        '--- a/src/foo.py\n'
+        '+++ b/src/foo.py\n'
+        '@@ -0,0 +1 @@\n'
+        '+x\n'
+    )
+    paths = loop._diff_paths(diff)
+    assert all(p == "src/foo.py" for p in paths)
+    assert loop._has_unsafe_path(diff) is None
+
+
+def test_quoted_path_absolute_rejected():
+    diff = (
+        'diff --git "a//etc/passwd" "b//etc/passwd"\n'
+        '--- "a//etc/passwd"\n'
+        '+++ "b//etc/passwd"\n'
+        '@@ -0,0 +1 @@\n'
+        '+x\n'
+    )
+    msg = loop._has_unsafe_path(diff)
+    assert msg is not None and "absolute_path" in msg

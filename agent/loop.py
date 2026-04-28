@@ -12,6 +12,7 @@ For each iteration:
 """
 from __future__ import annotations
 
+import codecs
 import datetime as _dt
 import json
 import os
@@ -339,9 +340,15 @@ def _verdict_accepts(text: str) -> tuple[bool, str]:
 
 # ------------------------------------------------------------- diff handling
 _DIFF_PATH_HEADER_RE = re.compile(
-    r"^(?:diff --git\s+a/(?P<a1>\S+)\s+b/(?P<b1>\S+)"
-    r"|---\s+a/(?P<a2>\S+)"
-    r"|\+\+\+\s+b/(?P<b2>\S+))",
+    r"^(?:"
+    # `diff --git` form: a-path then b-path, each either unquoted or
+    # quoted (git wraps paths in C-string quotes when they contain
+    # spaces, special chars, or non-ASCII bytes with quotePath=true).
+    r"diff --git\s+(?P<a1>(?:\"a/(?:\\.|[^\"\\])*\"|a/\S+))"
+    r"\s+(?P<b1>(?:\"b/(?:\\.|[^\"\\])*\"|b/\S+))"
+    r"|---\s+(?P<a2>(?:\"a/(?:\\.|[^\"\\])*\"|a/\S+))"
+    r"|\+\+\+\s+(?P<b2>(?:\"b/(?:\\.|[^\"\\])*\"|b/\S+))"
+    r")",
     re.MULTILINE,
 )
 
@@ -349,28 +356,61 @@ _DIFF_PATH_HEADER_RE = re.compile(
 # `copy to <path>` — git-apply consumes these and writes to the named
 # destination path. They are NOT prefixed with `a/` or `b/`. Without
 # this, a rename-to traversal path could slip through `_has_unsafe_path`.
+# Path may be quoted (contains spaces / non-ASCII with quotePath=true).
 _DIFF_RENAME_COPY_RE = re.compile(
-    r"^(?:rename from|rename to|copy from|copy to)\s+(?P<p>\S.*?)\s*$",
+    r"^(?:rename from|rename to|copy from|copy to)\s+"
+    r"(?P<p>(?:\"(?:\\.|[^\"\\])*\"|\S.*?))\s*$",
     re.MULTILINE,
 )
+
+
+def _unquote_diff_path(raw: str) -> str:
+    """Strip the `a/` or `b/` prefix and decode C-string quoting that
+    git uses for paths containing spaces, control bytes, or non-ASCII
+    octets when `core.quotePath=true`. Returns the repo-relative path.
+    """
+    s = raw
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        body = s[1:-1]
+        try:
+            decoded = codecs.escape_decode(body.encode("utf-8"))[0]
+            assert isinstance(decoded, bytes)
+            s = decoded.decode("utf-8", errors="surrogateescape")
+        except (ValueError, UnicodeDecodeError):
+            # Decoding failed — return the literal body without quotes
+            # so downstream checks still see *some* path string and can
+            # reject it via traversal/absolute checks.
+            s = body
+    if s.startswith("a/") or s.startswith("b/"):
+        s = s[2:]
+    return s
 
 
 def _diff_paths(diff: str) -> list[str]:
     """Return every repo-relative path mentioned in diff headers.
 
     Covers `--- a/`, `+++ b/`, `diff --git a/X b/Y`, plus
-    `rename from`/`rename to`/`copy from`/`copy to`.
+    `rename from`/`rename to`/`copy from`/`copy to`. Paths quoted in
+    git's C-string format (used when paths contain spaces or non-ASCII
+    bytes with `core.quotePath=true`) are decoded before being
+    returned, so safety checks see the real destination path.
     """
     paths: list[str] = []
     for m in _DIFF_PATH_HEADER_RE.finditer(diff):
         for g in ("a1", "b1", "a2", "b2"):
             v = m.group(g)
-            if v and v != "/dev/null":
-                paths.append(v)
+            if not v:
+                continue
+            decoded = _unquote_diff_path(v)
+            if decoded and decoded != "/dev/null":
+                paths.append(decoded)
     for m in _DIFF_RENAME_COPY_RE.finditer(diff):
         v = m.group("p")
-        if v and v != "/dev/null":
-            paths.append(v)
+        if not v:
+            continue
+        decoded = _unquote_diff_path(v)
+        if decoded and decoded != "/dev/null":
+            paths.append(decoded)
     return paths
 
 
