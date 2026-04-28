@@ -1822,6 +1822,12 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
         return outcome
 
     _log(f"scanning {rel}")
+    # Loop 249: seed the persistent task memory with this iteration's
+    # goal so the model sees ``current task: iteration N -- review
+    # path/to/file for bugs/improvements`` even after vLLM restarts or
+    # context compression. Best-effort: a memory glitch must never
+    # break the iteration. No-op when QWEN_TASK_MEMORY is unset.
+    _seed_iteration_memory(client, iteration=_CURRENT_ITERATION + 1, rel=rel)
     # Loop 107: budget-check after file discovery + read so a slow
     # `_candidate_files()` or `_read_file()` (e.g., huge repo with cold
     # filesystem cache) can't burn the entire budget before the first
@@ -2046,6 +2052,39 @@ def _dump_logger_state(reason: str = "manual", iteration: int | None = None) -> 
 
 
 _CURRENT_ITERATION: int = 0
+
+
+def _seed_iteration_memory(
+    client: Any, *, iteration: int, rel: Any
+) -> None:
+    """Loop 249: stamp this iteration's goal into the persistent task
+    memory so it survives vLLM restarts and client-side context
+    compression (loops 240/243/244).
+
+    Best-effort: every operation is wrapped so that a memory glitch
+    cannot break the iteration. No-op when the client has no
+    ``task_memory`` attached (i.e. ``QWEN_TASK_MEMORY`` is unset).
+    """
+    try:
+        tm = getattr(client, "task_memory", None)
+        if tm is None:
+            return
+        try:
+            tm.set_current_task(
+                f"iteration {iteration} -- review {rel} for bugs/improvements"
+            )
+        except Exception:  # noqa: BLE001 -- memory must never break loop
+            pass
+        try:
+            tm.record_fact("loop_iteration", str(iteration))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            tm.record_fact("agent_role", "autonomous self-improvement loop")
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _install_sigusr1_handler() -> bool:
