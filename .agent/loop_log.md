@@ -521,3 +521,32 @@ triggers-rotation, same-second-collision, archive-is-internal-path,
 threshold-default-sane, idempotent-when-fresh.
 
 **Result**: 172/172 green.
+
+## Loop 18 — `_apply_diff` rejects symlink and gitlink modes
+**Bug** (security): a model-emitted diff with `new file mode 120000`
+followed by a hunk creating a symlink would land in the worktree
+unchallenged. The symlink target (the `+` content line) is just bytes
+to git — it could point at `/etc/passwd`, `~/.ssh/authorized_keys`, or
+any path; subsequent reads of the "fixed" file by the loop's
+validation (or downstream tools) would read the linked content. Same
+risk class as `120000` (symlink) — `160000` (gitlink/submodule) is
+similarly out of scope for a code-fix loop.
+
+**Devil**: (a) Could a legitimate fix add a symlink? In a Python repo,
+effectively never; build-system symlinks are pre-existing.
+(b) False positives on mode-numbers in *content* lines? No — the
+predicate only matches lines starting with `new file mode `,
+`new mode `, `old mode `, or `deleted file mode `. Verified by
+`test_has_unsafe_mode_ignores_mode_in_content_lines`.
+(c) Does this hide info? No — the new error tag (`unsafe_mode:`) is
+distinct from `unsafe_path:`/`apply_failed:`/`malformed_diff:`,
+making logs greppable.
+
+**Fix**: `_has_unsafe_mode()` predicate; wired into `_apply_diff`
+between `_has_unsafe_path` and `_has_structural_defect`.
+
+**Tests**: 7 new in `tests/test_apply_diff_paths.py` —
+parametrised over 5 mode-header variants (4 symlink + 1 gitlink),
+plus normal-mode allow-list and content-line false-positive guard.
+
+**Result**: 179/179 green.

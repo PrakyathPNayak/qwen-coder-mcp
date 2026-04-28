@@ -166,3 +166,49 @@ def test_apply_diff_accepts_well_formed_diff_with_dev_null(tmp_path, monkeypatch
     ok, msg = loop._apply_diff(diff)
     assert ok is True
     assert msg == "applied"
+
+
+# ----------------------------------------------------------- mode-safety tests
+@pytest.mark.parametrize(
+    "mode_line,reason",
+    [
+        ("new file mode 120000", "symlink_mode"),
+        ("new mode 120000", "symlink_mode"),
+        ("old mode 120000", "symlink_mode"),
+        ("deleted file mode 120000", "symlink_mode"),
+        ("new file mode 160000", "gitlink_mode"),
+    ],
+)
+def test_apply_diff_rejects_symlink_and_gitlink_modes(mode_line, reason):
+    diff = (
+        f"diff --git a/x b/x\n"
+        f"{mode_line}\n"
+        f"--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+/etc/passwd\n"
+    )
+    ok, msg = loop._apply_diff(diff)
+    assert ok is False
+    assert msg.startswith("unsafe_mode:")
+    assert reason in msg
+
+
+def test_apply_diff_allows_normal_file_modes():
+    """100644 (regular) and 100755 (executable) must NOT be flagged."""
+    for mode in ("100644", "100755"):
+        diff = (
+            f"diff --git a/foo b/foo\n"
+            f"new file mode {mode}\n"
+            f"--- /dev/null\n+++ b/foo\n@@ -0,0 +1 @@\n+x\n"
+        )
+        # Direct unit on the predicate (avoids needing a real git repo).
+        diff_n = diff if diff.endswith("\n") else diff + "\n"
+        assert loop._has_unsafe_mode(diff_n) is None
+
+
+def test_has_unsafe_mode_ignores_mode_in_content_lines():
+    """A `+` content line that contains '120000' is not a mode header."""
+    diff = (
+        "diff --git a/foo.py b/foo.py\n"
+        "--- a/foo.py\n+++ b/foo.py\n"
+        "@@ -1 +1 @@\n-x\n+# permissions: 120000 was the old mode\n"
+    )
+    assert loop._has_unsafe_mode(diff) is None

@@ -280,6 +280,30 @@ def _has_unsafe_path(diff: str) -> str | None:
     return None
 
 
+def _has_unsafe_mode(diff: str) -> str | None:
+    """Reject diffs that create or change to dangerous file modes.
+
+    `120000` is git's symlink mode. A model-emitted diff that drops a
+    symlink into the worktree could point at `/etc/passwd` or
+    `~/.ssh/authorized_keys`, and `git apply` would happily honour it
+    inside the repo (the symlink target is just bytes to git). We
+    refuse symlinks blanket-style: a code-fix loop never legitimately
+    needs to introduce one. `160000` (gitlinks / submodules) is
+    similarly out of scope.
+    """
+    for line in diff.splitlines():
+        s = line.strip()
+        # `new file mode 120000` / `new mode 120000` / `old mode 120000`
+        # any mode-line with the symlink or gitlink mode is suspicious.
+        if s.startswith(("new file mode ", "new mode ", "old mode ", "deleted file mode ")):
+            mode = s.rsplit(" ", 1)[-1]
+            if mode == "120000":
+                return f"symlink_mode:{s}"
+            if mode == "160000":
+                return f"gitlink_mode:{s}"
+    return None
+
+
 def _has_structural_defect(diff: str) -> str | None:
     """Return an error if the diff is malformed, else None.
 
@@ -325,6 +349,9 @@ def _apply_diff(diff_text: str) -> tuple[bool, str]:
     unsafe = _has_unsafe_path(diff)
     if unsafe is not None:
         return False, f"unsafe_path: {unsafe}"
+    unsafe_mode = _has_unsafe_mode(diff)
+    if unsafe_mode is not None:
+        return False, f"unsafe_mode: {unsafe_mode}"
     structural = _has_structural_defect(diff)
     if structural is not None:
         return False, f"malformed_diff: {structural}"
