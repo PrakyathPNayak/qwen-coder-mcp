@@ -1,26 +1,26 @@
 # Next loop seed
 
 ## Candidates ranked
-1. **(P3) `prompts.py` builders are uncovered.** A regression dropping the
-   "respond ONLY with a unified diff inside ```diff fences" sentence from
-   the coder prompt makes every fix `not_a_unified_diff`. Contract tests:
-   `propose_fix_user` contains the diff-fence instruction, `devils_advocate_user`
-   contains the VERDICT: ACCEPT/REJECT contract, `find_bugs_user` contains
-   the "list each bug as a numbered/bulleted item" instruction.
+1. **(P5) `_apply_diff` should reject `..` traversal in target paths.**
+   A model could emit `+++ b/../../etc/passwd`. Currently `git apply`
+   would refuse with a top-of-tree check, but the loop would silently
+   tag this `apply_failed` and move on. Better: refuse pre-apply with
+   a distinct outcome so the case is visible in the log.
 
-2. **(P5) `_apply_diff` should reject diffs whose target paths contain
-   `..` traversal segments before invoking git apply.**
+2. **(P5) `_apply_diff` accepts diffs missing `+++ b/`** — sanity-check
+   structure before invoking git apply.
 
-3. **(P5) `_apply_diff` accepts diffs with no `+++ b/` line.** A diff that
-   has only `--- a/file` may be a deletion-only patch, but malformed
-   single-sided diffs should not crash. Sanity-check structure.
+3. **(P6) `server.py` constructs a live `QwenClient` at import time.**
+   Defer until first tool call; add a smoke `import` test.
 
-4. **(P6) `server.py` builds `QwenClient` at `_build_server`.** Defer +
-   smoke import test.
+4. **(P8) `STATE.md` and `.agent/loop_log.md` rotation** when over a
+   threshold. Currently append-only.
 
-5. **(P8) `STATE.md` and `.agent/loop_log.md` rotation.**
+5. **(P6) `_iteration` reads `_pick_target_file` deterministically by
+   alphabetical sort but `cursor.json` advances independently from the
+   filesystem state — verify behaviour when the previously-cursor'd
+   file is deleted.**
 
 ## Reminder
-- vLLM check (`tail .loop/serve.log`, `ps -p 1493`) every few loops.
-- Never end output with a question. Never pause. Always start the next OBSERVE
-  immediately after commit+push.
+- vLLM check every few loops.
+- Never end output with a question, never pause.

@@ -377,3 +377,25 @@ parametrized over 22 benign replies (all return None), plus two
 adversarial cases ensuring real bullets containing "no" still parse.
 
 **Result**: 117/117 green. Commit `<filled by git>`.
+
+## Loop 13 — `prompts.py` contract tests
+**Bug** (latent): `prompts.py` is what the loop says to the model. Every
+parser in `loop.py` makes brittle assumptions about specific tokens
+("VERDICT: ACCEPT", "NO_ISSUES", `--- a/` / `+++ b/`, "numbered list").
+A future copy-edit could silently drop one of those instructions and
+turn every iteration garbage into every fix would be tagged 
+`not_a_unified_diff`, every verdict `no_verdict`, every clean file
+re-prompted forever — *with the test suite still green*.
+
+**Devil**: too-strict tests bind us to phrasing instead of intent.
+Counter: tests assert presence of *the exact tokens parsers look for*,
+not whole sentences. Phrasing around them can change. Verified by
+keeping assertions to substrings ("unified diff", "NO_ISSUES",
+"VERDICT: ACCEPT", "--- a/", "+++ b/", "numbered list").
+
+**Fix**: new `tests/test_prompts.py` with 12 cases covering all 9
+prompt builders + 3 system prompts. Each high-stakes prompt has at
+least one assertion that, if removed by a regression, the parser would
+break in production.
+
+**Result**: 129/129 green.
