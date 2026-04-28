@@ -2076,14 +2076,21 @@ def _format_exit_line(
 
     The format is fixed:
 
-        loop exit reason=<reason> | iter=<N>[ | exc=<Type>: <msg>]
+        loop exit reason=<reason> | iter=<N> | pid=<P>[ | exc=<Type>: <msg>]
 
     Multi-line exception messages are collapsed to their first line
     so the runtime.log stays grep-friendly. Long messages are
     truncated at 240 chars; the iteration number lets operators
-    correlate to timing.log.
+    correlate to timing.log. Loop 233: the ``pid`` field
+    disambiguates simultaneous loops running in different repos
+    (they would otherwise collide on iteration_count alone in
+    joined analytics).
     """
-    parts = [f"loop exit reason={reason}", f"iter={iteration}"]
+    parts = [
+        f"loop exit reason={reason}",
+        f"iter={iteration}",
+        f"pid={os.getpid()}",
+    ]
     if exc is not None:
         msg = str(exc).splitlines()[0] if str(exc) else ""
         if len(msg) > 240:
@@ -2125,7 +2132,7 @@ def _write_timing_exit(reason: str, iteration: int) -> None:
             Path("."),
             f"exit:{reason}",
             {},
-            extras={"iteration_count": iteration},
+            extras={"iteration_count": iteration, "pid": os.getpid()},
         )
     except Exception:
         pass

@@ -3930,3 +3930,53 @@ informative for a human reader trying to scan their log.
 
 One new test pinning all four documentation tokens. Verify:
 full suite 1498 passed, 7 skipped (was 1497 + 1).
+
+## Loop 233 - pid disambiguation in exit records
+
+Loop 226 added iteration_count to exit records as a join key
+between timing.log and runtime.log. That join is unambiguous
+WITHIN a single loop process. Two simultaneous loops in
+different repos (an operator running the autonomous loop on
+multiple checkouts) would each emit iteration_count=N records
+that look identical in joined analytics.
+
+Loop 233 fixes that with pid:
+  * _format_exit_line appends pid=<P> after iter=<N> in the
+    runtime.log line. Format becomes
+    'loop exit reason=R | iter=N | pid=P[ | exc=...]'
+  * _write_timing_exit threads pid into the JSON record as a
+    sibling field alongside iteration_count.
+
+Cross-process join now uses (pid, iteration_count) as the
+composite key. Within a single process pid is constant so the
+join still works on iteration_count alone if the consumer
+doesn't care.
+
+Devil step. Why pid and not a uuid generated at loop start?
+Because pid is naturally available, requires no state
+plumbing, and joins to OS-level tooling (ps, strace, /proc).
+A uuid would survive pid reuse better but pid reuse during a
+single observability window is vanishingly unlikely.
+
+Why position pid AFTER iter and BEFORE exc in the log line?
+Because the existing grep patterns key on the reason / iter
+prefix; appending after iter preserves that. Putting pid
+before exc keeps the exception detail at the tail of the
+line where humans look first.
+
+Why thread pid through _write_timing_exit (extras dict) rather
+than as a top-level field in _write_timing? Because pid is
+specific to the shutdown record -- regular records don't need
+it (their iteration_count is unique per outcome within a
+single log file). The extras kwarg is exactly the seam the
+loop-226 design left for fields like this.
+
+Updated three pre-existing tests that pinned exact line
+strings (now use startswith / contains to admit the new pid
+segment). Added four new tests:
+  * format_exit_line includes os.getpid() literally;
+  * pid segment positioned after iter for grep stability;
+  * pid before exc when both present (order pin);
+  * _write_timing_exit emits pid in the extras dict.
+
+Verify: full suite 1502 passed, 7 skipped (was 1498 + 4).

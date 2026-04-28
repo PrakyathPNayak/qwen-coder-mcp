@@ -1,11 +1,11 @@
-# Loop 233 candidates
+# Loop 234 candidates
 
-1. /sysinfo --probe --json: machine-readable form of the
-   loop-219 /health probe. Last analytics-surface gap.
+1. timing_analyze --json: surface pid alongside iteration_count
+   in exit_records so cross-process joins are explicit (loop
+   233 producer side is in; analyzer needs the read side).
 
-2. _format_exit_line could include session id (process pid or
-   uuid) so two simultaneous loops in different repos do not
-   collide on iteration_count alone in joined analytics.
+2. README documentation pass for the loop-233 pid field --
+   pairs with the loop-232 readme pass; same pattern.
 
 3. /checkpoints export N <path> --gzip (carried, low priority).
 
@@ -15,10 +15,7 @@
 5. Real-model E2E for the loop-217 think-strip in streaming
    mode (only non-streaming is gated currently).
 
-6. timing_analyze --since-last-exit + --json regression: pin
-   that --json honors the filter (likely already does, no test
-   asserts it).
-
-Recommended next: (1) - the /sysinfo --probe --json gap is the
-last machine-readable surface in the analytics arc. After that
-the natural pivot is to (2) for cross-process disambiguation.
+Recommended next: (1) - direct continuation of the loop-233
+producer-side change. The schema contract for exit_records
+should add 'pid' as a documented key (was {ts, reason,
+iteration_count}, becomes {ts, reason, iteration_count, pid}).

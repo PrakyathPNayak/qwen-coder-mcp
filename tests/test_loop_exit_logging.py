@@ -22,7 +22,10 @@ from agent import loop as agent_loop
 class TestFormatExitLine:
     def test_no_exception_minimal_form(self) -> None:
         line = agent_loop._format_exit_line("sigterm", 42)
-        assert line == "loop exit reason=sigterm | iter=42"
+        # Loop 233: pid added to disambiguate concurrent loops.
+        assert line.startswith("loop exit reason=sigterm | iter=42 | pid=")
+        # No exc segment when exc=None.
+        assert "exc=" not in line
 
     def test_with_exception_includes_type_and_message(self) -> None:
         line = agent_loop._format_exit_line(
@@ -135,4 +138,46 @@ class TestLogExitNeverRaises:
         captured: list[str] = []
         monkeypatch.setattr(agent_loop, "_log", captured.append)
         agent_loop._log_exit("sigterm", 17)
-        assert captured == ["loop exit reason=sigterm | iter=17"]
+        assert len(captured) == 1
+        assert captured[0].startswith("loop exit reason=sigterm | iter=17 | pid=")
+
+
+class TestExitLinePidLoop233:
+    """Loop 233: pid added to the exit line and timing-log extras so
+    two simultaneous loops in different repos do not collide on
+    iteration_count alone in joined analytics."""
+
+    def test_format_exit_line_includes_real_pid(self) -> None:
+        import os as _os
+        line = agent_loop._format_exit_line("sigterm", 1)
+        assert f"pid={_os.getpid()}" in line
+
+    def test_format_exit_line_pid_segment_after_iter(self) -> None:
+        # Order matters for grep: reason | iter | pid | (exc).
+        line = agent_loop._format_exit_line("sigterm", 1)
+        iter_idx = line.index("iter=")
+        pid_idx = line.index("pid=")
+        assert iter_idx < pid_idx
+
+    def test_format_exit_line_pid_before_exc(self) -> None:
+        line = agent_loop._format_exit_line(
+            "unhandled-exception", 5, exc=ValueError("oops")
+        )
+        pid_idx = line.index("pid=")
+        exc_idx = line.index("exc=")
+        assert pid_idx < exc_idx
+
+    def test_write_timing_exit_emits_pid_in_record(self, tmp_path, monkeypatch) -> None:
+        # Loop 233: pid extra threaded through _write_timing_exit so
+        # timing.log JSON records also disambiguate concurrent loops.
+        import os as _os
+        captured: list[dict] = []
+        def fake_write_timing(loop_dir, outcome, phases, *, extras=None, **kw):
+            captured.append({"outcome": outcome, "extras": dict(extras or {})})
+        monkeypatch.setattr(agent_loop, "_write_timing", fake_write_timing)
+        agent_loop._write_timing_exit("sigterm", 42)
+        assert len(captured) == 1
+        rec = captured[0]
+        assert rec["outcome"] == "exit:sigterm"
+        assert rec["extras"]["iteration_count"] == 42
+        assert rec["extras"]["pid"] == _os.getpid()
