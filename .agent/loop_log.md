@@ -1116,3 +1116,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: yes, bucket 5; introduced by the original loop, latent for many iterations now.
 - ACT: 7 new tests, 327 passed, 1 skipped. All previous loop-49 timing-rotation tests still green via delegation.
 - COMMIT: pending.
+
+## Loop 51 — extract canonical `_env_int_capped`
+- OBSERVE: 3 near-duplicate env-int parsers (`_env_timeout_seconds`, `_timing_max_bytes`, `_runtime_log_max_bytes`). Last loop showed the duplication grow; drift will eventually create inconsistent semantics.
+- ORIENT: bucket 8 (correctness-fragility). Better to canonicalize *now* before a 4th caller appears.
+- DECIDE: rename body to `_env_int_capped(env_key, default, max_value)`, keep `_env_timeout_seconds` as a thin alias for backward compat, route both byte-cap helpers through it.
+- DEVIL:
+  - Correctness: prior byte-cap helpers used `os.environ.get(key)` (None on unset → default); canonical uses `os.environ.get(key, str(default))` (still parses to default). Equivalent. Verified — 327 pre-existing tests still green.
+  - Scope: pure refactor. No behavior change observable from outside the module.
+  - Priority: bucket 8 but cheap; combined with the next concrete fix this still helps.
+- ACT: 8 new tests for the canonical helper (default/parse/float/invalid/zero/negative/clamp/alias). 335 passed, 1 skipped.
+- COMMIT: pending.

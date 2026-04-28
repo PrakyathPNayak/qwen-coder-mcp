@@ -599,3 +599,39 @@ class TestValidateChangedFilesTomlDupSemantics:
         ok, msg = L._validate_changed_files([Path("p.toml")])
         assert ok is False
         assert msg.startswith("toml_invalid")
+
+
+class TestEnvIntCapped:
+    """Loop 51: canonical `_env_int_capped` helper covers all env-int sites."""
+
+    def test_returns_default_when_unset(self, monkeypatch):
+        monkeypatch.delenv("QWEN_TEST_X", raising=False)
+        assert L._env_int_capped("QWEN_TEST_X", 7, 100) == 7
+
+    def test_parses_int(self, monkeypatch):
+        monkeypatch.setenv("QWEN_TEST_X", "42")
+        assert L._env_int_capped("QWEN_TEST_X", 7, 100) == 42
+
+    def test_parses_float_string(self, monkeypatch):
+        monkeypatch.setenv("QWEN_TEST_X", "60.0")
+        assert L._env_int_capped("QWEN_TEST_X", 7, 100) == 60
+
+    def test_invalid_falls_back(self, monkeypatch):
+        monkeypatch.setenv("QWEN_TEST_X", "abc")
+        assert L._env_int_capped("QWEN_TEST_X", 7, 100) == 7
+
+    def test_zero_falls_back(self, monkeypatch):
+        monkeypatch.setenv("QWEN_TEST_X", "0")
+        assert L._env_int_capped("QWEN_TEST_X", 7, 100) == 7
+
+    def test_negative_falls_back(self, monkeypatch):
+        monkeypatch.setenv("QWEN_TEST_X", "-5")
+        assert L._env_int_capped("QWEN_TEST_X", 7, 100) == 7
+
+    def test_clamps_above_cap(self, monkeypatch):
+        monkeypatch.setenv("QWEN_TEST_X", "999")
+        assert L._env_int_capped("QWEN_TEST_X", 7, 100) == 100
+
+    def test_legacy_alias_still_works(self, monkeypatch):
+        monkeypatch.setenv("QWEN_TEST_X", "55")
+        assert L._env_timeout_seconds("QWEN_TEST_X", 7, 100) == 55

@@ -61,16 +61,11 @@ _RUNTIME_LOG_MAX_BYTES_CAP = 100_000_000
 
 def _runtime_log_max_bytes() -> int:
     """Cap for `.loop/runtime.log` size before rotation. Env-tunable."""
-    raw = os.environ.get("QWEN_RUNTIME_LOG_MAX_BYTES")
-    if raw is None:
-        return _RUNTIME_LOG_MAX_BYTES_DEFAULT
-    try:
-        n = int(float(raw))
-    except (TypeError, ValueError):
-        return _RUNTIME_LOG_MAX_BYTES_DEFAULT
-    if n <= 0:
-        return _RUNTIME_LOG_MAX_BYTES_DEFAULT
-    return min(n, _RUNTIME_LOG_MAX_BYTES_CAP)
+    return _env_int_capped(
+        "QWEN_RUNTIME_LOG_MAX_BYTES",
+        _RUNTIME_LOG_MAX_BYTES_DEFAULT,
+        _RUNTIME_LOG_MAX_BYTES_CAP,
+    )
 
 
 def _rotate_log_if_oversized(path: Path, max_bytes: int) -> None:
@@ -103,10 +98,13 @@ def _log(msg: str) -> None:
 _GIT_CMD_TIMEOUT_SECONDS = 60  # legacy alias; use _git_cmd_timeout_seconds()
 
 
-def _env_timeout_seconds(env_key: str, default: int, max_value: int) -> int:
-    """Generic env-configurable subprocess timeout reader with clamping.
-    Bad/non-positive falls back to default; values above max are
-    clamped to max."""
+def _env_int_capped(env_key: str, default: int, max_value: int) -> int:
+    """Generic env-configurable positive-integer reader with clamping.
+
+    Bad/non-positive values fall back to ``default``; values above
+    ``max_value`` are clamped to ``max_value``. Used for both subprocess
+    timeouts and log-rotation byte caps.
+    """
     raw = os.environ.get(env_key, str(default))
     try:
         v = int(float(raw))
@@ -117,6 +115,11 @@ def _env_timeout_seconds(env_key: str, default: int, max_value: int) -> int:
     if v > max_value:
         return max_value
     return v
+
+
+def _env_timeout_seconds(env_key: str, default: int, max_value: int) -> int:
+    """Backward-compatible alias for `_env_int_capped` (timeout helpers)."""
+    return _env_int_capped(env_key, default, max_value)
 
 
 _LOOP_ITER_BUDGET_DEFAULT = 600.0
@@ -1069,16 +1072,11 @@ _TIMING_MAX_BYTES_CAP = 100_000_000
 
 def _timing_max_bytes() -> int:
     """Cap for `.loop/timing.log` size before rotation. Env-tunable."""
-    raw = os.environ.get("QWEN_TIMING_MAX_BYTES")
-    if raw is None:
-        return _TIMING_MAX_BYTES_DEFAULT
-    try:
-        n = int(float(raw))
-    except (TypeError, ValueError):
-        return _TIMING_MAX_BYTES_DEFAULT
-    if n <= 0:
-        return _TIMING_MAX_BYTES_DEFAULT
-    return min(n, _TIMING_MAX_BYTES_CAP)
+    return _env_int_capped(
+        "QWEN_TIMING_MAX_BYTES",
+        _TIMING_MAX_BYTES_DEFAULT,
+        _TIMING_MAX_BYTES_CAP,
+    )
 
 
 def _rotate_timing_if_oversized() -> None:
