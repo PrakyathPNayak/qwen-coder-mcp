@@ -1383,3 +1383,15 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 5; was next.md #3.
 - ACT: 6 tests (zero-state, one-logged, all-suppressed, every-n-advance, reset clears both, exponential summary). 425 passed.
 - COMMIT: pending.
+
+## Loop 75 — periodic swallow-summary at iteration boundaries
+- OBSERVE: After loop 74 added `summary()`, the suppression state was queryable but never auto-reported. A sink could be silently failing 50× per iteration with the rate limiter logging once at count=1 and again at count=100, blind to the operator in between.
+- ORIENT: Cause: no automatic surfacing. Hook into `_finish` so every iteration reports any logger with growing `count` since last summary.
+- DECIDE: Add `_log_swallow_summaries()` + `_LAST_SWALLOW_SUMMARY_COUNTS` dict tracking. Only emit when `count > last`. `_finish` calls it.
+- DEVIL:
+  - Correctness: on a fault that *stopped* (count not growing), `count <= last` short-circuits, no spam. ✓
+  - Scope: addresses cause (no automatic surfacing) without re-spamming.
+  - Priority: bucket 5; was next.md #5.
+  - Edge: counters persist across iterations, so manually resetting individual loggers (e.g. tests) requires also clearing `_LAST_SWALLOW_SUMMARY_COUNTS`. Documented in test setup.
+- ACT: Helper added, `_finish` updated, 6 new tests (no-failure, suppressed-grows, count-unchanged, re-emits-after-more, never-raises, end-to-end finish-calls-summary). 431 passed.
+- COMMIT: pending.

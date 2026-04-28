@@ -1385,6 +1385,49 @@ def _rotate_timing_if_oversized() -> None:
 _TIMING_SWALLOW_LOG = _RateLimitedSwallowLogger("_write_timing", schedule="exponential")
 
 
+def _swallow_loggers() -> tuple["_RateLimitedSwallowLogger", ...]:
+    """Module-level swallow loggers we report periodic summaries for.
+
+    Kept as a function (rather than a constant) so tests that swap
+    individual loggers on the module don't see a stale tuple.
+    """
+    return (_TIMING_SWALLOW_LOG, _STATE_SWALLOW_LOG, _HISTORY_SWALLOW_LOG)
+
+
+_LAST_SWALLOW_SUMMARY_COUNTS: dict[str, int] = {}
+
+
+def _log_swallow_summaries() -> None:
+    """Emit one summary line per module logger that has *new* suppressed
+    failures since the last summary call.
+
+    Called at every iteration boundary so a sink that's been quietly
+    failing is visible even while the rate limiter is suppressing
+    per-failure logs. We track each logger's count from the last
+    summary so a fault that has *stopped* doesn't keep re-logging the
+    same stale snapshot every iteration.
+
+    Best-effort; never raises.
+    """
+    try:
+        for logger in _swallow_loggers():
+            s = logger.summary()
+            count = int(s.get("count", 0))
+            label = str(s.get("label", "?"))
+            last = _LAST_SWALLOW_SUMMARY_COUNTS.get(label, 0)
+            if count <= last:
+                continue  # nothing new this iteration
+            _LAST_SWALLOW_SUMMARY_COUNTS[label] = count
+            if int(s.get("suppressed", 0)) > 0:
+                _log(
+                    f"swallow-summary {label}: count={count} "
+                    f"last_logged={s['last_logged_count']} "
+                    f"suppressed={s['suppressed']}"
+                )
+    except Exception:  # observability: must never break the loop
+        pass
+
+
 def _write_timing(rel: Path, outcome: str, phases: dict[str, float]) -> None:
     """Append one JSON line per iteration capturing per-phase wallclock.
 
@@ -1464,6 +1507,7 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
 
     def _finish(outcome: str) -> str:
         _write_timing(rel, outcome, phases)
+        _log_swallow_summaries()
         return outcome
 
     _log(f"scanning {rel}")

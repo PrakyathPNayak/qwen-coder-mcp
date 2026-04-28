@@ -1370,3 +1370,108 @@ class TestRateLimitedSwallowLoggerSummary:
         assert s["last_logged_count"] == 8
         assert s["suppressed"] == 2
         assert s["schedule"] == "exponential"
+
+
+class TestSwallowSummaries:
+    """Loop 75: `_log_swallow_summaries()` surfaces ongoing suppression at
+    iteration boundaries without re-logging stale snapshots."""
+
+    def test_no_summary_when_no_failures(self, monkeypatch):
+        from agent import loop as L
+        # Reset global state
+        for lg in L._swallow_loggers():
+            lg.reset()
+        L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        L._log_swallow_summaries()
+        assert log_lines == []
+
+    def test_summary_emitted_when_suppressed_grows(self, monkeypatch):
+        from agent import loop as L
+        for lg in L._swallow_loggers():
+            lg.reset()
+        L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        # Use linear schedule so we know exactly when logger logs vs suppresses.
+        monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "schedule", "linear")
+        monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "every", 1000)
+        # Drive 5 failures: count=1 logs, counts 2-5 suppress.
+        for _ in range(5):
+            L._TIMING_SWALLOW_LOG.report(OSError("e"))
+        assert L._TIMING_SWALLOW_LOG.summary()["suppressed"] == 4
+        log_lines.clear()
+        L._log_swallow_summaries()
+        # First summary call: count=5 grew from last=0 → emit.
+        assert any("swallow-summary _write_timing" in l for l in log_lines)
+        assert any("count=5" in l and "suppressed=4" in l for l in log_lines)
+
+    def test_no_summary_when_count_unchanged(self, monkeypatch):
+        from agent import loop as L
+        for lg in L._swallow_loggers():
+            lg.reset()
+        L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
+        monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "schedule", "linear")
+        monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "every", 1000)
+        L._log = lambda m: None  # silent emit during initial driving
+        for _ in range(5):
+            L._TIMING_SWALLOW_LOG.report(OSError("e"))
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        L._log_swallow_summaries()
+        assert any("count=5" in l for l in log_lines)
+        # Second call without any new failures must NOT emit again.
+        log_lines.clear()
+        L._log_swallow_summaries()
+        assert log_lines == []
+
+    def test_summary_re_emits_after_more_failures(self, monkeypatch):
+        from agent import loop as L
+        for lg in L._swallow_loggers():
+            lg.reset()
+        L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
+        monkeypatch.setattr(L._STATE_SWALLOW_LOG, "schedule", "linear")
+        monkeypatch.setattr(L._STATE_SWALLOW_LOG, "every", 1000)
+        L._log = lambda m: None
+        for _ in range(3):
+            L._STATE_SWALLOW_LOG.report(OSError("e"))
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        L._log_swallow_summaries()
+        assert any("count=3" in l for l in log_lines)
+        log_lines.clear()
+        # Two more failures.
+        for _ in range(2):
+            L._STATE_SWALLOW_LOG.report(OSError("e"))
+        L._log_swallow_summaries()
+        assert any("count=5" in l for l in log_lines)
+
+    def test_summary_never_raises(self, monkeypatch):
+        from agent import loop as L
+        for lg in L._swallow_loggers():
+            lg.reset()
+        L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
+        # Make _swallow_loggers return a broken object whose .summary() raises.
+        class _Bad:
+            def summary(self):
+                raise RuntimeError("boom")
+        monkeypatch.setattr(L, "_swallow_loggers", lambda: (_Bad(),))
+        L._log_swallow_summaries()  # must not raise
+
+    def test_finish_calls_summary(self, env, monkeypatch):
+        from agent import loop as L
+        for lg in L._swallow_loggers():
+            lg.reset()
+        L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
+        # Drive a real suppression then run an iteration to its end.
+        monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "schedule", "linear")
+        monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "every", 1000)
+        for _ in range(3):
+            L._TIMING_SWALLOW_LOG.report(OSError("e"))
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+
+        client = _ScriptedClient(["\n   \n"])  # empty issue, clean branch
+        L._iteration(client, max_bytes=10_000, push=False)
+        assert any("swallow-summary _write_timing" in l for l in log_lines)
