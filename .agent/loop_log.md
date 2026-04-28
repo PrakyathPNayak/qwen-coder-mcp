@@ -3006,3 +3006,18 @@ read-only operation, no state changes.
 **Act.** Signature change: `preview_chars: int | None = 60`. Auto path inside the function body computes `max(20, min(200, cols - 28))` to floor and ceiling sanely. 5 new tests in `test_history_diff_width.py`: explicit-None-uses-terminal (monkeypatched 200 cols → row >100 chars), narrow-terminal-clamp-with-ellipsis, explicit-int-still-works, default-60-unchanged (regression pin), short-messages-not-affected.
 
 **Verify.** All 5 pass. Existing 40 diff/inline/since-resume/preview tests still green. Full suite ~1.28k passed, 1 skipped.
+
+## Loop 204 — wire `/checkpoints diff` and `/resume --preview` to auto-width
+
+**Observe.** Loop 203 added the auto-width path to `format_history_diff`, but every dispatcher call site still passed nothing, getting the legacy 60-char default. From the user's perspective loop 203 was effectively dead code.
+
+**Orient.** Three call sites, all in `tui.py` dispatch: `/resume --preview`, `/checkpoints diff <N>`, `/checkpoints diff --since-resume`. All become auto-width by adding `preview_chars=None`.
+
+**Devil.**
+- *Correctness:* This changes user-visible output on any non-80-col terminal. Could it break tests pinning specific previews in dispatcher output? Full suite run before adding the loop-204 tests showed 1276 passed unchanged — existing dispatcher tests don't pin preview width tightly enough to break. ✅
+- *Scope:* Should the renderer's default also flip from 60 to None? No — public API stability matters. Internal callers opt in; external callers get the historical default. ✅
+- *Priority:* Without this, the previous loop had no user-visible effect. Highest-leverage tiny fix. ✅
+
+**Act.** Three call sites updated to pass `preview_chars=None`. 4 new tests in `test_diff_dispatcher_auto_width.py`: diff N on wide terminal renders >100 chars, narrow terminal still clamps with ellipsis, /resume --preview honours width, /checkpoints diff --since-resume honours width.
+
+**Verify.** All 4 pass. Full suite ~1.28k passed, 1 skipped.

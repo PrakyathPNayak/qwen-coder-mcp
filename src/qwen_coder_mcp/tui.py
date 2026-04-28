@@ -1369,6 +1369,7 @@ def dispatch_slash(
                     list(history),
                     loaded,
                     snapshot_label=source.name,
+                    preview_chars=None,
                 ),
                 False,
             )
@@ -1456,6 +1457,7 @@ def dispatch_slash(
                         loaded,
                         snapshot_label=source.name,
                         inline_diff=inline,
+                        preview_chars=None,
                     ),
                     False,
                 )
@@ -1484,6 +1486,7 @@ def dispatch_slash(
                     loaded,
                     snapshot_label=chosen.name,
                     inline_diff=inline,
+                    preview_chars=None,
                 ),
                 False,
             )
