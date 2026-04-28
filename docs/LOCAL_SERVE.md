@@ -72,11 +72,21 @@ require `/v1/chat/completions`.
 
 ## Troubleshooting
 
-- **OOM at startup**: lower `QWEN_SERVE_GPU_UTIL` (e.g. `0.85`) or
-  `QWEN_SERVE_MAX_LEN` (e.g. `16384`).
+- **OOM at startup (CUDA out of memory during warmup / KV cache allocation)**:
+  the defaults already enforce eager mode, fp8 KV cache, and `max_num_seqs=4`
+  on a 24 GB 4090. If it still OOMs, drop further:
+  - `QWEN_SERVE_MAX_LEN=2048` (less KV cache per slot)
+  - `QWEN_SERVE_MAX_SEQS=1` (single-slot KV cache)
+  - `QWEN_SERVE_GPU_UTIL=0.75`
+  - `QWEN_SERVE_KV_DTYPE=fp8` is already the default; keep it.
+  - `QWEN_SERVE_EAGER=1` is already the default; keep it (skips CUDA graph
+    capture which briefly doubles peak memory).
+  The script also exports `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
+  which the OOM error itself recommends; it reduces fragmentation.
 - **`unknown architecture qwen3_5`**: upgrade vLLM (`pip install -U vllm`)
   inside `.venv-serve`. Hybrid Gated-DeltaNet support landed in 0.7.x.
 - **Slow first token**: vLLM compiles CUDA graphs on the first request; the
-  agent loop's first iteration may take 30-60 s.
+  agent loop's first iteration may take 30-60 s. With `--enforce-eager` the
+  first token is faster but throughput is slightly lower.
 - **Port already in use**: `QWEN_SERVE_PORT=8001 ./scripts/serve_qwen.sh`
   and set `QWEN_BASE_URL=http://127.0.0.1:8001/v1` in `.env`.

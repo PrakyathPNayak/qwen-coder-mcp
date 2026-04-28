@@ -831,6 +831,12 @@ def dispatch_slash(
         if not cmd.args:
             return "usage: /open <path>", False
         return _render_open(fs_cfg, cmd.args[0]), False
+    if name == "cd":
+        if fs_cfg is None:
+            return "no fs context available", False
+        if not cmd.args:
+            return f"(cwd) {fs_cfg.root}", False
+        return _render_cd(fs_cfg, cmd.args[0]), False
     return f"unknown command: /{name}  (try /help)", False
 
 
