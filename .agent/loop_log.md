@@ -1452,3 +1452,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 5/6; was next.md #3.
 - ACT: 3 new tests (registration, repeated-timeouts cadence + context, check=True still raises). 449 passed.
 - COMMIT: pending.
+
+## Loop 81 — `_RateLimitedSwallowLogger.report` returns bool
+- OBSERVE: API enabling change. Loop 80 left no remaining spam-vulnerable `_log` callers (audit complete). Now move to API quality so future SIGUSR1 dump (next.md #5) can be built cleanly.
+- ORIENT: Adding a return value is purely additive; existing call sites discard returns.
+- DECIDE: `report()` returns True iff it emitted a log line this call. Documented in docstring.
+- DEVIL:
+  - Correctness: type signature change (`None` → `bool`). Tests don't currently bind on return value, no breakage. ✓
+  - Scope: enabling change for SIGUSR1 dump and any "extra context only on log iterations" caller. Not over-engineering — same level as `summary()` from loop 74.
+  - Priority: bucket 8/9; was next.md #4.
+- ACT: 5 new tests (first=T, suppressed=F, periodic, exponential cadence vector, demo callsite). 454 passed.
+- COMMIT: pending.

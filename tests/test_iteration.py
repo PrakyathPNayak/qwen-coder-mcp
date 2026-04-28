@@ -1764,3 +1764,50 @@ class TestRunGitTimeoutRateLimited:
             L._run_git("status", check=True)
         # check=True path bypasses the rate limiter entirely.
         assert L._GIT_TIMEOUT_SWALLOW_LOG.count == 0
+
+
+class TestSwallowLoggerReportReturnsBool:
+    """Loop 81: `report()` returns True iff it logged this call."""
+
+    def test_first_report_returns_true(self, monkeypatch):
+        from agent import loop as L
+        lg = L._RateLimitedSwallowLogger("rb1", every=100, schedule="linear")
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        assert lg.report(OSError("e")) is True
+
+    def test_suppressed_reports_return_false(self, monkeypatch):
+        from agent import loop as L
+        lg = L._RateLimitedSwallowLogger("rb2", every=10, schedule="linear")
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        assert lg.report(OSError("e")) is True   # count=1 logs
+        assert lg.report(OSError("e")) is False  # count=2 suppressed
+        assert lg.report(OSError("e")) is False  # count=3 suppressed
+
+    def test_periodic_emit_returns_true(self, monkeypatch):
+        from agent import loop as L
+        lg = L._RateLimitedSwallowLogger("rb3", every=3, schedule="linear")
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        results = [lg.report(OSError("e")) for _ in range(7)]
+        # count=1 True, 2 False, 3 True (3%3=0), 4 False, 5 False, 6 True, 7 False.
+        assert results == [True, False, True, False, False, True, False]
+
+    def test_exponential_schedule_powers_of_two(self, monkeypatch):
+        from agent import loop as L
+        lg = L._RateLimitedSwallowLogger("rb4", every=8, schedule="exponential")
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        results = [lg.report(OSError("e")) for _ in range(10)]
+        # 1=T, 2=T, 3=F, 4=T, 5-7=F, 8=T, 9=F, 10=F.
+        assert results == [True, True, False, True, False, False, False,
+                           True, False, False]
+
+    def test_callsite_can_bind_extra_work(self, monkeypatch):
+        """Demonstrates the intended use case: extra diagnostic dumps
+        only on logging iterations."""
+        from agent import loop as L
+        lg = L._RateLimitedSwallowLogger("rb5", every=10, schedule="linear")
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        extra_dumps = []
+        for _ in range(5):
+            if lg.report(OSError("e")):
+                extra_dumps.append("dumped")
+        assert extra_dumps == ["dumped"]  # only count=1

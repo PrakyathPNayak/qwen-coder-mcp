@@ -217,12 +217,21 @@ class _RateLimitedSwallowLogger:
         # Linear default.
         return self.every > 0 and n % self.every == 0
 
-    def report(self, exc: BaseException, context: str = "") -> None:
+    def report(self, exc: BaseException, context: str = "") -> bool:
+        """Increment the failure counter and emit a log line on a
+        rate-limited cadence. Returns ``True`` iff a log line was
+        emitted this call (False = suppressed). Callers that want to
+        bind extra one-time work to the same cadence (e.g., dumping
+        diagnostic context, sending a metric) can branch on the
+        return value.
+        """
         self.count += 1
         if self._should_log():
             ctx = f" [{context}]" if context else ""
             _log(f"{self.label} failed (count={self.count}){ctx}: {exc}")
             self.last_logged_count = self.count
+            return True
+        return False
 
     def reset(self) -> None:
         self.count = 0
