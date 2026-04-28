@@ -1,9 +1,9 @@
-# Loop 205 candidates
+# Loop 206 candidates
 
-1. **Terminal-width awareness for `_format_checkpoint_listing`** — same UX gap as loops 202/203/204 but at the listing render site. Long snapshot names + ISO-8601 + size column overflow on narrow terminals.
-2. **`/checkpoints export N <path> --gzip`** — compressed archives.
-3. **`/tokens --json --top K`** — top-K heaviest messages.
-4. **Live vLLM smoke test** — environment-dependent; defer.
-5. **`/help <term> --regex`** — escape hatch for searching for `/c.*ts`-style patterns.
+1. **End-to-end check on `tui.py` startup against real backend** — `test_serve_qwen_help_validation.py` proved the validator-vs-real-tool pattern catches drift. Apply it to the TUI: actually start the app, point it at a fake-vLLM HTTP fixture, walk through 3-4 slash commands, assert no exceptions. Currently TUI tests are all unit-level — same dry-run-vs-reality gap that bit /serve_qwen.sh.
+2. **Audit other shell scripts for vLLM CLI drift** — there are scripts in `scripts/` and `serve/` that may also reference removed flags.
+3. **Terminal-width awareness for `_format_checkpoint_listing`** (carried).
+4. **`/checkpoints export N <path> --gzip`** (carried).
+5. **Live vLLM smoke test** — environment-dependent; this loop's --help-based validator is a partial replacement.
 
-(1) is the natural finisher to the terminal-width arc. After that the obvious-pool starts to thin and (2)/(3) are reasonable next moves.
+**Recommended:** (2) — same class of bug may exist elsewhere. Quick audit, possibly more fixes.

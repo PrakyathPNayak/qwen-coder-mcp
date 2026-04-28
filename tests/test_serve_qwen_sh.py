@@ -68,12 +68,15 @@ class TestServeScriptDefaults:
     def test_default_oom_safe_kv_settings(self) -> None:
         argv = _argv_after_marker(_run())
         # Loop 171 raised the long-context defaults: 64k context, fp8
-        # KV, 0.95 GPU util, single sequence, 16 GiB CPU swap.
+        # KV, 0.95 GPU util, single sequence, 16 GiB CPU offload.
+        # Loop 205 migrated --swap-space to --kv-offloading-size when
+        # vLLM 0.11 removed the legacy flag (see test_serve_qwen_help_validation.py).
         assert _flag_value(argv, "--max-model-len") == "65536"
         assert _flag_value(argv, "--max-num-seqs") == "1"
         assert _flag_value(argv, "--kv-cache-dtype") == "fp8"
         assert _flag_value(argv, "--gpu-memory-utilization") == "0.95"
-        assert _flag_value(argv, "--swap-space") == "16"
+        assert _flag_value(argv, "--kv-offloading-size") == "16"
+        assert _flag_value(argv, "--kv-offloading-backend") == "native"
 
     def test_default_enables_chunked_prefill(self) -> None:
         argv = _argv_after_marker(_run())
@@ -154,14 +157,40 @@ class TestServeScriptOverrides:
 
     def test_extra_args_appended(self) -> None:
         argv = _argv_after_marker(
-            _run({"QWEN_SERVE_EXTRA": "--swap-space 4"})
+            _run({"QWEN_SERVE_EXTRA": "--kv-offloading-size 4"})
         )
-        assert "--swap-space" in argv
+        assert "--kv-offloading-size" in argv
         assert "4" in argv
 
-    def test_swap_space_override(self) -> None:
-        argv = _argv_after_marker(_run({"QWEN_SERVE_SWAP_SPACE": "64"}))
-        assert _flag_value(argv, "--swap-space") == "64"
+    def test_kv_offload_override(self) -> None:
+        argv = _argv_after_marker(_run({"QWEN_SERVE_KV_OFFLOAD_GIB": "64"}))
+        assert _flag_value(argv, "--kv-offloading-size") == "64"
+        assert _flag_value(argv, "--kv-offloading-backend") == "native"
+
+    def test_kv_offload_zero_drops_flag(self) -> None:
+        # Operators on RAM-constrained hosts can opt out of CPU offload.
+        argv = _argv_after_marker(_run({"QWEN_SERVE_KV_OFFLOAD_GIB": "0"}))
+        assert "--kv-offloading-size" not in argv
+        assert "--kv-offloading-backend" not in argv
+
+    def test_swap_space_alias_still_honoured(self) -> None:
+        # Backwards compat for operators with QWEN_SERVE_SWAP_SPACE
+        # already in their environment files. Maps to the new flag.
+        argv = _argv_after_marker(_run({"QWEN_SERVE_SWAP_SPACE": "32"}))
+        assert _flag_value(argv, "--kv-offloading-size") == "32"
+        # And the obsolete --swap-space flag is no longer in argv.
+        assert "--swap-space" not in argv
+
+    def test_kv_offload_takes_precedence_over_swap_space_alias(self) -> None:
+        argv = _argv_after_marker(
+            _run(
+                {
+                    "QWEN_SERVE_SWAP_SPACE": "32",
+                    "QWEN_SERVE_KV_OFFLOAD_GIB": "8",
+                }
+            )
+        )
+        assert _flag_value(argv, "--kv-offloading-size") == "8"
 
     def test_chunked_prefill_disable(self) -> None:
         argv = _argv_after_marker(_run({"QWEN_SERVE_CHUNKED_PREFILL": "0"}))

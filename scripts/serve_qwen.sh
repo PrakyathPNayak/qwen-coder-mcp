@@ -18,7 +18,10 @@
 #   QWEN_SERVE_MAX_SEQS     max concurrent sequences (default 1)
 #   QWEN_SERVE_KV_DTYPE     kv cache dtype (default fp8)
 #   QWEN_SERVE_EAGER        enforce eager mode (default 1)
-#   QWEN_SERVE_SWAP_SPACE   CPU RAM (GiB) for preempted KV blocks (default 16)
+#   QWEN_SERVE_KV_OFFLOAD_GIB  CPU RAM (GiB) for KV cache offloading via
+#                           --kv-offloading-size (default 16). Replaces the
+#                           removed-in-vLLM-0.11 --swap-space flag.
+#                           QWEN_SERVE_SWAP_SPACE accepted as deprecated alias.
 #   QWEN_SERVE_CHUNKED_PREFILL  chunked prefill on long prompts (default 1)
 #   QWEN_SERVE_MAX_BATCHED  per-step batched-token cap (default 4096)
 #   QWEN_SERVE_LIMIT_MM     --limit-mm-per-prompt JSON; default disables
@@ -56,11 +59,14 @@ EAGER="${QWEN_SERVE_EAGER:-1}"
 DTYPE="${QWEN_SERVE_DTYPE:-auto}"
 API_KEY="${QWEN_SERVE_API_KEY:-EMPTY}"
 EXTRA="${QWEN_SERVE_EXTRA:-}"
-# CPU RAM (in GiB) reserved for swapping preempted KV blocks. vLLM
-# uses this transparently when an active sequence's KV pressure
-# exceeds GPU capacity (long prefills, multiple concurrent seqs). Set
-# to 0 to disable swap entirely on RAM-constrained hosts.
-SWAP_SPACE="${QWEN_SERVE_SWAP_SPACE:-16}"
+# CPU RAM (in GiB) reserved for KV cache offloading. vLLM 0.11+
+# replaced the legacy `--swap-space` flag with `--kv-offloading-size`
+# (used together with --kv-offloading-backend native). Same semantic
+# role: KV blocks under GPU pressure spill to host RAM rather than
+# crashing the engine. Set to 0 to disable offloading entirely.
+# QWEN_SERVE_SWAP_SPACE is honoured as a deprecated alias so existing
+# operator scripts keep working.
+KV_OFFLOAD_GIB="${QWEN_SERVE_KV_OFFLOAD_GIB:-${QWEN_SERVE_SWAP_SPACE:-16}}"
 # Chunked prefill processes long prompts in slices instead of one
 # 65k-token forward pass that would OOM. Default on; set to 0 only
 # if you know prefill fits in VRAM.
@@ -124,9 +130,16 @@ fi
 
 echo "[serve_qwen] model=$MODEL host=$HOST port=$PORT"
 echo "[serve_qwen] max_len=$MAX_LEN gpu_util=$GPU_UTIL max_seqs=$MAX_SEQS kv_dtype=$KV_DTYPE eager=$EAGER limit_mm=$LIMIT_MM"
-echo "[serve_qwen] swap_space=${SWAP_SPACE}GiB chunked_prefill=$CHUNKED_PREFILL max_batched=$MAX_BATCHED"
+echo "[serve_qwen] kv_offload=${KV_OFFLOAD_GIB}GiB chunked_prefill=$CHUNKED_PREFILL max_batched=$MAX_BATCHED"
 echo "[serve_qwen] PYTORCH_CUDA_ALLOC_CONF=$PYTORCH_CUDA_ALLOC_CONF"
 echo "[serve_qwen] logs -> $LOG"
+
+KV_OFFLOAD_ARG=()
+if [ "$KV_OFFLOAD_GIB" != "0" ]; then
+  # vLLM 0.11+ flag pair. backend=native uses the in-tree CPU
+  # offloader (the lmcache backend has extra runtime deps).
+  KV_OFFLOAD_ARG=(--kv-offloading-size "$KV_OFFLOAD_GIB" --kv-offloading-backend native)
+fi
 
 CMD=(vllm serve "$MODEL"
   --host "$HOST"
@@ -136,13 +149,13 @@ CMD=(vllm serve "$MODEL"
   --max-num-seqs "$MAX_SEQS"
   --kv-cache-dtype "$KV_DTYPE"
   --gpu-memory-utilization "$GPU_UTIL"
-  --swap-space "$SWAP_SPACE"
   --api-key "$API_KEY"
   --served-model-name "qwen3.6-27b" "$MODEL"
   --trust-remote-code
   "${EAGER_ARG[@]}"
   "${LIMIT_MM_ARG[@]}"
   "${CHUNKED_ARG[@]}"
+  "${KV_OFFLOAD_ARG[@]}"
 )
 
 if [ "$DRY_RUN" = "1" ]; then

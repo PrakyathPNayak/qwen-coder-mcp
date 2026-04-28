@@ -3021,3 +3021,27 @@ read-only operation, no state changes.
 **Act.** Three call sites updated to pass `preview_chars=None`. 4 new tests in `test_diff_dispatcher_auto_width.py`: diff N on wide terminal renders >100 chars, narrow terminal still clamps with ellipsis, /resume --preview honours width, /checkpoints diff --since-resume honours width.
 
 **Verify.** All 4 pass. Full suite ~1.28k passed, 1 skipped.
+
+## Loop 205 — vLLM 0.11 dropped --swap-space; real launcher was broken
+
+**Observe.** User reported the live launcher crashed with:
+```
+vllm: error: unrecognized arguments: --swap-space 16
+```
+Despite ~1.28k tests passing. Root cause: vLLM 0.11 removed `--swap-space` (replaced with `--kv-offloading-size` + `--kv-offloading-backend`). The dry-run tests in `test_serve_qwen_sh.py` only assert *string equality* on flag names — both the script and tests hardcoded the same wrong string, so they passed in lockstep all the way through the breaking release. There was no test that validated the script's argv against the *real* `vllm serve` argparse.
+
+**Orient.** Two-front fix: (1) update the script to use the new flag pair, (2) close the test-gap with an end-to-end validator that shells out to `vllm serve --help=all` and asserts every long flag in the dry-run argv exists in the help output. Backwards compat: keep `QWEN_SERVE_SWAP_SPACE` env var as a deprecated alias so anyone with it in their environment files keeps working.
+
+**Decide.** Replace `--swap-space N` in `CMD` with `--kv-offloading-size N --kv-offloading-backend native` (only when `KV_OFFLOAD_GIB != 0`). New env var `QWEN_SERVE_KV_OFFLOAD_GIB`; falls back to `QWEN_SERVE_SWAP_SPACE` when the new name is unset. New test file `test_serve_qwen_help_validation.py` skipped cleanly when no vLLM install is reachable.
+
+**Devil.**
+- *Correctness:* `--kv-offloading-size 0` is a vLLM-disabled state; the script must not emit the flag pair at all in that case (otherwise vLLM might warn/error). Pinned by `test_kv_offload_zero_drops_flag` and `test_argv_with_kv_offload_zero_still_clean`. ✅
+- *Scope:* Should the regression-prevention loop also boot vLLM end-to-end? No — that requires GPU + downloading a 27B model. `--help=all` is the right stand-in: it parses the full argparse machinery without engine startup. Manually verified via `vllm serve <argv> --help` returning the help text with no `unrecognized arguments` error. ✅
+- *Priority:* Top of the priority ladder (priority 1: things that crash). Drops everything else from the candidate list. ✅
+
+**Act.**
+- `scripts/serve_qwen.sh`: `SWAP_SPACE` → `KV_OFFLOAD_GIB`; flag pair `--kv-offloading-size`/`--kv-offloading-backend native`; conditional emission when `!= 0`; deprecated alias support; updated banner echo.
+- `tests/test_serve_qwen_sh.py`: `test_default_oom_safe_kv_settings` updated to assert the new flag pair; new tests `test_kv_offload_override`, `test_kv_offload_zero_drops_flag`, `test_swap_space_alias_still_honoured`, `test_kv_offload_takes_precedence_over_swap_space_alias`; the `test_extra_args_appended` test now uses the new flag name.
+- New `tests/test_serve_qwen_help_validation.py` (6 tests): `test_default_argv_only_uses_recognised_flags` walks every `--*` token in the dry-run argv and asserts it appears in `vllm serve --help=all`; `test_legacy_swap_space_no_longer_emitted` regression pin; `test_kv_offloading_flag_recognised` sanity; `test_chunked_prefill_flag_recognised` sanity; `test_core_flags_recognised` belt-and-braces enumeration of every critical flag; `test_argv_with_kv_offload_zero_still_clean` opt-out path also clean. All skipped if no `vllm` executable found.
+
+**Verify.** All 35 serve-script tests pass. Full suite ~1.29k passed, 1 skipped. Manually ran `vllm serve <real-argv> --help` and confirmed argparse no longer errors.
