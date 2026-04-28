@@ -897,6 +897,28 @@ def _render_sysinfo_json(
                 "ok": False,
                 "error": f"{type(exc).__name__}: {exc}",
             }
+    # Loop 247: surface the persistent task-memory snapshot so operators
+    # can see at-a-glance what the model has been told about the current
+    # task, open todos, facts, and recent decisions. Omitted when memory
+    # is disabled (None) or empty (so /sysinfo --json stays compact).
+    tm = getattr(client, "task_memory", None)
+    if tm is not None:
+        try:
+            snap = tm.snapshot()
+            if (
+                snap.get("current_task")
+                or snap.get("todos")
+                or snap.get("facts")
+                or snap.get("decisions")
+            ):
+                payload["task_memory"] = {
+                    "current_task": snap.get("current_task") or "",
+                    "todos": list(snap.get("todos") or []),
+                    "facts": dict(snap.get("facts") or {}),
+                    "decisions": list(snap.get("decisions") or []),
+                }
+        except Exception:  # noqa: BLE001
+            pass
     return json.dumps(payload, indent=2)
 
 
@@ -977,6 +999,35 @@ def _render_sysinfo(    client: QwenClient,
             if hint:
                 engine_line = f"{engine_line}\n  hint:     {hint}"
         lines.append(f"  engine:   {engine_line}")
+    # Loop 247: surface the persistent task-memory snapshot. Compact one-
+    # liner: current task + todo counts. Operators can run /memory show
+    # for the full breakdown; this is just the breadcrumb in /sysinfo.
+    tm = getattr(client, "task_memory", None)
+    if tm is not None:
+        try:
+            snap = tm.snapshot()
+            ct = snap.get("current_task") or ""
+            todos = snap.get("todos") or []
+            facts = snap.get("facts") or {}
+            decisions = snap.get("decisions") or []
+            if ct or todos or facts or decisions:
+                open_n = sum(1 for t in todos if t.get("status") == "open")
+                ip_n = sum(1 for t in todos if t.get("status") == "in_progress")
+                done_n = sum(1 for t in todos if t.get("status") == "done")
+                blocked_n = sum(1 for t in todos if t.get("status") == "blocked")
+                task_line = f"task='{ct[:60]}'" if ct else "task=(none)"
+                todo_line = (
+                    f"todos: {open_n} open / {ip_n} in_progress / "
+                    f"{done_n} done / {blocked_n} blocked"
+                )
+                lines.append(f"  memory:   {task_line}")
+                lines.append(f"            {todo_line}")
+                if facts:
+                    lines.append(f"            facts: {len(facts)}")
+                if decisions:
+                    lines.append(f"            decisions: {len(decisions)}")
+        except Exception:  # noqa: BLE001
+            pass
     return "\n".join(lines)
 
 

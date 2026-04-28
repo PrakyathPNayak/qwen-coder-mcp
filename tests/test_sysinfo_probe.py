@@ -380,3 +380,95 @@ class TestSysinfoCompressionVisibilityLoop242:
         assert c._last_compression["dropped"] >= 1
         assert c._last_compression["cap"] == 200
         assert c._last_compression["kept"] < len(msgs)
+
+
+# ============================================================================
+# Loop 247 — /sysinfo surfaces the persistent task-memory snapshot
+# ============================================================================
+class TestSysinfoTaskMemoryLoop247:
+    """When the QwenClient has a TaskMemory attached, /sysinfo (both
+    text and --json) must surface the current task and todo counts so
+    operators see at-a-glance what the model has been told."""
+
+    def _make_client(self, *, with_memory: bool, populate=False, tmp_path=None):
+        from qwen_coder_mcp.task_memory import TaskMemory
+
+        client = make_mock_qwen_client(lambda req: httpx.Response(200, json={"data": []}))
+        if with_memory:
+            tm = TaskMemory(path=tmp_path / "state.json")
+            if populate:
+                tm.set_current_task("ship loop 247")
+                tm.add_todo("t1", "wire sysinfo", status="in_progress")
+                tm.add_todo("t2", "tests", status="open")
+                tm.add_todo("t3", "earlier", status="done")
+                tm.record_fact("repo", "qwen-coder-mcp")
+                tm.record_decision("avoid heavy snapshots in --json")
+            client.task_memory = tm
+        else:
+            client.task_memory = None
+        return client
+
+    def test_text_omits_memory_when_disabled(self, tmp_path):
+        client = self._make_client(with_memory=False, tmp_path=tmp_path)
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = tui._render_sysinfo(client, cfg, history=[])
+        assert "memory:" not in out
+
+    def test_text_omits_memory_when_empty(self, tmp_path):
+        client = self._make_client(with_memory=True, populate=False, tmp_path=tmp_path)
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = tui._render_sysinfo(client, cfg, history=[])
+        assert "memory:" not in out
+
+    def test_text_shows_task_and_todo_counts(self, tmp_path):
+        client = self._make_client(with_memory=True, populate=True, tmp_path=tmp_path)
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = tui._render_sysinfo(client, cfg, history=[])
+        assert "memory:" in out
+        assert "ship loop 247" in out
+        assert "1 open" in out
+        assert "1 in_progress" in out
+        assert "1 done" in out
+
+    def test_text_shows_facts_and_decisions_counts(self, tmp_path):
+        client = self._make_client(with_memory=True, populate=True, tmp_path=tmp_path)
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = tui._render_sysinfo(client, cfg, history=[])
+        assert "facts: 1" in out
+        assert "decisions: 1" in out
+
+    def test_json_omits_memory_when_disabled(self, tmp_path):
+        client = self._make_client(with_memory=False, tmp_path=tmp_path)
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        payload = json.loads(tui._render_sysinfo_json(client, cfg, history=[]))
+        assert "task_memory" not in payload
+
+    def test_json_omits_memory_when_empty(self, tmp_path):
+        client = self._make_client(with_memory=True, populate=False, tmp_path=tmp_path)
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        payload = json.loads(tui._render_sysinfo_json(client, cfg, history=[]))
+        assert "task_memory" not in payload
+
+    def test_json_includes_full_snapshot_when_populated(self, tmp_path):
+        client = self._make_client(with_memory=True, populate=True, tmp_path=tmp_path)
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        payload = json.loads(tui._render_sysinfo_json(client, cfg, history=[]))
+        tm = payload["task_memory"]
+        assert tm["current_task"] == "ship loop 247"
+        assert len(tm["todos"]) == 3
+        assert tm["facts"]["repo"] == "qwen-coder-mcp"
+        assert tm["decisions"][0] == "avoid heavy snapshots in --json"
+
+    def test_text_handles_memory_snapshot_failure(self, tmp_path):
+        """If snapshot() raises, sysinfo must not crash — memory line is just dropped."""
+        client = self._make_client(with_memory=False, tmp_path=tmp_path)
+
+        class _BoomMemory:
+            def snapshot(self):
+                raise RuntimeError("boom")
+
+        client.task_memory = _BoomMemory()
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = tui._render_sysinfo(client, cfg, history=[])
+        # Did not crash; just no memory line.
+        assert "memory:" not in out
