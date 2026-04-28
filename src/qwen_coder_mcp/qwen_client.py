@@ -7,6 +7,7 @@ mode, OpenRouter, Together, etc.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -14,6 +15,15 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
 import httpx
+
+_logger = logging.getLogger(__name__)
+
+# Loop 236: marker appended when the upstream completion was truncated
+# at max_tokens. Downstream parsers (tool-call regex, verdict matcher,
+# TUI) can detect this string to either retry with a higher budget or
+# surface "model ran out of tokens" feedback to the user instead of
+# silently presenting a partial answer that looks like a premature stop.
+TRUNCATION_MARKER = "[truncated: model hit max_tokens]"
 
 
 _THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.DOTALL | re.IGNORECASE)
@@ -576,6 +586,7 @@ class QwenClient:
             raise QwenError(f"malformed response: {data!r}") from exc
         msg = choice.get("message") or {}
         content = msg.get("content")
+        finish_reason = choice.get("finish_reason")
         if isinstance(content, list):  # some backends return content blocks
             parts = []
             for block in content:
@@ -590,10 +601,27 @@ class QwenClient:
             text = ""
         else:
             text = str(content).strip()
+        truncated = finish_reason == "length"
+        # Loop 236: When the model hits max_tokens mid-think (Qwen3-Next
+        # emits long <think>...</think> reasoning blocks), the closing
+        # </think> may never arrive. _strip_think_blocks would then
+        # return the raw text-with-open-tag and the user sees what looks
+        # like a premature stop. Detect that case and salvage whatever
+        # text the model managed to emit AFTER the strip, plus a marker.
+        raw_text = text
         # Strip Qwen3.6 chain-of-thought blocks before any downstream
         # parser (tool-call regex, JSON extractor, verdict matcher)
         # sees the text. See _strip_think_blocks for rationale.
         text = _strip_think_blocks(text)
+        if truncated and not text and raw_text:
+            # All output got eaten because the think block never closed.
+            # Surface the truncation rather than raising QwenError (which
+            # would trigger a retry that hits the same budget).
+            _logger.warning(
+                "qwen completion truncated at max_tokens with unclosed "
+                "<think>; returning marker. raw_len=%d", len(raw_text)
+            )
+            return TRUNCATION_MARKER
         if not text:
             # Empty content is treated as a transient failure: in this
             # agent's domain every prompt expects substantive output
@@ -601,6 +629,14 @@ class QwenClient:
             # downstream as "no findings" / "no_verdict", dropping
             # iterations. Raising QwenError lets the retry loop kick in.
             raise QwenError(f"empty assistant content: {data!r}")
+        if truncated:
+            _logger.warning(
+                "qwen completion truncated at max_tokens (finish_reason=length); "
+                "out_len=%d. Consider raising QWEN_MAX_TOKENS.", len(text)
+            )
+            # Idempotent: don't double-append on repeated extraction.
+            if TRUNCATION_MARKER not in text:
+                text = f"{text}\n\n{TRUNCATION_MARKER}"
         return text
 
     def system_user(

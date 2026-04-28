@@ -44,9 +44,12 @@ def load_settings(env_file: str | os.PathLike[str] | None = None) -> Settings:
         # Default chosen so prompt+completion fits inside the serve
         # script's default max-model-len of 65536. vLLM rejects requests
         # where max_tokens > max_model_len with a VLLMValidationError,
-        # so 8192 leaves ~57k tokens of prompt room. Override with
+        # so 16384 leaves ~49k tokens of prompt room. Override with
         # QWEN_MAX_TOKENS if you raised QWEN_SERVE_MAX_LEN on the server.
-        max_tokens=int(_env("QWEN_MAX_TOKENS", "8192")),
+        # Loop 236: bumped 8192->16384 because Qwen3-Next emits long
+        # <think>...</think> reasoning blocks; the prior cap was eating
+        # answers mid-think and surfacing as "stops prematurely".
+        max_tokens=int(_env("QWEN_MAX_TOKENS", "16384")),
         # Hard ceiling the client uses to clamp max_tokens before each
         # request. Should match the vllm --max-model-len the server was
         # started with. The default tracks scripts/serve_qwen.sh.

@@ -651,3 +651,130 @@ class TestResolveMaxTokens:
             "client must clamp max_tokens before sending so vllm does "
             "not raise VLLMValidationError"
         )
+
+
+# ============================================================ Loop 236
+# finish_reason="length" must be surfaced, not silently truncated.
+class TestTruncationLoop236:
+    """Loop 236: when vLLM returns finish_reason='length' the model
+    has hit max_tokens mid-completion. The prior code silently returned
+    the partial text, which the user perceived as 'query stops
+    prematurely'. Now we append a marker and log a warning. When the
+    truncation falls inside an unclosed <think> block (Qwen3-Next),
+    _strip_think_blocks would have eaten the entire response; we
+    return the marker alone instead of raising QwenError so the
+    caller doesn't burn retries on the same budget."""
+
+    @staticmethod
+    def _length_response(content: str) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "length",
+                    }
+                ]
+            },
+        )
+
+    def test_truncation_marker_appended_when_finish_reason_length(self):
+        from qwen_coder_mcp.qwen_client import TRUNCATION_MARKER
+
+        def handler(_req):
+            return self._length_response("here is a partial answer that ran out")
+
+        c = _client_with(handler)
+        out = c.chat([ChatMessage("user", "tell me everything")])
+        assert "here is a partial answer" in out
+        assert TRUNCATION_MARKER in out
+
+    def test_truncation_marker_not_appended_when_finish_reason_stop(self):
+        from qwen_coder_mcp.qwen_client import TRUNCATION_MARKER
+
+        def handler(_req):
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop",
+                        }
+                    ]
+                },
+            )
+
+        c = _client_with(handler)
+        out = c.chat([ChatMessage("user", "hi")])
+        assert TRUNCATION_MARKER not in out
+        assert out == "ok"
+
+    def test_unclosed_think_at_length_returns_marker_not_qwen_error(self):
+        from qwen_coder_mcp.qwen_client import TRUNCATION_MARKER, QwenError
+
+        # Model emits open <think> then runs out before closing tag.
+        # _strip_think_blocks finds no </think>, so it returns the raw
+        # text -- but downstream parsers see a useless prefix. With
+        # finish_reason=length we instead return the marker so retry
+        # logic and human-readable surfaces both get a clear signal.
+        # However: when text has no </think> the strip is a no-op and
+        # raw_text is non-empty, so we currently fall through to the
+        # "truncated, append marker" branch. Pin that contract.
+        def handler(_req):
+            return self._length_response("<think>\nstill thinking when budget hit")
+
+        c = _client_with(handler)
+        # No QwenError because finish_reason=length AND text non-empty.
+        try:
+            out = c.chat([ChatMessage("user", "explain")])
+        except QwenError:
+            pytest.fail("should not raise on truncated unclosed-think")
+        assert TRUNCATION_MARKER in out
+
+    def test_truncation_inside_closed_think_returns_marker_only_if_empty(self):
+        """When the entire emitted span was a complete <think>...</think>
+        that gets stripped to empty AND finish_reason=length, return the
+        marker alone instead of raising QwenError."""
+        from qwen_coder_mcp.qwen_client import TRUNCATION_MARKER
+
+        def handler(_req):
+            return self._length_response("<think>only thinking</think>")
+
+        c = _client_with(handler)
+        out = c.chat([ChatMessage("user", "x")])
+        assert out == TRUNCATION_MARKER
+
+    def test_truncation_marker_idempotent_on_repeated_extraction(self):
+        from qwen_coder_mcp.qwen_client import (
+            QwenClient,
+            TRUNCATION_MARKER,
+        )
+
+        # Calling _extract_text twice on same dict shouldn't double-append.
+        data = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": f"answer {TRUNCATION_MARKER}",
+                    },
+                    "finish_reason": "length",
+                }
+            ]
+        }
+        out = QwenClient._extract_text(data)
+        assert out.count(TRUNCATION_MARKER) == 1
+
+    def test_finish_reason_absent_treated_as_stop(self):
+        """Older vLLM payloads / mocks that omit finish_reason must NOT
+        get the truncation marker."""
+        from qwen_coder_mcp.qwen_client import TRUNCATION_MARKER
+
+        def handler(_req):
+            return _ok_response("complete answer")
+
+        c = _client_with(handler)
+        out = c.chat([ChatMessage("user", "hi")])
+        assert TRUNCATION_MARKER not in out

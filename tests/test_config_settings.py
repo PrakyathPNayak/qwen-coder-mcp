@@ -42,9 +42,11 @@ class TestDefaultSettings:
 
     def test_default_max_tokens_is_safe(self) -> None:
         s = load_settings(env_file="/nonexistent/.env")
-        # 8192 leaves ~57k tokens of prompt headroom under the new
-        # 65536-token serve default.
-        assert s.max_tokens == 8192
+        # Loop 236: 16384 leaves ~49k tokens of prompt headroom under
+        # the 65536-token serve default. Bumped from 8192 because
+        # Qwen3-Next emits long <think>...</think> blocks that were
+        # cutting answers off mid-reasoning at the prior budget.
+        assert s.max_tokens == 16384
 
 
 class TestSettingsOverrides:
