@@ -441,7 +441,10 @@ class TestDiffSlash:
             client=_FakeClient(),
             fs_cfg=cfg,
         )
-        assert "usage:" in text
+        # /diff <path> now means "diff against HEAD"; on a non-git tmp_path
+        # the underlying git call surfaces an error. Either way it is no
+        # longer a usage hint.
+        assert "usage:" not in text
 
     def test_diff(self, tmp_path: Path) -> None:
         (tmp_path / "a.txt").write_text("hello\nworld\n")
@@ -1180,3 +1183,87 @@ class TestSlashCompletions:
             "/undo", "/retry", "/quit",
         ]:
             assert cmd in tui.SLASH_COMMANDS, f"{cmd} missing"
+
+
+# ----------------------------------------------------------- Loop 142
+class TestDiffHead:
+    def _init_repo(self, tmp_path: Path) -> None:
+        import subprocess
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
+
+    def test_diff_against_head_after_modify(self, tmp_path: Path) -> None:
+        import subprocess
+        self._init_repo(tmp_path)
+        f = tmp_path / "a.py"
+        f.write_text("first\n")
+        subprocess.run(["git", "add", "a.py"], cwd=tmp_path, check=True)
+        subprocess.run(
+            ["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"],
+            cwd=tmp_path, check=True,
+        )
+        f.write_text("second\n")
+
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/diff a.py"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "first" in text
+        assert "second" in text
+
+    def test_diff_against_head_no_changes(self, tmp_path: Path) -> None:
+        import subprocess
+        self._init_repo(tmp_path)
+        f = tmp_path / "a.py"
+        f.write_text("only\n")
+        subprocess.run(["git", "add", "a.py"], cwd=tmp_path, check=True)
+        subprocess.run(
+            ["git", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"],
+            cwd=tmp_path, check=True,
+        )
+
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/diff a.py"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "no changes" in text
+
+    def test_diff_two_arg_still_works(self, tmp_path: Path) -> None:
+        (tmp_path / "a.txt").write_text("hello\n")
+        (tmp_path / "b.txt").write_text("world\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/diff a.txt b.txt"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "hello" in text
+        assert "world" in text
+
+    def test_diff_no_args_usage(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/diff"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "usage" in text
+
+    def test_diff_path_escape(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/diff ../../etc/passwd"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "error" in text.lower()

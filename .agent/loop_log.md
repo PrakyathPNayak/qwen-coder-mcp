@@ -2033,3 +2033,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P3 user experience polish, no risk to chat path.
 - ACT: SLASH_COMMANDS tuple, slash_completions helper, lazy SuggestFromList import inside _build_app, Input widget receives suggester kwarg. Eight new tests. Eight hundred seven passed.
 
+
+## Loop 142 — /diff <path> against git HEAD
+- DECIDE: claude code lets you diff a single file against the most recent commit. Add slash diff with one argument meaning compare to HEAD.
+- DEVIL:
+  - Correctness: validate path is inside fs root before shelling git so a relative path escape via dot dot is rejected before reaching the subprocess. Use shell tools run shell which inherits the deny list and the timeout. Empty stdout with returncode zero means no working tree differences relative to HEAD. Non zero returncode echoes stderr.
+  - Scope: keep the original two argument behavior intact for ad hoc file comparisons that are not under git.
+  - Priority: P3 user requested parity, low risk because the new branch only triggers on a single argument.
+- ACT: _render_diff_head helper that resolves the path through fs tools and shells git with no pager diff HEAD -- path. Dispatcher branch updated to route one arg to head diff and two args to file diff with a refreshed usage message. Five new tests cover modify diff no changes message two arg passthrough usage on no args and path escape. Eight hundred twelve passed.
+

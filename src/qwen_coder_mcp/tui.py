@@ -116,7 +116,7 @@ Slash commands:
   /explain <path>      Qwen explanation of a file
   /apply               Apply the last assistant reply as a unified diff
   /history [n]         Show the last N chat turns (default 10)
-  /diff <a> <b>        Show a unified diff between two files in the repo
+  /diff <a> <b>        Unified diff between two files (or /diff <path> vs HEAD)
   /run <cmd>           Run a shell command (10s timeout, deny list)
   /grep <pat> [path]   Recursive regex search through the repo
   /find <glob> [path]  Glob search through the repo
@@ -278,6 +278,33 @@ def _render_diff(cfg: fs_tools.FsConfig, path_a: str, path_b: str) -> str:
     if not out:
         return f"(files identical: {path_a} == {path_b})"
     return "".join(out)
+
+
+def _render_diff_head(cfg: fs_tools.FsConfig, path: str) -> str:
+    """Return a unified diff of `path` against the git HEAD version.
+
+    Shells out via `shell_tools.run_shell` so the deny list and cwd
+    sandbox apply. Falls back to a friendly message if the path is not
+    tracked or HEAD does not exist (fresh repo with no commits).
+    """
+    try:
+        # Validate path is inside root before running git.
+        fs_tools._resolve_inside_root(cfg, path)
+    except fs_tools.FsError as exc:
+        return f"diff error: {exc}"
+    try:
+        res = shell_tools.run_shell(
+            cfg, f"git --no-pager diff HEAD -- {path}"
+        )
+    except shell_tools.ShellError as exc:
+        return f"diff error: {exc}"
+    body = (res.stdout or "").rstrip()
+    if not body and res.returncode == 0:
+        return f"(no changes vs HEAD: {path})"
+    if res.returncode != 0:
+        err = (res.stderr or "").strip() or "git diff failed"
+        return f"diff error: {err}"
+    return body
 
 
 def _render_run(cfg: fs_tools.FsConfig, cmd: str) -> str:
@@ -480,8 +507,10 @@ def dispatch_slash(
                 return "usage: /history [n]", False
         return _render_history(history, n), False
     if name == "diff":
+        if len(cmd.args) == 1:
+            return _render_diff_head(fs_cfg, cmd.args[0]), False
         if len(cmd.args) < 2:
-            return "usage: /diff <pathA> <pathB>", False
+            return "usage: /diff <path>  or  /diff <a> <b>", False
         return _render_diff(fs_cfg, cmd.args[0], cmd.args[1]), False
     if name == "run":
         if not cmd.rest:
