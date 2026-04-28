@@ -1086,3 +1086,55 @@ class TestRetrySlash:
         # Only the u2/a2 pair was stripped; u1/a1 still there.
         assert len(history) == 2
         assert history[-1].content == "a1"
+
+
+# ----------------------------------------------------------- Loop 140
+class TestPersistHistory:
+    def test_round_trip(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        path = tui.history_file_path(cfg)
+        original = [
+            ChatMessage(role="system", content="be helpful"),
+            ChatMessage(role="user", content="hello"),
+            ChatMessage(role="assistant", content="hi there"),
+        ]
+        n = tui.save_history_jsonl(original, path)
+        assert n == 3
+        loaded = tui.load_history_jsonl(path)
+        assert len(loaded) == 3
+        assert loaded[0].role == "system"
+        assert loaded[2].content == "hi there"
+
+    def test_load_missing(self, tmp_path: Path) -> None:
+        path = tmp_path / "nope.jsonl"
+        assert tui.load_history_jsonl(path) == []
+
+    def test_load_skips_malformed(self, tmp_path: Path) -> None:
+        path = tmp_path / "h.jsonl"
+        path.write_text(
+            '{"role":"user","content":"hi"}\n'
+            'not json at all\n'
+            '{"role":"bogus","content":"x"}\n'
+            '{"role":"assistant","content":"yes"}\n',
+            encoding="utf-8",
+        )
+        loaded = tui.load_history_jsonl(path)
+        assert len(loaded) == 2
+        assert loaded[0].content == "hi"
+        assert loaded[1].content == "yes"
+
+    def test_save_caps_length(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        path = tui.history_file_path(cfg)
+        big = [ChatMessage(role="user", content=str(i)) for i in range(50)]
+        n = tui.save_history_jsonl(big, path, max_messages=10)
+        assert n == 10
+        loaded = tui.load_history_jsonl(path)
+        # Last 10 messages, indices 40..49.
+        assert loaded[0].content == "40"
+        assert loaded[-1].content == "49"
+
+    def test_history_file_path_under_root(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        p = tui.history_file_path(cfg)
+        assert p == tmp_path / ".agent" / "tui_history.jsonl"

@@ -660,6 +660,75 @@ def _default_fs_cfg() -> fs_tools.FsConfig:
     return fs_tools.FsConfig(root=Path(root_str))
 
 
+def history_file_path(cfg: fs_tools.FsConfig) -> Path:
+    """Resolve the per-root jsonl history file inside `.agent/`.
+
+    Lives at `<root>/.agent/tui_history.jsonl`. The directory is created
+    on demand by save_history_jsonl. We deliberately keep this under the
+    repo root so it is gitignored in the same way the rest of `.agent/`
+    is, rather than leaking into a shared `~/.config` location.
+    """
+    return cfg.root / ".agent" / "tui_history.jsonl"
+
+
+def save_history_jsonl(
+    history: list[ChatMessage], path: Path, *, max_messages: int = 500
+) -> int:
+    """Write the trailing `max_messages` of history as one JSON object per line.
+
+    Returns the number of messages written. Silently no-ops if the
+    parent directory cannot be created or the file cannot be written
+    (the TUI should never crash on save failures during shutdown).
+    """
+    import json
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return 0
+    tail = history[-max_messages:]
+    try:
+        with path.open("w", encoding="utf-8") as fh:
+            for msg in tail:
+                fh.write(
+                    json.dumps({"role": msg.role, "content": msg.content})
+                    + "\n"
+                )
+    except OSError:
+        return 0
+    return len(tail)
+
+
+def load_history_jsonl(path: Path) -> list[ChatMessage]:
+    """Read jsonl history written by save_history_jsonl. Missing or
+    malformed lines are skipped silently; a missing file returns [].
+    """
+    import json
+
+    if not path.exists():
+        return []
+    out: list[ChatMessage] = []
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                role = obj.get("role")
+                content = obj.get("content")
+                if role in {"system", "user", "assistant"} and isinstance(
+                    content, str
+                ):
+                    out.append(ChatMessage(role=role, content=content))
+    except OSError:
+        return []
+    return out
+
+
 def _build_app(
     client_factory: Callable[[], QwenClient] | None = None,
     fs_cfg: fs_tools.FsConfig | None = None,
@@ -702,6 +771,23 @@ def _build_app(
             log = self.query_one("#log", RichLog)
             log.write("[bold]qwen-coder-tui[/bold]  type /help")
             self._render_health_banner(log)
+            # Restore prior chat from disk so the user can continue
+            # conversations across restarts. Failures are silent.
+            try:
+                prior = load_history_jsonl(history_file_path(self.fs_cfg))
+            except Exception:  # noqa: BLE001
+                prior = []
+            if prior:
+                self.history.extend(prior)
+                log.write(f"[dim](restored {len(prior)} prior messages)[/dim]")
+
+        def on_unmount(self) -> None:  # type: ignore[override]
+            try:
+                save_history_jsonl(
+                    self.history, history_file_path(self.fs_cfg)
+                )
+            except Exception:  # noqa: BLE001
+                pass
 
         def _render_health_banner(self, log) -> None:  # type: ignore[no-untyped-def]
             """Probe the backend and write a status banner.

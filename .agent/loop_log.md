@@ -2015,3 +2015,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P3 user-requested parity, no risk to chat path.
 - ACT: undo and retry dispatcher branches plus App layer detection of the retry sentinel. Six new tests covering undo of a full pair, undo of a dangling user, undo with nothing to pop, retry round trip, retry with no prior user, and retry trimming only the last pair when earlier pairs exist. Seven hundred ninety four passed.
 
+
+## Loop 140 — persistent chat history across runs
+- DECIDE: claude code remembers context across sessions. Add jsonl persistence keyed to repo root.
+- DEVIL:
+  - Correctness: malformed json lines and unknown roles are silently skipped on load. Save and load both swallow OSError so the App can never crash on a read only filesystem or a permission denied. Trailing five hundred message cap prevents unbounded growth.
+  - Scope: file lives under the repo root in dot agent slash tui history dot jsonl rather than a global home location so each repo gets its own history and the existing dot agent gitignore patterns can hide it.
+  - Priority: P3, low risk because both code paths are wrapped in try except and tests cover round trip plus malformed plus capped tail.
+- ACT: history_file_path, save_history_jsonl, load_history_jsonl helpers. App on_mount loads prior history and on_unmount saves on exit. Five new tests. Seven hundred ninety nine passed.
+
