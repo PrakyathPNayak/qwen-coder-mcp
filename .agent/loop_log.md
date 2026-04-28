@@ -2959,3 +2959,18 @@ read-only operation, no state changes.
 **Act.** New `_render_sysinfo_json` returning `json.dumps(payload, indent=2)`. Dispatch detects `--json` or `--format=json` in `cmd.args`. HELP_TEXT updated. 6 new tests in `test_sysinfo_json.py`: healthy parses, format=json alias, unhealthy preserves error+hint, exception caught & encoded, no-flag keeps text+header, None history yields zero counts.
 
 **Verify.** All 6 pass. Full suite ~1.26k passed, 1 skipped. Existing TestSysInfoSlash text-path tests still green — no regression.
+
+## Loop 201 — `/tokens --json` (JSON-export trilogy complete)
+
+**Observe.** Loops 198 and 200 added `--json` to `/lat` and `/sysinfo`. `/tokens` is the third introspection command and the most number-shaped of the three — completes the trilogy and gives users a uniform pattern.
+
+**Orient.** Same `--json`/`--format=json` flag, indent=2 JSON. Going beyond simple totals: include a per-message breakdown so users debugging context-window pressure can see *which* message is hot, not just that totals are high.
+
+**Devil.**
+- *Correctness:* Per-message tokens must sum to the headline total — pinned by `test_per_message_shape` (asserts `sum(per_message) == tokens_estimated`). The `history is None` guard fires *before* flag parsing, so `--json` users won't get parseable JSON when the history is missing — pinned by `test_no_history_still_text` so this stays an explicit choice, not silent breakage. ✅
+- *Scope:* Should the JSON include the message content? No — could be huge, and consumers can re-fetch via `/save`. Just index/role/count keeps the payload bounded. ✅
+- *Priority:* Lowest-risk JSON loop yet (no I/O, no network) but the per-message field unlocks real triage value — finds which message is consuming context. ✅
+
+**Act.** Single `if as_json:` branch in the `tokens` handler; flag check via `cmd.args` membership. Per-message list with `{index, role, tokens_estimated}`. HELP_TEXT updated. 6 new tests in `test_tokens_json.py`: parses, per-message shape & sum-invariant, `--format=json` alias, empty history, None history still returns text, no flag keeps human path.
+
+**Verify.** All 6 pass. Full suite ~1.26k passed, 1 skipped.

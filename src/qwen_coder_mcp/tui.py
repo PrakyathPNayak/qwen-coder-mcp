@@ -154,7 +154,7 @@ Slash commands:
   /save <path>         Save the current chat transcript to a file
   /git <subcmd>        Read-only git status / log / diff / show / branch
   /tests [args]        Run pytest in the repo
-  /tokens              Estimate total tokens in current chat history
+  /tokens [--json]     Estimate total tokens in current chat history
   /lat [N|reset] [--json]
                        Show the last N agent turns' timing breakdown
                        (TTFT, per-tool latencies, summary). Default N=1.
@@ -1555,8 +1555,23 @@ def dispatch_slash(
     if name == "tokens":
         if history is None:
             return "no history available", False
-        total = sum(estimate_tokens(m.content) for m in history)
+        as_json = "--json" in cmd.args or "--format=json" in cmd.args
+        per_message = [estimate_tokens(m.content) for m in history]
+        total = sum(per_message)
         msgs = len(history)
+        if as_json:
+            import json as _json
+
+            payload = {
+                "messages": msgs,
+                "tokens_estimated": total,
+                "estimator": "four-chars-per-token",
+                "per_message": [
+                    {"index": i, "role": m.role, "tokens_estimated": t}
+                    for i, (m, t) in enumerate(zip(history, per_message))
+                ],
+            }
+            return _json.dumps(payload, indent=2), False
         return (
             f"~{total} tokens across {msgs} messages "
             f"(rough estimate, four characters per token)"
