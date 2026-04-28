@@ -3339,4 +3339,79 @@ class TestPhaseNameDriftAudit:
             "apply_diff",
             "validate",
             "commit_push",
+            "revert",
         }
+
+
+class TestRevertPhaseTiming:
+    """Loop 110: every `_revert_changes()` call site is wrapped in a
+    `_PhaseTimer(phases, "revert")` so revert wall-clock surfaces in
+    timing.log instead of inflating wall_s_delta_phases."""
+
+    def test_revert_phase_recorded_on_validation_failure(self, env, monkeypatch):
+        L, repo = env
+        monkeypatch.setattr(L, "TIMING_FILE", repo / ".loop" / "timing.log")
+        # Force validation to fail so the revert path runs.
+        monkeypatch.setattr(L, "_validate_changed_files", lambda *a, **kw: (False, "py_invalid: synthetic"))
+        client = _ScriptedClient([
+            "- name unclear\n",
+            _diff_for("f.py", "x = 1", "x = 2"),
+            "VERDICT: ACCEPT\n",
+        ])
+        out = L._iteration(client, max_bytes=10_000, push=False)
+        assert out.startswith("validation_failed:")
+        import json
+        rec = json.loads((repo / ".loop" / "timing.log").read_text("utf-8").splitlines()[-1])
+        assert "revert" in rec["phases"]
+
+    def test_revert_phase_not_recorded_on_clean(self, env, monkeypatch):
+        L, repo = env
+        monkeypatch.setattr(L, "TIMING_FILE", repo / ".loop" / "timing.log")
+        client = _ScriptedClient(["\n"])
+        out = L._iteration(client, max_bytes=10_000, push=False)
+        assert out.startswith("clean:")
+        import json
+        rec = json.loads((repo / ".loop" / "timing.log").read_text("utf-8").splitlines()[-1])
+        assert "revert" not in rec["phases"]
+
+    def test_every_revert_changes_call_in_iteration_is_timed(self):
+        """AST audit: every `_revert_changes()` call inside `_iteration`
+        must be inside a `with _PhaseTimer(phases, "revert"):` block."""
+        from agent import loop as L
+        import ast
+        src = Path(L.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        for func in ast.walk(tree):
+            if not (isinstance(func, ast.FunctionDef) and func.name == "_iteration"):
+                continue
+            untimed: list[int] = []
+            timed_ranges: list[tuple[int, int]] = []
+            for node in ast.walk(func):
+                if (
+                    isinstance(node, ast.With)
+                    and any(
+                        isinstance(item.context_expr, ast.Call)
+                        and isinstance(item.context_expr.func, ast.Name)
+                        and item.context_expr.func.id == "_PhaseTimer"
+                        and len(item.context_expr.args) >= 2
+                        and isinstance(item.context_expr.args[1], ast.Constant)
+                        and item.context_expr.args[1].value == "revert"
+                        for item in node.items
+                    )
+                ):
+                    last = node.body[-1]
+                    timed_ranges.append((node.lineno, last.end_lineno or last.lineno))
+            for node in ast.walk(func):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "_revert_changes"
+                ):
+                    if not any(lo <= node.lineno <= hi for (lo, hi) in timed_ranges):
+                        untimed.append(node.lineno)
+            assert not untimed, (
+                f"_revert_changes() call(s) at line(s) {untimed} are not "
+                f"wrapped in `with _PhaseTimer(phases, 'revert')`"
+            )
+            return
+        raise AssertionError("_iteration not found")

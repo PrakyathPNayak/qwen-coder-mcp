@@ -1757,3 +1757,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: Should the audit also assert each phase name appears in the timing.log JSON example? README doesn't have an example -- punt.
   - Priority: This is the right fix because every future phase addition will now be guarded by the audit, not just loop 108's. The hard-coded set is brittle (must update on every new phase) but that's the point -- forces the author to also update README.
 - ACT: README schema section now lists all 7 phases with one-line descriptions. 2 new tests. 538 passed.
+
+## Loop 110 — Wrap revert in named `revert` phase
+- OBSERVE: `_revert_changes()` is called from 3 mutually exclusive branches in `_iteration` (after out_of_scope, after validation_failed, after commit_push failure). All three call sites time spent rolling the tree back ends up in `wall_s_delta_phases` -- invisible at the per-phase level.
+- ORIENT: P5 observability gap. Revert can be slow on a dirty tree (untracked files, unstaged changes, network filesystems). Operators have no way to attribute that cost.
+- DECIDE: Wrap each `_revert_changes()` call site in `_PhaseTimer(phases, "revert")`. Update README. Update audit hard-coded set. Add 3 tests (positive, negative, AST audit that EVERY `_revert_changes()` in `_iteration` is inside a revert PhaseTimer).
+- DEVIL:
+  - Correctness: only one of the 3 branches runs per iteration, so no overwrite risk -- if it ever changed (e.g., a future loop adds a 4th revert), the AST audit fails until that one is also wrapped.
+  - Scope: Should I also wrap `_abort_rebase_if_any()` at iteration start? Not really a revert -- it's belt-and-suspenders cleanup before the iteration even reads anything. Punt.
+  - Priority: This catches a real observability hole that complements loop 108's discovery phase. The AST audit is the load-bearing piece -- prevents future regressions.
+  - Test fix: first test draft used `VERDICT: APPLY\n` (wrong). Production matches `VERDICT: ACCEPT`. Without the verdict regex match, the iteration short-circuits to `rejected:no_verdict` before even hitting the revert path. Fixed.
+- ACT: 3 PhaseTimer wraps in agent/loop.py. README updated. Audit set extended to 8. 3 new tests. 541 passed.

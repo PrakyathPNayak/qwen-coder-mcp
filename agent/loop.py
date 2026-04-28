@@ -1799,7 +1799,8 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
     changed = _changed_paths()
     scope_ok, scope_msg = _diff_in_scope(changed, rel)
     if not scope_ok:
-        rev_ok = _revert_changes()
+        with _PhaseTimer(phases, "revert"):
+            rev_ok = _revert_changes()
         _write_history(
             f"{int(time.time())}-out-of-scope.md",
             history_body + f"OUT OF SCOPE ({scope_msg})\n",
@@ -1812,7 +1813,8 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
     with _PhaseTimer(phases, "validate"):
         syn_ok, syn_msg = _validate_changed_files(changed)
     if not syn_ok:
-        rev_ok = _revert_changes()
+        with _PhaseTimer(phases, "revert"):
+            rev_ok = _revert_changes()
         _write_history(
             f"{int(time.time())}-syntax-failed.md",
             history_body + f"VALIDATION FAILED:\n```\n{syn_msg}\n```\n",
@@ -1834,7 +1836,8 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
         _append_state(f"- {iter_ts} `{rel}` — applied: {summary_line}\n")
         return _finish(f"applied:{rel}")
 
-    rev_ok = _revert_changes()
+    with _PhaseTimer(phases, "revert"):
+        rev_ok = _revert_changes()
     if commit_status == "empty":
         _append_state(f"- {iter_ts} `{rel}` — commit skipped: empty staged tree, reverted\n")
     else:
