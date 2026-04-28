@@ -514,3 +514,34 @@ class TestHealthCheck:
         res = c.health_check()
         assert res["ok"] is True
         assert res["models"] == []
+
+    def test_connection_refused_includes_base_url(self):
+        def handler(_request):
+            raise httpx.ConnectError("[Errno 111] Connection refused")
+        c = _client_with(handler)
+        res = c.health_check()
+        assert res["ok"] is False
+        assert "http://test/v1" in res["error"], (
+            "ConnectError must include the configured base_url so the user "
+            "knows which host/port refused the connection"
+        )
+        assert "http://test/v1/models" in (res.get("hint") or ""), (
+            "hint should suggest a curl probe against the same base_url"
+        )
+
+    def test_timeout_error_includes_base_url(self):
+        def handler(_request):
+            raise httpx.ConnectTimeout("timed out")
+        c = _client_with(handler)
+        res = c.health_check()
+        assert res["ok"] is False
+        assert "http://test/v1" in res["error"]
+
+    def test_generic_http_error_includes_base_url(self):
+        def handler(_request):
+            raise httpx.ReadError("read failed")
+        c = _client_with(handler)
+        res = c.health_check()
+        assert res["ok"] is False
+        assert "http://test/v1" in res["error"]
+        assert "ReadError" in res["error"]

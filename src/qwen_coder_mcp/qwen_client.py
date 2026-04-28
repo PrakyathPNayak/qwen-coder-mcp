@@ -101,22 +101,23 @@ class QwenClient:
         except httpx.ConnectError as exc:
             return {
                 "ok": False,
-                "error": f"connection refused: {exc}",
+                "error": f"connection refused at {self.settings.base_url}: {exc}",
                 "hint": (
-                    "is the qwen server running? "
-                    "start it with scripts/serve_qwen.sh"
+                    "is the qwen server running on this host/port? "
+                    "start it with scripts/serve_qwen.sh, then verify with "
+                    f"curl -fsS {self.settings.base_url}/models"
                 ),
             }
         except httpx.TimeoutException as exc:
             return {
                 "ok": False,
-                "error": f"connection timed out: {exc}",
+                "error": f"connection timed out at {self.settings.base_url}: {exc}",
                 "hint": "backend is reachable but slow to respond; still warming up?",
             }
         except httpx.HTTPError as exc:
             return {
                 "ok": False,
-                "error": f"http error: {type(exc).__name__}: {exc}",
+                "error": f"http error talking to {self.settings.base_url}: {type(exc).__name__}: {exc}",
                 "hint": None,
             }
         if resp.status_code >= 400:

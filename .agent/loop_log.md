@@ -2183,3 +2183,13 @@ kwarg actually forwarded. Existing tests still pass.
   - tests/test_repo_hygiene.py: new file. TestGitignore class checks the file exists and contains the tui_history entry and `.loop/` and `.venv-serve/`. TestNotTracked class runs git ls-files on the jsonl and fails if it ever shows up as tracked, with a remediation message in the assert.
 - VERIFY: targeted run shows nine passed in zero point one three seconds. Full suite eight hundred ninety six passed one skipped (was eight hundred ninety; +6 = five new tests in this loop and one preexisting suite).
 
+
+## Loop 157 - health check errors include the base_url
+- OBSERVE: previous health_check messages said `connection refused: [Errno 111]` with no indication of which host or port the user's QwenClient was actually probing. A user running with QWEN_BASE_URL pointing at the wrong port would have no signal of the misconfiguration.
+- DECIDE: include self.settings.base_url verbatim in every error string and put a copy-paste curl probe in the hint. P3 because it's a real ux improvement on the most common end to end failure mode.
+- DEVIL:
+  - Correctness: the base_url is set at QwenClient construction and is immutable; safe to read in any except branch. Existing TUI tests assert "connection refused" substring (lowercased) so they still pass.
+  - Scope: real symptom is opaque error; real cause is that the error string omits the actionable detail. Fix is at the source.
+  - Priority: P3, helps every misconfigured user immediately.
+- ACT: qwen_client.health_check now formats the three exception branches with `at {self.settings.base_url}` and the ConnectError hint additionally suggests `curl -fsS {base_url}/models`. Three new tests in TestHealthCheck assert the base_url appears in the error message for ConnectError ConnectTimeout and a generic ReadError plus that the curl probe in the hint references the same url. eight hundred ninety nine passed.
+
