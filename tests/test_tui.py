@@ -2667,3 +2667,28 @@ class TestAgentMaxFlag:
 
     def test_help_advertises_max(self) -> None:
         assert "--max" in tui.HELP_TEXT
+
+
+class TestToolsCommand:
+    def test_tools_lists_both_registries(self, tmp_path: Path) -> None:
+        text, quit_now = tui.dispatch_slash(
+            tui.parse_slash("/tools"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        assert quit_now is False
+        # Each read tool name should appear at least once.
+        for tool_name in ["web_search", "web_fetch", "fs_read", "grep"]:
+            assert tool_name in text
+        # Write tool names too.
+        for tool_name in ["fs_write", "apply_patch", "run_shell"]:
+            assert tool_name in text
+        assert "read-only tools" in text
+        assert "write tools" in text
+
+    def test_tools_in_completions(self) -> None:
+        comps = tui.slash_completions("/t")
+        assert "/tools" in comps
+
+    def test_help_advertises_tools(self) -> None:
+        assert "/tools" in tui.HELP_TEXT

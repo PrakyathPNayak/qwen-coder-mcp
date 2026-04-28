@@ -2427,3 +2427,26 @@ helper, and pass it as the `max_steps` kwarg to `run_agent`. Range-check
 9 new tests in `TestAgentMaxFlag`.
 
 **Result**: 1011 passed (+9), 1 skipped.
+
+## Loop 170 — /tools slash command
+
+**Observe**: 1011 green from loop 169. Users had no quick way to see what
+the agent could do (had to read source). Toggling `/agent_write_on` was
+opaque about what new capability that unlocked.
+
+**Decide**: add a `/tools` slash command that prints read-only vs. write
+registries plus the destructive set (which calls hit the modal). Pure
+read-only operation, no state changes.
+
+**Devil's advocate**:
+- Correctness: pulls names directly from the live `agent_loop.*` dicts,
+  so it stays accurate as we add tools.
+- Scope: trivial discoverability fix; doesn't address bigger items but
+  is a low-risk win that compounds with future tool additions.
+- Priority: was #5 in next.md but addressing it now means future loops
+  inherit a discoverability path for free.
+
+**Act**: +/tools branch in dispatch_slash, +entry in SLASH_COMMANDS,
++HELP_TEXT line, 3 tests.
+
+**Result**: 1014 passed (+3), 1 skipped.

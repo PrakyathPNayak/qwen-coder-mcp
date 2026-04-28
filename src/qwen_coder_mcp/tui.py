@@ -104,6 +104,7 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/agent_write_on",
     "/confirm_writes_off",
     "/confirm_writes_on",
+    "/tools",
 )
 
 
@@ -163,6 +164,7 @@ Slash commands:
   /agent_write_off     Disable write tools in default agent mode
   /confirm_writes_on   Pop a y/n modal before each destructive tool call (default)
   /confirm_writes_off  Auto-approve destructive tool calls (audit-log only)
+  /tools               List the read-only and write tool registries
   /quit                Exit
 
 @<path> tokens in plain chat are expanded inline as file contents.
@@ -855,6 +857,18 @@ def dispatch_slash(
         return HELP_TEXT, False
     if name == "quit" or name == "exit":
         return "bye", True
+    if name == "tools":
+        # Two registries: the always-on read tools and the opt-in writes.
+        read_names = sorted(agent_loop.DEFAULT_TOOLS.keys())
+        write_names = sorted(agent_loop.WRITE_TOOLS.keys())
+        lines = [
+            "[bold]read-only tools[/bold] (always available):",
+            "  " + ", ".join(read_names),
+            "[bold]write tools[/bold] (need /agent --write or /agent_write_on):",
+            "  " + ", ".join(write_names),
+            f"destructive (modal-gated): {', '.join(sorted(agent_loop.DESTRUCTIVE_TOOLS))}",
+        ]
+        return "\n".join(lines), False
     if name == "agent":
         if not cmd.rest:
             return "usage: /agent [--write] [--max N] <task>", False
