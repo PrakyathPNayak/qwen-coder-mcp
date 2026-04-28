@@ -113,3 +113,56 @@ def test_diff_paths_skips_dev_null():
     if not diff.endswith("\n"):
         diff += "\n"
     assert loop._has_unsafe_path(diff) is None
+
+
+# ---------------------------------------------------- structural-defect tests
+@pytest.mark.parametrize(
+    "diff,expected",
+    [
+        # `--- a/` only, no `+++`
+        ("--- a/foo.py\n@@ -1 +1 @@\n-x\n+y\n", "missing_plus_header"),
+        # both headers but no hunks
+        ("--- a/foo.py\n+++ b/foo.py\n", "no_hunks"),
+    ],
+)
+def test_apply_diff_rejects_malformed(diff, expected):
+    ok, msg = loop._apply_diff(diff)
+    assert ok is False
+    assert msg.startswith("malformed_diff:")
+    assert expected in msg
+
+
+def test_apply_diff_plus_only_caught_as_not_a_unified_diff():
+    """`+++` without `---` doesn't reach the structural check — it's
+    caught by the prefix check at the top of `_apply_diff` and tagged
+    `not_a_unified_diff`. Either outcome is fine; we just want
+    *not-applied*."""
+    diff = "+++ b/foo.py\n@@ -1 +1 @@\n-x\n+y\n"
+    ok, msg = loop._apply_diff(diff)
+    assert ok is False
+    assert msg == "not_a_unified_diff"
+
+
+def test_apply_diff_accepts_well_formed_diff_with_dev_null(tmp_path, monkeypatch):
+    """A new-file diff using /dev/null is well-formed and must pass the
+    structural check (it'll fail at git apply if file already exists, but
+    not on structural grounds)."""
+    import subprocess
+    monkeypatch.setattr(loop, "_REPO", tmp_path)
+    subprocess.run(["git", "-c", "init.defaultBranch=main", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "seed").write_text("seed\n")
+    subprocess.run(["git", "add", "-A"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "i"], cwd=tmp_path, check=True, capture_output=True)
+    diff = (
+        "diff --git a/new.py b/new.py\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        "+++ b/new.py\n"
+        "@@ -0,0 +1 @@\n"
+        "+x\n"
+    )
+    ok, msg = loop._apply_diff(diff)
+    assert ok is True
+    assert msg == "applied"

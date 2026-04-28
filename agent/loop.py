@@ -278,6 +278,36 @@ def _has_unsafe_path(diff: str) -> str | None:
     return None
 
 
+def _has_structural_defect(diff: str) -> str | None:
+    """Return an error if the diff is malformed, else None.
+
+    A unified diff body must contain at least one `+++ ` header and at
+    least one `@@ ` hunk marker. Some malformed model outputs include
+    only `--- a/PATH` (a half-diff) or include `--- ` and `+++ ` but no
+    hunks at all. These would be rejected by `git apply` but with an
+    opaque message; we want a distinct outcome so the log is readable.
+    """
+    has_minus = False
+    has_plus = False
+    has_hunk = False
+    for line in diff.splitlines():
+        if line.startswith("--- "):
+            has_minus = True
+        elif line.startswith("+++ "):
+            has_plus = True
+        elif line.startswith("@@ ") or line.startswith("@@\t"):
+            has_hunk = True
+    if has_minus and not has_plus:
+        return "missing_plus_header"
+    if has_plus and not has_minus:
+        return "missing_minus_header"
+    if not has_hunk:
+        # `diff --git` alone with rename-only metadata is rare from a
+        # coding model and we never want to apply a rename-without-hunks.
+        return "no_hunks"
+    return None
+
+
 def _apply_diff(diff_text: str) -> tuple[bool, str]:
     """Try `git apply --check` then `git apply`. Returns (ok, message)."""
     diff = _strip_fence(diff_text)
@@ -293,6 +323,9 @@ def _apply_diff(diff_text: str) -> tuple[bool, str]:
     unsafe = _has_unsafe_path(diff)
     if unsafe is not None:
         return False, f"unsafe_path: {unsafe}"
+    structural = _has_structural_defect(diff)
+    if structural is not None:
+        return False, f"malformed_diff: {structural}"
     proc = subprocess.run(
         ["git", "apply", "--check", "-"],
         cwd=_REPO,

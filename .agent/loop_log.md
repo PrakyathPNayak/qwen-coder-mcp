@@ -430,3 +430,27 @@ parametrised traversal cases, absolute (POSIX & Windows-drive),
 backslash, /dev/null preservation, and a real-git-apply happy-path.
 
 **Result**: 140/140 green.
+
+## Loop 15 — `_apply_diff` structural defect detection
+**Bug**: A diff missing `+++ b/PATH` or with no `@@` hunks was rejected
+opaquely as `apply_check_failed: ...`. Distinct outcomes make logs
+greppable and let the loop later distinguish "model emits malformed
+diffs" from "model emits diffs against stale file content".
+
+**Devil**: (a) Are there valid diffs without hunks? Pure rename/mode-
+chmod payloads exist in git, but a coding model fixing a bug should
+never need them, and `git apply` against rename-only without hunks is
+also a no-op risk. Worth refusing. (b) Will `/dev/null` new-file diffs
+be flagged? No — they have `--- /dev/null`, `+++ b/PATH`, and `@@`
+hunks. Verified by `test_apply_diff_accepts_well_formed_diff_with_dev_null`.
+(c) `+++` without `---` is already caught earlier as
+`not_a_unified_diff`; verified by
+`test_apply_diff_plus_only_caught_as_not_a_unified_diff`.
+
+**Fix**: `_has_structural_defect()` returns one of
+`missing_plus_header`, `missing_minus_header`, `no_hunks`. Wired into
+`_apply_diff` after `_has_unsafe_path`. Returns `malformed_diff: <reason>`.
+
+**Tests**: 4 new in `tests/test_apply_diff_paths.py`.
+
+**Result**: 144/144 green.
