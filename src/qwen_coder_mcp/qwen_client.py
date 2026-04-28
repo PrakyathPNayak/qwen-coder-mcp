@@ -26,6 +26,52 @@ _logger = logging.getLogger(__name__)
 TRUNCATION_MARKER = "[truncated: model hit max_tokens]"
 
 
+def _auto_continue_enabled() -> bool:
+    """Loop 254: auto-continue when the model hits ``finish_reason="length"``.
+
+    The user reported the model "stops abruptly and doesn't continue" --
+    root cause is that on max_tokens hit we simply return whatever was
+    generated plus a TRUNCATION_MARKER, leaving the caller to manually
+    re-prompt. With auto-continue enabled (default ON) the client
+    transparently issues a follow-up request that asks the model to
+    keep going from where it stopped, and concatenates the segments.
+
+    Disable via ``QWEN_AUTO_CONTINUE=0`` for legacy behaviour.
+    """
+    raw = os.environ.get("QWEN_AUTO_CONTINUE", "1").strip().lower()
+    return raw not in {"0", "false", "no", ""}
+
+
+def _auto_continue_max_rounds() -> int:
+    """Loop 254: cap on how many auto-continue rounds to issue.
+
+    Hard ceiling so a runaway generator can't fork-bomb the backend.
+    Default 8 (each round issues one full max_tokens budget; 8 rounds
+    on the default 16k budget = 128k tokens of contiguous output, way
+    past any realistic single-turn request). Override via
+    ``QWEN_AUTO_CONTINUE_MAX_ROUNDS``. Set to 0 to disable.
+    """
+    raw = os.environ.get("QWEN_AUTO_CONTINUE_MAX_ROUNDS", "8")
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return 8
+    return max(0, v)
+
+
+def _auto_continue_prompt() -> str:
+    """Loop 254: the synthetic user message asked on continuation.
+
+    Kept short so it costs almost nothing in the context window.
+    Override via ``QWEN_AUTO_CONTINUE_PROMPT`` if a particular model
+    responds better to a different nudge.
+    """
+    return os.environ.get(
+        "QWEN_AUTO_CONTINUE_PROMPT",
+        "continue exactly where you left off; do not repeat or restart.",
+    )
+
+
 def _default_repetition_penalty() -> float:
     """Loop 238: default repetition_penalty for every Qwen request.
 
@@ -823,8 +869,82 @@ class QwenClient:
 
         last_err: Exception | None = None
         chat_deadline = time.monotonic() + _chat_total_budget_seconds()
+
+        # Loop 254: when the model's first response hits finish_reason
+        # ="length", append it back as an assistant turn and ask it to
+        # continue. We stitch each segment together (stripping any
+        # TRUNCATION_MARKER between segments) and stop when the model
+        # finishes naturally, the round cap is hit, or the chat budget
+        # expires. The original ``messages`` list is never mutated --
+        # we work on a fresh ``running_messages`` copy.
+        running_messages: list[dict[str, Any]] = list(payload["messages"])
+        accumulated: list[str] = []
+        auto_continue = _auto_continue_enabled()
+        max_rounds = _auto_continue_max_rounds()
+        rounds_done = 0
+
+        def _strip_marker(s: str) -> str:
+            return s.replace(TRUNCATION_MARKER, "").rstrip()
+
+        while True:
+            payload["messages"] = running_messages
+            text, finish_reason = self._post_chat(
+                payload, max_retries=max_retries, deadline=chat_deadline
+            )
+            if not auto_continue or max_rounds <= 0:
+                if finish_reason == "length" and TRUNCATION_MARKER not in text:
+                    text = f"{text}\n\n{TRUNCATION_MARKER}"
+                if accumulated:
+                    return "\n".join([*accumulated, text])
+                return text
+            if finish_reason != "length":
+                if accumulated:
+                    return "\n".join([*accumulated, _strip_marker(text)])
+                return text
+            # Truncated -- append + continue, unless the segment is
+            # empty (only TRUNCATION_MARKER / dropped think block). In
+            # that case continuing would just loop on empty output, so
+            # return the marker as-is.
+            cleaned = _strip_marker(text)
+            if not cleaned.strip():
+                if accumulated:
+                    joined = "\n".join(accumulated)
+                    if TRUNCATION_MARKER not in joined:
+                        joined = f"{joined}\n\n{TRUNCATION_MARKER}"
+                    return joined
+                return text
+            accumulated.append(cleaned)
+            rounds_done += 1
+            if rounds_done >= max_rounds:
+                _logger.warning(
+                    "auto-continue: hit max-rounds cap (%d); stopping",
+                    max_rounds,
+                )
+                joined = "\n".join(accumulated)
+                if TRUNCATION_MARKER not in joined:
+                    joined = f"{joined}\n\n{TRUNCATION_MARKER}"
+                return joined
+            running_messages = [
+                *running_messages,
+                {"role": "assistant", "content": cleaned},
+                {"role": "user", "content": _auto_continue_prompt()},
+            ]
+
+    def _post_chat(
+        self,
+        payload: dict[str, Any],
+        *,
+        max_retries: int,
+        deadline: float,
+    ) -> tuple[str, str | None]:
+        """Loop 254: single chat-completions POST with retry, returning
+        ``(text, finish_reason)``. Extracted from ``chat()`` so the
+        auto-continue driver can issue multiple rounds with the same
+        retry/deadline semantics for each round.
+        """
+        last_err: Exception | None = None
         for attempt in range(max_retries):
-            if time.monotonic() > chat_deadline:
+            if time.monotonic() > deadline:
                 raise QwenError(
                     f"chat budget exceeded after {attempt} attempts: {last_err}"
                 )
@@ -843,15 +963,13 @@ class QwenClient:
                         f"client error {resp.status_code}: {resp.text[:300]}"
                     )
                 data = resp.json()
-                return self._extract_text(data)
+                return self._extract_text_and_finish(data)
             except QwenFatalError:
-                # Not retriable — fail fast.
                 raise
             except (httpx.HTTPError, QwenError, json.JSONDecodeError) as exc:
                 last_err = exc
                 sleep = min(2**attempt, 10)
-                # Don't sleep past the deadline.
-                remaining = chat_deadline - time.monotonic()
+                remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
                 time.sleep(min(sleep, remaining))
@@ -984,6 +1102,52 @@ class QwenClient:
                 yield tail
             if stream_finish_reason == "length":
                 yield f"\n\n{TRUNCATION_MARKER}"
+
+    @staticmethod
+    def _extract_text_and_finish(data: dict[str, Any]) -> tuple[str, str | None]:
+        """Loop 254: extract assistant text plus the finish_reason so the
+        chat() driver can detect length-truncation and auto-continue.
+
+        Returns ``(text, finish_reason)`` where ``text`` is the
+        already-think-stripped assistant content and ``finish_reason``
+        is whatever the backend reported (``"stop"``, ``"length"``,
+        ``"tool_calls"``, ``None`` for backends that omit it). Raises
+        ``QwenError`` on empty content or malformed payload, exactly
+        like ``_extract_text`` did before.
+        """
+        try:
+            choice = data["choices"][0]
+        except (KeyError, IndexError) as exc:
+            raise QwenError(f"malformed response: {data!r}") from exc
+        msg = choice.get("message") or {}
+        content = msg.get("content")
+        finish_reason = choice.get("finish_reason")
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, dict) and "text" in block:
+                    parts.append(str(block["text"]))
+                elif isinstance(block, str):
+                    parts.append(block)
+            text = "".join(parts).strip()
+        elif isinstance(content, str):
+            text = content.strip()
+        elif content is None:
+            text = ""
+        else:
+            text = str(content).strip()
+        truncated = finish_reason == "length"
+        raw_text = text
+        text = _strip_think_blocks(text)
+        if truncated and not text and raw_text:
+            _logger.warning(
+                "qwen completion truncated at max_tokens with unclosed "
+                "<think>; returning marker. raw_len=%d", len(raw_text)
+            )
+            return TRUNCATION_MARKER, finish_reason
+        if not text:
+            raise QwenError(f"empty assistant content: {data!r}")
+        return text, finish_reason
 
     @staticmethod
     def _extract_text(data: dict[str, Any]) -> str:
