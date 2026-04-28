@@ -1970,3 +1970,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P1 user-blocker -- TUI literally unusable without this.
 - ACT: scripts/serve_qwen.sh new defaults; QwenClient.health_check returning ok/models or error/hint dict; TUI App on_mount now writes a green or red banner; chat_turn now routes through _friendly_chat_error which sniffs ConnectError and prints a serve_qwen hint. 9 new tests (5 health_check + 2 friendly chat error + 2 Pilot-driven banner). 714 passed.
 
+
+## Loop 135 — /run /grep /find /clear /save slash commands + shell_tools module
+- DECIDE: claude-code parity needs bounded shell exec plus repo grep and find. Add shell_tools module with run_shell (deny list, timeout, output cap, sandboxed cwd), grep (pure python recursive regex, skips dot git and binary), and find (rglob with excluded dirs). Wire five new slash commands.
+- DEVIL:
+  - Correctness: deny list catches rm -rf root, sudo, mkfs, dd, fork bomb, shutdown, chmod -R 777 /, chown -R /. Allows rm -rf build (relative). cwd resolves through fs_tools resolve inside root so a cwd arg of dot dot is rejected at the fs boundary. timeout wraps subprocess.run; on TimeoutExpired we tag stderr with timeout and set timed out flag. output capped at sixty four KB per stream with a truncation note.
+  - Scope: pure python grep avoids the ripgrep dependency. Skips dot git node modules dot venv etc and binary files (NUL in first four KB). max hits cap two hundred so a runaway pattern does not flood the TUI.
+  - Priority: P2 user-requested (claude code parity).
+- ACT: shell_tools.py (~250 lines) + 36 shell_tools tests + 16 TUI dispatch tests. Five new slash commands. README will be updated next loop. 765 passed.
+

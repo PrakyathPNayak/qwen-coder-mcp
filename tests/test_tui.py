@@ -570,3 +570,149 @@ class TestHealthBanner:
             text = "\n".join(str(line) for line in log.lines)
             assert "unavailable" in text
             assert "hint" in text
+
+
+# ----------------------------------------------------------- Loop 135 slash commands
+class TestRunSlash:
+    def test_run_command(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, q = tui.dispatch_slash(
+            tui.parse_slash("/run echo hello"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert q is False
+        assert "hello" in text
+        assert "exit=0" in text
+
+    def test_run_usage(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/run"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "usage" in text
+
+    def test_run_denied(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/run sudo rm anything"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "run error" in text
+
+
+class TestGrepSlash:
+    def test_grep(self, tmp_path: Path) -> None:
+        (tmp_path / "x.py").write_text("hello world\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/grep hello"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "x.py" in text and "hello" in text
+
+    def test_grep_no_match(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/grep nonexistent"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "no matches" in text
+
+    def test_grep_usage(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/grep"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "usage" in text
+
+
+class TestFindSlash:
+    def test_find(self, tmp_path: Path) -> None:
+        (tmp_path / "a.py").write_text("")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/find *.py"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "a.py" in text
+
+    def test_find_usage(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/find"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "usage" in text
+
+
+class TestClearAndSave:
+    def test_clear(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history = [
+            ChatMessage("system", "sys"),
+            ChatMessage("user", "hi"),
+            ChatMessage("assistant", "hello"),
+        ]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/clear"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "cleared" in text
+        assert history == []
+
+    def test_save(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history = [
+            ChatMessage("system", "sys"),
+            ChatMessage("user", "hi"),
+            ChatMessage("assistant", "hello"),
+        ]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/save out.md"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "saved 2 turns" in text
+        body = (tmp_path / "out.md").read_text()
+        assert "you>" in body and "qwen>" in body
+
+    def test_save_usage(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/save"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[ChatMessage("user", "hi")],
+        )
+        assert "usage" in text
+
+    def test_save_empty(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/save out.md"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "no chat" in text

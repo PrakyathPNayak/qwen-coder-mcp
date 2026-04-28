@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from . import fs_tools, prompts, web_tools
+from . import fs_tools, prompts, shell_tools, web_tools
 from .qwen_client import ChatMessage, QwenClient
 
 
@@ -76,6 +76,11 @@ Slash commands:
   /apply               Apply the last assistant reply as a unified diff
   /history [n]         Show the last N chat turns (default 10)
   /diff <a> <b>        Show a unified diff between two files in the repo
+  /run <cmd>           Run a shell command (10s timeout, deny list)
+  /grep <pat> [path]   Recursive regex search through the repo
+  /find <glob> [path]  Glob search through the repo
+  /clear               Clear chat history
+  /save <path>         Save the current chat transcript to a file
   /quit                Exit
 
 Anything not starting with `/` is sent to Qwen as a chat message.
@@ -226,6 +231,57 @@ def _render_diff(cfg: fs_tools.FsConfig, path_a: str, path_b: str) -> str:
     return "".join(out)
 
 
+def _render_run(cfg: fs_tools.FsConfig, cmd: str) -> str:
+    try:
+        res = shell_tools.run_shell(cfg, cmd)
+    except shell_tools.ShellError as exc:
+        return f"run error: {exc}"
+    return shell_tools.format_run_result(res)
+
+
+def _render_grep(
+    cfg: fs_tools.FsConfig, pattern: str, path: str = "."
+) -> str:
+    try:
+        hits = shell_tools.grep(cfg, pattern, path=path)
+    except shell_tools.ShellError as exc:
+        return f"grep error: {exc}"
+    except fs_tools.FsError as exc:
+        return f"grep error: {exc}"
+    return shell_tools.format_grep(hits)
+
+
+def _render_find(
+    cfg: fs_tools.FsConfig, glob: str, path: str = "."
+) -> str:
+    try:
+        hits = shell_tools.find(cfg, glob, path=path)
+    except shell_tools.ShellError as exc:
+        return f"find error: {exc}"
+    except fs_tools.FsError as exc:
+        return f"find error: {exc}"
+    return shell_tools.format_find(hits)
+
+
+def _render_save(
+    cfg: fs_tools.FsConfig, history: list[ChatMessage], path: str
+) -> str:
+    """Persist the chat transcript to a file in the repo sandbox."""
+    pairs = [m for m in history if m.role != "system"]
+    if not pairs:
+        return "no chat to save"
+    body_parts: list[str] = []
+    for m in pairs:
+        prefix = "you" if m.role == "user" else "qwen"
+        body_parts.append(f"{prefix}>\n{m.content}\n")
+    body = "\n".join(body_parts)
+    try:
+        fs_tools.write_file(cfg, path, body, create_parents=True)
+    except fs_tools.FsError as exc:
+        return f"save error: {exc}"
+    return f"saved {len(pairs)} turns to {path}"
+
+
 def dispatch_slash(
     cmd: SlashCommand,
     *,
@@ -287,6 +343,31 @@ def dispatch_slash(
         if len(cmd.args) < 2:
             return "usage: /diff <pathA> <pathB>", False
         return _render_diff(fs_cfg, cmd.args[0], cmd.args[1]), False
+    if name == "run":
+        if not cmd.rest:
+            return "usage: /run <cmd>", False
+        return _render_run(fs_cfg, cmd.rest), False
+    if name == "grep":
+        if not cmd.args:
+            return "usage: /grep <pattern> [path]", False
+        path = cmd.args[1] if len(cmd.args) >= 2 else "."
+        return _render_grep(fs_cfg, cmd.args[0], path), False
+    if name == "find":
+        if not cmd.args:
+            return "usage: /find <glob> [path]", False
+        path = cmd.args[1] if len(cmd.args) >= 2 else "."
+        return _render_find(fs_cfg, cmd.args[0], path), False
+    if name == "clear":
+        if history is None:
+            return "no history available", False
+        history.clear()
+        return "(history cleared)", False
+    if name == "save":
+        if history is None:
+            return "no history available", False
+        if not cmd.args:
+            return "usage: /save <path>", False
+        return _render_save(fs_cfg, history, cmd.args[0]), False
     return f"unknown command: /{name}  (try /help)", False
 
 

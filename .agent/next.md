@@ -1,9 +1,8 @@
 # Next Loop Candidates
-1. (P2) /run <cmd> slash command -- bounded shell exec with stdout+stderr capture and a deny list (claude-code parity).
-2. (P2) /grep <pattern> [path] -- ripgrep-backed search through fs sandbox.
-3. (P2) /find <glob> [path] -- glob search through fs sandbox.
-4. (P3) /git <subcmd> -- read-only git status / log / diff in repo.
-5. (P3) /tests -- run pytest and render summary in TUI.
-6. (P3) /clear and /save <path> -- chat history management.
-7. (P5) @file mention auto-expansion in chat input.
+1. (P3) /git read-only subcommand (status / log / diff via shell_tools).
+2. (P3) /tests slash -- run pytest in repo and render summary.
+3. (P3) @file mention auto-expansion -- replace @path with file contents inline.
+4. (P3) /model -- switch the served model id mid session.
+5. (P5) /tokens telemetry footer.
+6. (P5) tab completion for slash command names.
 
