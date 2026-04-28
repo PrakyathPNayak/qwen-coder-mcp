@@ -1960,6 +1960,16 @@ def main() -> None:
                 _log(f"iteration [{_outer_outcome_category(outcome)}] -> {outcome}")
             except Exception:  # never break the loop
                 _log("iteration crashed:\n" + traceback.format_exc())
+                # Loop 104: a crash inside `_iteration` skips both
+                # `_finish` and `_finish_no_file`, so the per-iteration
+                # swallow summary cycle never fires and any sink
+                # failures that already incremented before the crash
+                # stay hidden. If every iteration crashes (e.g., a
+                # regression in `_candidate_files`), the delta channel
+                # would silently stop forever. Run the cycle here as a
+                # best-effort fallback. `_log_swallow_summaries` is
+                # itself try/except-wrapped so it cannot re-raise.
+                _log_swallow_summaries()
             iteration_count += 1
             global _CURRENT_ITERATION
             _CURRENT_ITERATION = iteration_count

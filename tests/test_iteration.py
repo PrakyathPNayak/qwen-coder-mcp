@@ -3045,3 +3045,65 @@ class TestValidationFailedOutcomeIncludesRule:
         assert L._outer_outcome_category(
             "revert_failed:foo.py:after_validation:py_invalid"
         ) == "revert_failed"
+
+
+class TestMainLoopCrashFlushesSwallowSummaries:
+    """Loop 104: when `_iteration` raises, the existing crash handler
+    only logged the traceback. `_finish` and `_finish_no_file` were
+    skipped, so `_log_swallow_summaries` (the per-iteration delta
+    channel) never fired. If a regression caused every iteration to
+    crash at the same point, sink failures that incremented before
+    the crash would be silently hidden indefinitely. The crash branch
+    must now run the summary cycle as a best-effort flush."""
+
+    def test_main_crash_branch_calls_log_swallow_summaries(self):
+        """AST audit: the `except Exception` branch in `main()`'s while
+        loop must call `_log_swallow_summaries` after logging the
+        traceback. Source-level audit because integration-testing
+        `main()` would require mocking the entire QwenClient + signal
+        handler stack."""
+        from agent import loop as L
+        import ast
+        src = Path(L.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        found = False
+        for func in ast.walk(tree):
+            if not (isinstance(func, ast.FunctionDef) and func.name == "main"):
+                continue
+            for node in ast.walk(func):
+                if not isinstance(node, ast.While):
+                    continue
+                for sub in ast.walk(node):
+                    if not isinstance(sub, ast.ExceptHandler):
+                        continue
+                    # Look for a Call to _log_swallow_summaries inside this handler
+                    for call in ast.walk(sub):
+                        if (
+                            isinstance(call, ast.Call)
+                            and isinstance(call.func, ast.Name)
+                            and call.func.id == "_log_swallow_summaries"
+                        ):
+                            found = True
+        assert found, (
+            "main()'s while-loop except-Exception branch must call "
+            "_log_swallow_summaries() so the delta channel keeps firing "
+            "when every iteration crashes"
+        )
+
+    def test_swallow_summaries_call_idempotent_on_no_delta(self, monkeypatch):
+        """If the crash flush fires AND the next iteration completes
+        normally, both will call `_log_swallow_summaries`. The second
+        call must be a no-op (no duplicate summary line) because
+        `_LAST_SWALLOW_SUMMARY_COUNTS` already records the snapshot."""
+        from agent import loop as L
+        L._STATE_SWALLOW_LOG.report(RuntimeError("x"))
+        log_lines: list[str] = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        L._log_swallow_summaries()
+        first = list(log_lines)
+        L._log_swallow_summaries()
+        second = list(log_lines)
+        new_lines = [l for l in second if l not in first]
+        assert not new_lines, (
+            f"second _log_swallow_summaries call emitted duplicate lines: {new_lines}"
+        )
