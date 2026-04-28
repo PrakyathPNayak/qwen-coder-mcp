@@ -1817,3 +1817,13 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: What about `<file>.2`, `.3`? Current rotation is single-slot. If we ever extend to multi-slot, the helper needs updating, but no point future-proofing speculatively.
   - Priority: useful improvement, low blast radius, fully tested.
 - ACT: New `_resolve_inputs` helper, `--no-rotated` flag, README usage block. 6 new tests. 572 passed.
+
+## Loop 116 — Document `apply_failed` internal sub-categories in README
+- OBSERVE: README schema table says "`apply_failed`: `git apply` rejected the diff." That's it. But production emits `apply_failed:<sub_category>:<file>:<msg>` where `<sub_category>` is one of 9 values in `APPLY_ERROR_CATEGORIES`. Operators inspecting timing.log or runtime.log have no way to know what `oversized_diff` vs `binary_patch` vs `dir_conflict` mean without reading source.
+- ORIENT: P5 doc gap. Switched away from candidate 1 (forbid module-state mutation outside `global` decls) because audit found only ONE `global` decl in the entire codebase -- nearly all module state is dict/list mutated, which doesn't need `global`. Audit would be mostly false-positive prone.
+- DECIDE: Expand the `apply_failed` row in README outcome schema table to list all 9 sub-categories, reference `APPLY_ERROR_CATEGORIES` constant. Add audit asserting every value in that frozenset is backticked in the README + the constant name itself appears.
+- DEVIL:
+  - Correctness: the audit is dynamic (reads `L.APPLY_ERROR_CATEGORIES` at test time), so any future addition automatically forces a README update or the test fails.
+  - Scope: should I also document the `<msg>` truncation (60 chars)? Marginal -- the message is informational and varies. Punt.
+  - Priority: small but solidly useful. Pure docs change with audits.
+- ACT: Updated README row. 2 audits. 574 passed.

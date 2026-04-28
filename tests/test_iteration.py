@@ -3463,3 +3463,21 @@ class TestReadmeTimingLogExample:
             union |= set(json.loads(body)["phases"].keys())
         audit = TestPhaseNameDriftAudit()
         assert union == audit._phase_names_in_source()
+
+
+class TestReadmeDocumentsApplyErrorSubcategories:
+    """Loop 116: every value in `APPLY_ERROR_CATEGORIES` must be
+    backticked in the README so operators reading `apply_failed:X:...`
+    outcomes can look up what `X` means."""
+
+    def test_every_apply_error_subcategory_in_readme(self):
+        from agent import loop as L
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
+        for cat in L.APPLY_ERROR_CATEGORIES:
+            assert f"`{cat}`" in readme, (
+                f"apply error sub-category {cat!r} not documented in README"
+            )
+
+    def test_readme_mentions_apply_error_categories_constant(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
+        assert "APPLY_ERROR_CATEGORIES" in readme
