@@ -1520,3 +1520,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Edge: every=0 path is the disable knob (verified). Negative would also be disabled by `if aggregate_every > 0`.
 - ACT: 4 new tests, no production code changes. 477 passed.
 - COMMIT: pending.
+
+## Loop 87 — _dump_logger_state extended with iteration + last-summary-counts
+- OBSERVE: SIGUSR1 dump shows logger summaries but not current loop position or the cached delta-summary state. Operator pulling a snapshot mid-run cannot tell which iteration they froze.
+- ORIENT: Add optional iteration kwarg to _dump_logger_state, surface it in begin/end markers. Also dump _LAST_SWALLOW_SUMMARY_COUNTS so suppressed-but-not-yet-summarised counts are visible. Track _CURRENT_ITERATION at module level so the signal handler closure has a live value.
+- DECIDE: Module-level _CURRENT_ITERATION updated inside main()'s loop body with `global` decl. Signal handler reads it at handler-fire time (closure captures binding, not value).
+- DEVIL:
+  - Correctness: Race -- signal can fire between iteration_count++ and _CURRENT_ITERATION = iteration_count. Worst case: dump shows previous iteration. Acceptable for observability.
+  - Scope: Could subsume `iteration` arg by always reading _CURRENT_ITERATION, but explicit arg makes the helper testable without module mutation. Keep both.
+  - Edge: `iter=` token only appears when iteration is not None -- confirmed via test_iteration_marker_omitted_when_none.
+- ACT: 4 new tests, _CURRENT_ITERATION + dump arg + cache emit. 481 passed.
+- COMMIT: pending.

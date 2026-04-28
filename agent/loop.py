@@ -1790,7 +1790,7 @@ def _log_aggregate_swallow_summary(iteration_count: int) -> None:
         pass
 
 
-def _dump_logger_state(reason: str = "manual") -> None:
+def _dump_logger_state(reason: str = "manual", iteration: int | None = None) -> None:
     """Emit a multi-line snapshot of every swallow logger's full
     summary (including ``last_log_message``). Intended to be wired to a
     SIGUSR1 handler so operators can pull a real-time report from a
@@ -1800,9 +1800,16 @@ def _dump_logger_state(reason: str = "manual") -> None:
     (even when all counts are zero) so a SIGUSR1 ping always produces a
     visible response. Each logger's full summary dict is written on its
     own line for grep-friendliness.
+
+    When ``iteration`` is provided it is included in the begin marker so
+    operators can correlate the snapshot with the current loop position.
+    The cached delta-summary state in ``_LAST_SWALLOW_SUMMARY_COUNTS``
+    is also dumped so suppressed-but-not-yet-summarised counts are
+    visible.
     """
     try:
-        _log(f"logger-state-dump reason={reason} begin")
+        iter_part = f" iter={iteration}" if iteration is not None else ""
+        _log(f"logger-state-dump reason={reason}{iter_part} begin")
         for lg in _swallow_loggers():
             try:
                 s = lg.summary()
@@ -1812,12 +1819,21 @@ def _dump_logger_state(reason: str = "manual") -> None:
             try:
                 _log(f"logger-state-dump {s}")
             except Exception:
-                # str() on s should not fail, but never let dump break.
                 continue
-        _log(f"logger-state-dump reason={reason} end")
+        try:
+            _log(
+                "logger-state-dump last-summary-counts "
+                f"{dict(_LAST_SWALLOW_SUMMARY_COUNTS)}"
+            )
+        except Exception:
+            pass
+        _log(f"logger-state-dump reason={reason}{iter_part} end")
     except Exception:
         # Observability path; never raise.
         pass
+
+
+_CURRENT_ITERATION: int = 0
 
 
 def _install_sigusr1_handler() -> bool:
@@ -1831,7 +1847,9 @@ def _install_sigusr1_handler() -> bool:
             return False
         signal.signal(
             signal.SIGUSR1,
-            lambda _signum, _frame: _dump_logger_state(reason="sigusr1"),
+            lambda _signum, _frame: _dump_logger_state(
+                reason="sigusr1", iteration=_CURRENT_ITERATION
+            ),
         )
         return True
     except Exception:
@@ -1861,6 +1879,8 @@ def main() -> None:
             except Exception:  # never break the loop
                 _log("iteration crashed:\n" + traceback.format_exc())
             iteration_count += 1
+            global _CURRENT_ITERATION
+            _CURRENT_ITERATION = iteration_count
             if aggregate_every > 0 and iteration_count % aggregate_every == 0:
                 _log_aggregate_swallow_summary(iteration_count)
             time.sleep(max(1, settings.loop_interval_seconds))

@@ -2198,3 +2198,86 @@ class TestMainAggregateCadence:
             pass
         # 4 iterations, cadence=2 -> fires at 2, 4.
         assert agg_calls == [2, 4]
+
+
+class TestDumpLoggerStateExtended:
+    """Loop 87: _dump_logger_state now includes iteration marker and
+    last-summary-counts snapshot for full diagnostic context."""
+
+    def test_iteration_marker_in_begin_and_end_when_provided(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import loop as L
+        log_path = tmp_path / "loop.log"
+        monkeypatch.setattr(L, "LOG_FILE", log_path)
+        L._dump_logger_state(reason="test", iteration=42)
+        text = log_path.read_text()
+        assert "logger-state-dump reason=test iter=42 begin" in text
+        assert "logger-state-dump reason=test iter=42 end" in text
+
+    def test_iteration_marker_omitted_when_none(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        log_path = tmp_path / "loop.log"
+        monkeypatch.setattr(L, "LOG_FILE", log_path)
+        L._dump_logger_state(reason="test")
+        text = log_path.read_text()
+        assert "logger-state-dump reason=test begin" in text
+        assert "iter=" not in text.split("begin")[0]
+
+    def test_last_summary_counts_emitted(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        log_path = tmp_path / "loop.log"
+        monkeypatch.setattr(L, "LOG_FILE", log_path)
+        # Seed the cache.
+        L._LAST_SWALLOW_SUMMARY_COUNTS["seeded_label"] = 99
+        try:
+            L._dump_logger_state(reason="test")
+            text = log_path.read_text()
+            assert "last-summary-counts" in text
+            assert "seeded_label" in text
+            assert "99" in text
+        finally:
+            L._LAST_SWALLOW_SUMMARY_COUNTS.pop("seeded_label", None)
+
+    def test_main_updates_current_iteration_for_signal_handler(
+        self, monkeypatch
+    ):
+        """The module-level _CURRENT_ITERATION must track main()'s loop
+        counter so a SIGUSR1 mid-run dumps the right number."""
+        from agent import loop as L
+        monkeypatch.setattr(L, "_aggregate_summary_every", lambda: 0)
+        monkeypatch.setattr(L, "_iteration", lambda *a, **kw: "ok:noop")
+        monkeypatch.setattr(L, "_install_sigusr1_handler", lambda: True)
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        from types import SimpleNamespace
+        fake_settings = SimpleNamespace(
+            model="x", base_url="y", loop_interval_seconds=0,
+            loop_max_file_bytes=10_000, loop_push=False,
+        )
+        import sys as _sys
+        config_mod = _sys.modules.get("qwen_coder_mcp.config")
+        monkeypatch.setattr(
+            config_mod, "load_settings", lambda: fake_settings, raising=False
+        )
+
+        class _StubClient:
+            def __init__(self, *a, **kw): pass
+            def close(self): pass
+        monkeypatch.setattr(L, "QwenClient", _StubClient)
+
+        observed: list[int] = []
+        sleep_calls = {"n": 0}
+        def _sleep(_s):
+            observed.append(L._CURRENT_ITERATION)
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= 5:
+                raise KeyboardInterrupt()
+        monkeypatch.setattr(L.time, "sleep", _sleep)
+
+        # Reset to ensure clean baseline.
+        L._CURRENT_ITERATION = 0
+        try:
+            L.main()
+        except KeyboardInterrupt:
+            pass
+        assert observed == [1, 2, 3, 4, 5]
