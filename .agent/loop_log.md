@@ -2087,3 +2087,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: low risk small surface area.
 - ACT: _render_pinned helper splits the system message on the marker collects lines starting with hash space and reports them. SLASH_COMMANDS gains pinned. Dispatcher branch added. Help text updated. Three tests cover listing two pins reporting nothing pinned and reporting nothing pinned after unpin. Eight hundred thirty nine passed.
 
+
+## Loop 148 — /history clear truncates jsonl too
+- DECIDE: clear is the missing half of the persistence story. Right now /clear blanks the RichLog only and history grows unbounded across sessions because the jsonl file persists. Add clear sub command.
+- DEVIL:
+  - Correctness: keeps the system message because dropping the system would lose the pinned files block and the coder system prompt without warning. unlink wrapped in try except OSError so a read only fs or missing parent directory does not crash. only reports deleted persistence file when the file actually existed and was successfully removed so the message stays accurate.
+  - Scope: does not also dump the loop_log or next.md because those are agent state not user chat state. tight scope is the right call.
+  - Priority: P5 cleanup but high user value since unbounded history bloat across sessions is a real issue.
+- ACT: extend /history dispatch to accept clear arg. clears in place via list.clear and extend so the live history reference the App holds stays the same object. unlink jsonl when fs_cfg present. updated usage error string and help text. four tests cover clear keeping system clear deleting the jsonl file clear when no jsonl exists and the existing numeric n form still working.
+

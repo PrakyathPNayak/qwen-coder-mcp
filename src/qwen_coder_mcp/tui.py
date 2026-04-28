@@ -120,7 +120,7 @@ Slash commands:
   /find_bugs <path>    Qwen review for bugs
   /explain <path>      Qwen explanation of a file
   /apply               Apply the last assistant reply as a unified diff
-  /history [n]         Show the last N chat turns (default 10)
+  /history [n|clear]   Show the last N chat turns (default 10) or clear them
   /diff <a> <b>        Unified diff between two files (or /diff <path> vs HEAD)
   /run <cmd>           Run a shell command (10s timeout, deny list)
   /grep <pat> [path]   Recursive regex search through the repo
@@ -649,12 +649,27 @@ def dispatch_slash(
     if name == "history":
         if history is None:
             return "no history available", False
+        if cmd.args and cmd.args[0] == "clear":
+            kept = [m for m in history if m.role == "system"]
+            history.clear()
+            history.extend(kept)
+            cleared_disk = False
+            if fs_cfg is not None:
+                path = history_file_path(fs_cfg)
+                try:
+                    if path.exists():
+                        path.unlink()
+                        cleared_disk = True
+                except OSError:
+                    pass
+            suffix = " (and deleted persistence file)" if cleared_disk else ""
+            return f"(history cleared){suffix}", False
         n = 10
         if cmd.args:
             try:
                 n = max(1, int(cmd.args[0]))
             except ValueError:
-                return "usage: /history [n]", False
+                return "usage: /history [n|clear]", False
         return _render_history(history, n), False
     if name == "diff":
         if len(cmd.args) == 1:

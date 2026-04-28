@@ -1608,3 +1608,64 @@ class TestPinnedSlash:
             history=history,
         )
         assert "nothing pinned" in text
+
+
+# ----------------------------------------------------------- Loop 148
+class TestHistoryClear:
+    def test_clear_keeps_system_drops_others(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = [
+            ChatMessage(role="system", content="base"),
+            ChatMessage(role="user", content="hi"),
+            ChatMessage(role="assistant", content="hello"),
+        ]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/history clear"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "history cleared" in text
+        assert len(history) == 1
+        assert history[0].role == "system"
+
+    def test_clear_deletes_persistence_file(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        path = tui.history_file_path(cfg)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"role":"user","content":"old"}\n')
+        history: list[ChatMessage] = [ChatMessage(role="user", content="hi")]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/history clear"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert not path.exists()
+        assert "deleted persistence file" in text
+
+    def test_clear_when_no_persistence_file(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = [ChatMessage(role="user", content="hi")]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/history clear"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "history cleared" in text
+        assert "deleted persistence" not in text
+
+    def test_history_n_still_works(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = [
+            ChatMessage(role="user", content="hi"),
+            ChatMessage(role="assistant", content="hello"),
+        ]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/history 5"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "hi" in text
