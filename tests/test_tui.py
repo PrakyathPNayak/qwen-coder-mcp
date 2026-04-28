@@ -580,7 +580,7 @@ class TestRunSlash:
     def test_run_command(self, tmp_path: Path) -> None:
         cfg = fs_tools.FsConfig(root=tmp_path)
         text, q = tui.dispatch_slash(
-            tui.parse_slash("/run echo hello"),
+            tui.parse_slash("/run --yes echo hello"),
             client=_FakeClient(),
             fs_cfg=cfg,
             history=[],
@@ -602,7 +602,7 @@ class TestRunSlash:
     def test_run_denied(self, tmp_path: Path) -> None:
         cfg = fs_tools.FsConfig(root=tmp_path)
         text, _ = tui.dispatch_slash(
-            tui.parse_slash("/run sudo rm anything"),
+            tui.parse_slash("/run --yes sudo rm anything"),
             client=_FakeClient(),
             fs_cfg=cfg,
             history=[],

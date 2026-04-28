@@ -103,6 +103,8 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/history",
     "/diff",
     "/run",
+    "/run_on",
+    "/run_off",
     "/grep",
     "/find",
     "/clear",
@@ -162,7 +164,11 @@ Slash commands:
   /apply               Apply the last assistant reply as a unified diff
   /history [n|clear]   Show the last N chat turns (default 10) or clear them
   /diff <a> <b>        Unified diff between two files (or /diff <path> vs HEAD)
-  /run <cmd>           Run a shell command (10s timeout, deny list)
+  /run [--yes] <cmd>   Run a shell command (10s timeout, deny list).
+                       Default-DENY: add --yes for one-shot approval or
+                       /run_on to auto-approve every /run this session.
+  /run_on              Auto-approve every /run for this session (loop 250)
+  /run_off             Disable /run auto-approve (default; --yes still works)
   /grep <pat> [path] [--ext]
                        Recursive regex search; --py/--md/--json filters by suffix
   /find <glob> [path]  Glob search through the repo
@@ -614,12 +620,53 @@ def _render_diff_head(cfg: fs_tools.FsConfig, path: str) -> str:
     return body
 
 
-def _render_run(cfg: fs_tools.FsConfig, cmd: str) -> str:
+def _render_run(
+    cfg: fs_tools.FsConfig,
+    cmd: str,
+    *,
+    confirm: Callable[[str], bool] | None = None,
+) -> str:
+    """Run a shell command inside the workspace sandbox.
+
+    Loop 250 added the optional ``confirm`` gate: when provided, it's
+    called with the literal command string and must return True before
+    we shell out. A False return yields a friendly "denied" message
+    that the operator can see in the chat log. ``confirm=None`` is the
+    legacy auto-execute path (kept for backward-compat with anyone
+    calling ``_render_run`` directly without a session app).
+    """
+    if confirm is not None:
+        try:
+            ok = bool(confirm(cmd))
+        except Exception as exc:  # noqa: BLE001 -- approval must never crash
+            return f"run denied: confirm hook raised {type(exc).__name__}: {exc}"
+        if not ok:
+            return (
+                f"run denied (no approval): {cmd}\n"
+                "  hint: add --yes to one-shot approve, or /run_on to "
+                "auto-approve all /run for this session."
+            )
     try:
         res = shell_tools.run_shell(cfg, cmd)
     except shell_tools.ShellError as exc:
         return f"run error: {exc}"
     return shell_tools.format_run_result(res)
+
+
+# Loop 250: parse the literal ``/run`` body into ``(approve_inline, cmd)``
+# so the dispatcher and unit tests share one definition of "did the
+# operator type --yes / -y". Returns ``(approve, body_without_flag)``.
+# The flag must appear at the *start* of the body so a stray ``--yes``
+# inside e.g. a sed expression isn't accidentally consumed.
+
+def _parse_run_body(body: str) -> tuple[bool, str]:
+    raw = (body or "").lstrip()
+    if not raw:
+        return False, ""
+    head, _, tail = raw.partition(" ")
+    if head in {"--yes", "-y"}:
+        return True, tail.lstrip()
+    return False, raw
 
 
 def _render_open(cfg: fs_tools.FsConfig, path: str) -> str:
@@ -1649,8 +1696,35 @@ def dispatch_slash(
         return _render_diff(fs_cfg, cmd.args[0], cmd.args[1]), False
     if name == "run":
         if not cmd.rest:
-            return "usage: /run <cmd>", False
-        return _render_run(fs_cfg, cmd.rest), False
+            return "usage: /run [--yes] <cmd>", False
+        approve_inline, body = _parse_run_body(cmd.rest)
+        if not body:
+            return "usage: /run [--yes] <cmd>", False
+        # Session-level auto-approve flag, optional. The TUI App sets
+        # ``run_auto_approve`` on itself; tests can pass any object
+        # with that attribute, or omit ``app`` entirely (defaults to
+        # *deny* so a stray /run from a chat-injected user_text can't
+        # silently shell out).
+        session_auto = bool(getattr(app, "run_auto_approve", False))
+        if approve_inline or session_auto:
+            confirm: Callable[[str], bool] | None = lambda _c: True
+        else:
+            confirm = lambda _c: False
+        return _render_run(fs_cfg, body, confirm=confirm), False
+    if name == "run_on":
+        if app is not None:
+            try:
+                app.run_auto_approve = True
+            except Exception:  # noqa: BLE001
+                pass
+        return "/run auto-approve: ON (every /run shells out without prompting)", False
+    if name == "run_off":
+        if app is not None:
+            try:
+                app.run_auto_approve = False
+            except Exception:  # noqa: BLE001
+                pass
+        return "/run auto-approve: OFF (each /run requires --yes or /run_on)", False
     if name == "grep":
         if not cmd.args:
             return "usage: /grep <pattern> [path] [--ext] [--count]", False
@@ -2758,6 +2832,10 @@ def _build_app(
             # before firing. When False, calls are auto-approved (still
             # logged via the audit hook). Default is to ask.
             self.agent_confirm_writes: bool = True
+            # Loop 250: default-DENY for /run. Operator must either
+            # type ``/run --yes <cmd>`` for one-shot approval or run
+            # ``/run_on`` to auto-approve every /run for the session.
+            self.run_auto_approve: bool = False
 
         def compose(self) -> ComposeResult:  # type: ignore[override]
             yield Header(show_clock=True)
