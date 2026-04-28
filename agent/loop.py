@@ -250,13 +250,23 @@ def _parse_first_issue(text: str) -> str | None:
     return first
 
 
+_VERDICT_ACCEPT_RE = re.compile(r"VERDICT\s*:\s*ACCEPT\b", re.IGNORECASE)
+_VERDICT_REJECT_RE = re.compile(
+    r"VERDICT\s*:\s*REJECT\b\s*(.*)", re.IGNORECASE | re.DOTALL
+)
+
+
 def _verdict_accepts(text: str) -> tuple[bool, str]:
-    upper = text.upper()
-    if "VERDICT: ACCEPT" in upper:
+    if _VERDICT_ACCEPT_RE.search(text):
         return True, "accept"
-    if "VERDICT: REJECT" in upper:
-        m = re.search(r"VERDICT:\s*REJECT\s*(.*)", text, re.IGNORECASE)
-        return False, (m.group(1).strip() if m else "reject")
+    m = _VERDICT_REJECT_RE.search(text)
+    if m:
+        # Trim only the immediate reject reason (first line), so a long
+        # post-verdict ramble doesn't bloat the log.
+        tail = m.group(1).strip()
+        if tail:
+            tail = tail.splitlines()[0].strip()
+        return False, tail or "reject"
     # No clear verdict -> reject conservatively.
     return False, "no_verdict"
 

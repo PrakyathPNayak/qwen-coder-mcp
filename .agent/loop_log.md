@@ -753,3 +753,34 @@ verified by inspecting outbound payload, defaults match `chat`
 defaults, `max_retries=1` actually limits retries.
 
 **Result**: 210/210 green.
+
+## Loop 26 — `_verdict_accepts` brittle on whitespace + truncation
+**Bug**: `_verdict_accepts` did `text.upper(); "VERDICT: ACCEPT" in
+upper`. That accepts only the exact form with one space. It missed
+`VERDICT : ACCEPT`, `VERDICT:ACCEPT`, `VERDICT:  ACCEPT`, etc. The
+prompts tell the model to emit `VERDICT: ACCEPT` exactly, but
+in-the-wild model output drifts on spacing. Conservative reject was
+the safe fallback, but it also turned legitimate accepts into
+rejects, dropping work. Also: reject reason captured everything
+after the verdict via `.*` (non-DOTALL) → just the line, but then
+`.strip()` could carry pages of commentary into the log.
+
+**Devil**: (a) Correctness — could a more permissive regex accept
+ACCEPTANCE? Word-boundary `\b` prevents that. Tested. Could it
+accept REJECTED as REJECT? Same — `\b` after REJECT prevents match,
+falls through to `no_verdict`. Tested. (b) Scope — root cause is
+"verdict-grammar contract is fragile". A regex tightens the parser
+without making the contract more permissive in a way that risks
+runaway accepts. (c) Priority — directly governs whether a fix is
+committed; a missed accept costs an entire loop iteration.
+
+**Fix**: `_VERDICT_ACCEPT_RE = re.compile(r"VERDICT\s*:\s*ACCEPT\b",
+re.IGNORECASE)`, `_VERDICT_REJECT_RE = re.compile(r"VERDICT\s*:\s*
+REJECT\b\s*(.*)", IGNORECASE | DOTALL)`. Reject reason truncated to
+first line.
+
+**Tests**: 7 new — extra spaces around colon (accept+reject),
+no-space, multiple-spaces, reject reason single-line truncation,
+ACCEPTANCE doesn't false-accept, REJECTED falls through.
+
+**Result**: 217/217 green.

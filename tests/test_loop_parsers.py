@@ -174,6 +174,45 @@ class TestVerdictAccepts:
         ok, _ = L._verdict_accepts("verdict: accept")
         assert ok is True
 
+    def test_extra_spaces_around_colon_accept(self):
+        ok, _ = L._verdict_accepts("VERDICT : ACCEPT")
+        assert ok is True
+
+    def test_no_space_after_colon_accept(self):
+        ok, _ = L._verdict_accepts("VERDICT:ACCEPT")
+        assert ok is True
+
+    def test_multiple_spaces_after_colon_accept(self):
+        ok, _ = L._verdict_accepts("VERDICT:   ACCEPT")
+        assert ok is True
+
+    def test_extra_spaces_around_colon_reject(self):
+        ok, reason = L._verdict_accepts("VERDICT : REJECT scope is wrong")
+        assert ok is False
+        assert "scope is wrong" in reason
+
+    def test_reject_reason_truncated_to_first_line(self):
+        text = "VERDICT: REJECT short reason\nthen pages of rambling commentary..."
+        ok, reason = L._verdict_accepts(text)
+        assert ok is False
+        assert reason == "short reason"
+
+    def test_accept_word_boundary_does_not_match_acceptance(self):
+        """`VERDICT: ACCEPTANCE` is not a valid verdict; word boundary
+        should prevent the false-accept. A reject ramble that includes
+        the word 'acceptance' must not fire."""
+        ok, _ = L._verdict_accepts(
+            "VERDICT: REJECT scope creep, no clear path to ACCEPTANCE here"
+        )
+        assert ok is False
+
+    def test_reject_word_boundary(self):
+        ok, reason = L._verdict_accepts("VERDICT: REJECTED for cause")
+        # `REJECTED` should not match `REJECT\b`; this falls through to
+        # no_verdict (conservative reject).
+        assert ok is False
+        assert reason == "no_verdict"
+
 
 # ---------------------------------------------------------------- _apply_diff
 @pytest.fixture
