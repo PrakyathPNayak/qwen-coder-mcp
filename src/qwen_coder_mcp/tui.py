@@ -162,7 +162,7 @@ Slash commands:
   /model [id]          Show or switch the served model id
   /undo                Pop the last user/assistant exchange
   /retry               Re-send the last user message
-  /sysinfo [--json]    Snapshot of backend health, model, root, history
+  /sysinfo [--json] [--probe]    Snapshot of backend health, model, root, history
   /export <path>       Export full chat as Markdown
   /pin <path> [path...]
                        Attach one or more files to the system prompt for the
@@ -688,12 +688,18 @@ def _render_sysinfo_json(
     client: QwenClient,
     cfg: fs_tools.FsConfig,
     history: list[ChatMessage] | None,
+    *,
+    probe: bool = False,
 ) -> str:
     """JSON counterpart to ``_render_sysinfo`` for downstream tooling.
 
     Same data; structured shape. Health failures surface as
     ``{"ok": false, "error": ..., "hint": ...}`` rather than a free-form
-    string. Tokens and message counts are integers.
+    string. Tokens and message counts are integers. When ``probe`` is
+    True, an additional ``engine_health`` field carries the result of
+    vLLM's ``/health`` endpoint — the active readiness signal that
+    distinguishes "args accepted" (loops 205/211 fixed this) from
+    "engine actually ready to serve a chat request".
     """
     import json
 
@@ -717,15 +723,28 @@ def _render_sysinfo_json(
         "history": {"messages": msgs, "tokens_estimated": tokens},
         "health": check,
     }
+    if probe:
+        try:
+            payload["engine_health"] = client.vllm_health_probe()
+        except Exception as exc:  # noqa: BLE001
+            payload["engine_health"] = {
+                "ok": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
     return json.dumps(payload, indent=2)
 
 
 def _render_sysinfo(    client: QwenClient,
     cfg: fs_tools.FsConfig,
     history: list[ChatMessage] | None,
+    *,
+    probe: bool = False,
 ) -> str:
     """Return a one-shot snapshot of backend health, model, root, and
     history token estimate. Designed for users to copy into a bug report.
+
+    When ``probe`` is True, also probe vLLM's ``/health`` and surface
+    "engine ready" / "engine warming up" as a separate line.
     """
     settings = getattr(client, "settings", None)
     model = getattr(settings, "model", None) or "(unknown)"
@@ -757,6 +776,20 @@ def _render_sysinfo(    client: QwenClient,
         f"  history:  {msgs} messages, ~{tokens} tokens",
         f"  health:   {health_line}",
     ]
+    if probe:
+        try:
+            engine = client.vllm_health_probe()
+        except Exception as exc:  # noqa: BLE001
+            engine = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        if engine.get("ok"):
+            engine_line = "engine ready (vLLM /health 200)"
+        else:
+            err = engine.get("error") or "unknown"
+            engine_line = f"engine not ready: {err}"
+            hint = engine.get("hint")
+            if hint:
+                engine_line = f"{engine_line}\n  hint:     {hint}"
+        lines.append(f"  engine:   {engine_line}")
     return "\n".join(lines)
 
 
@@ -1856,9 +1889,10 @@ def dispatch_slash(
         del history[last_user_idx:]
         return f"__RETRY__{prompt}", False
     if name == "sysinfo":
+        probe = "--probe" in cmd.args
         if "--json" in cmd.args or "--format=json" in cmd.args:
-            return _render_sysinfo_json(client, fs_cfg, history), False
-        return _render_sysinfo(client, fs_cfg, history), False
+            return _render_sysinfo_json(client, fs_cfg, history, probe=probe), False
+        return _render_sysinfo(client, fs_cfg, history, probe=probe), False
     if name == "export":
         if history is None:
             return "no history available", False

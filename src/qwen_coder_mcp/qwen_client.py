@@ -176,6 +176,88 @@ class QwenClient:
             pass
         return {"ok": True, "status": resp.status_code, "models": models}
 
+    def vllm_health_probe(self, timeout: float = 2.0) -> dict[str, Any]:
+        """Probe vLLM's ``/health`` endpoint (sibling of ``/v1``).
+
+        vLLM exposes a dedicated readiness endpoint at the *server root*,
+        not under ``/v1``: e.g. ``http://host:8000/health``. It returns
+        200 (often with empty body) once the engine has finished loading
+        weights and is ready to serve requests. A 503 means the engine
+        is still warming up.
+
+        ``health_check`` only proves ``/v1/models`` answers — but vLLM
+        will happily 200 ``/v1/models`` while the engine is mid-restart
+        and chat requests are queueing forever. ``vllm_health_probe``
+        is the *active* readiness signal that catches the gap loops 205
+        and 211 left in production: arg-level OK + engine-level not-yet.
+
+        Returns the same shape as ``health_check``:
+          {"ok": True,  "status": int}
+          {"ok": False, "error": str, "hint": str | None}
+
+        Never raises. Designed so the TUI can surface "engine still
+        warming up" as actionable text instead of letting the next chat
+        hang for 60 seconds.
+        """
+        # Reconstruct the root URL: strip a trailing /v1 (or /v1/) from
+        # base_url. We do not assume the same httpx.Client because
+        # base_url is a constructor concern; build a one-shot GET.
+        base = str(self.settings.base_url).rstrip("/")
+        if base.endswith("/v1"):
+            root = base[: -len("/v1")]
+        else:
+            root = base
+        health_url = f"{root}/health"
+        try:
+            resp = httpx.get(
+                health_url,
+                timeout=timeout,
+                headers={"Authorization": f"Bearer {self.settings.api_key}"},
+            )
+        except httpx.ConnectError as exc:
+            return {
+                "ok": False,
+                "error": f"connection refused at {health_url}: {exc}",
+                "hint": (
+                    "vLLM is not listening on the expected host/port; "
+                    "start it with scripts/serve_qwen.sh and watch "
+                    ".loop/serve.log for 'application startup complete'"
+                ),
+            }
+        except httpx.TimeoutException as exc:
+            return {
+                "ok": False,
+                "error": f"health probe timed out at {health_url}: {exc}",
+                "hint": (
+                    "engine is alive but not ready; this is normal during "
+                    "model load (can take 30-90s for 27B at fp8)"
+                ),
+            }
+        except httpx.HTTPError as exc:
+            return {
+                "ok": False,
+                "error": f"http error probing {health_url}: {type(exc).__name__}: {exc}",
+                "hint": None,
+            }
+        if resp.status_code == 200:
+            return {"ok": True, "status": 200}
+        if resp.status_code == 503:
+            return {
+                "ok": False,
+                "error": f"engine not ready (503) at {health_url}",
+                "hint": (
+                    "vLLM is up but the engine is still initialising. "
+                    "Tail .loop/serve.log; if it stalls beyond 2 minutes "
+                    "the model probably failed to load (OOM, missing "
+                    "weights, or a flag-pairing bug like loop 211)"
+                ),
+            }
+        return {
+            "ok": False,
+            "error": f"health probe returned {resp.status_code}: {resp.text[:200]}",
+            "hint": None,
+        }
+
     def chat(
         self,
         messages: Sequence[ChatMessage | dict[str, str]],

@@ -1,9 +1,8 @@
-# Loop 215 candidates
+# Loop 217 candidates
 
-1. `/checkpoints export N <path> --gzip` — long-deferred utility.
-2. `/sysinfo --json --probe` — active vLLM `/health` probe (would have caught loops 205 & 211 lock-step bugs in production sooner).
-3. **Dedupe the test_qwen_client.py inline MockTransport assemblies** — three sites at lines 42/572/645 still construct httpx clients by hand. Check if they fit the loop-214 helper or genuinely need bespoke shapes.
-4. **Add a TUI-level integration test for streaming + checkpoint/save flow** — currently chat_turn_stream + checkpoint save are tested in isolation.
-5. Live vLLM smoke test of `<tool_call>` syntax (env-dependent, carried since 164).
+1. **Real-model engine-init E2E** (user just authorised this) — un-gate or add a SECOND gated test that uses the actual default model `Lorbus/Qwen3.6-27B-int4-AutoRound`. This is the only way to be sure the loop-216 fix actually boots end-to-end.
+2. **Add `QWEN_SERVE_FORCE_OFFLOAD=1` escape hatch** — for false-positive hybrid-name matches.
+3. **Probe vLLM /health from agent_loop pre-flight** — same probe as /sysinfo --probe, but in the autonomous loop's startup so it self-detects engine readiness instead of timing out chat.
+4. Live vLLM smoke test of `<tool_call>` syntax (env-dependent, carried since 164).
 
-**Recommended:** (2) — it's been on the candidate list for many loops; closes the loop-205/211 reactive-detection gap with proactive runtime probe.
+**Recommended:** (1) — actually boot the model, hit it with a chat request, verify the loop-216 fix is real and not just structurally plausible.

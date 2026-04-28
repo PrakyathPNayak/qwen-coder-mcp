@@ -3211,3 +3211,43 @@ Pivoted to a leftover loop-213 follow-up: the `_make_client(handler)` MockTransp
 - `tests/test_tui_chat_turn_e2e.py`: same replacement; removed the unused `Settings`/`QwenClient` imports.
 
 **Verify.** Full suite 1364 passed, 2 skipped (unchanged from loop 213). No test count change — refactor only.
+
+## Loop 215 — /sysinfo --probe (vLLM /health active readiness)
+
+**Observe.** Loops 205 / 211 / "loop 215'" all chase the same shape: vLLM accepted the argv (or didn't), but operators only learn at the next chat that something is wrong. No active readiness signal in the TUI.
+
+**Orient.** vLLM exposes `/health` at the server root (sibling of `/v1`). Empty 200 = engine ready; 503 = warming up; ConnectError = not listening. Wire this into `/sysinfo --probe` so operators get an actionable line distinct from the `/v1/models` answer.
+
+**Devil.** *Correctness:* `/health` is at the SERVER ROOT, not `/v1` — must strip a trailing `/v1` from `base_url`. Pinned by `test_health_url_strips_v1_suffix` and `test_health_url_when_no_v1_suffix`. *Scope:* Could be added unconditionally to every `/sysinfo`. Rejected — adds 0.5-2s of latency and cross-network traffic to every status print. Opt-in via `--probe`. *Priority:* P1 — closes the loops 205/211 reactive-detection feedback loop.
+
+**Act.** New `QwenClient.vllm_health_probe()`; `_render_sysinfo` and `_render_sysinfo_json` accept `probe=True`; dispatcher recognises `--probe`; help text updated. New `tests/test_sysinfo_probe.py` with 14 tests (URL derivation, 503/connect/timeout/auth all mapped to actionable hints, dispatcher routing, no-probe-by-default).
+
+**Verify.** 14/14 in the new file; 1378 passed, 2 skipped.
+
+## Loop 216 — hybrid models forbid offloading; default Qwen3.6 IS hybrid
+
+**Observe.** User reported a NEW engine-init crash:
+```
+ValueError: Hybrid KV cache manager is disabled but failed to convert
+the KV cache specs to one unified type.
+```
+Loop 211's fix was wrong about the conflict shape. The real shape:
+
+- Hybrid models (Qwen3-Next, Qwen3.6, Jamba, mamba) have heterogeneous KV cache specs (attention + mamba) and REQUIRE the Hybrid KV Cache Manager to unify them at init.
+- The native OffloadingConnector is incompatible with HMA.
+- ⇒ For hybrid models the conflict is unresolvable: HMA must be both on AND off. Offloading is structurally unavailable.
+
+Loop 211 saw "OffloadingConnector incompatible with HMA" and concluded "always pair the disable flag". That works for dense models but breaks hybrid models. The serve log on this run actually says it: `Setting attention block size to 1568 tokens to ensure that attention page size is >= mamba page size` — Qwen3.6-27B is hybrid.
+
+**Orient.** Two-front fix:
+1. Force `KV_OFFLOAD_GIB=0` for hybrid model names (substring detection: `qwen3-next`, `qwen3.6`, `jamba`, `mamba`, `hybrid`, `nemotronh`, `minimax-text`). Substring detection is imperfect but pre-launch is the only hook we have; vLLM does not expose a "is-hybrid" probe.
+2. Update tests: the default model is now hybrid, so the loop-211 "always pair" tests must be re-keyed to a non-hybrid model (Qwen2.5-7B). Add `test_hybrid_model_forces_offloading_off_even_when_requested` and `test_non_hybrid_model_keeps_offloading` to pin both directions of the guard.
+
+**Devil.**
+- *Correctness:* What if a hybrid model name doesn't match any substring? False negative → user hits the same engine-init crash. Mitigation: the loop-215 `/sysinfo --probe` now surfaces it as an actionable line ("engine not ready"). False positive (a dense model whose name happens to contain "mamba") → unnecessary disable. Acceptable; user can override via `QWEN_SERVE_KV_OFFLOAD_GIB` is a... wait no — the guard FORCES it to 0 even when set. That means a user with a misnamed dense model can't enable offloading at all. Acceptable for now; we'd expose an explicit `QWEN_SERVE_FORCE_OFFLOAD=1` override if a real false positive surfaces. ✅
+- *Scope:* Only the ones we can name. Other future hybrids will hit the loop-215 probe, which is the ratchet of last resort. ✅
+- *Priority:* P0 — third engine-init regression in three loops; the user is right that the lights-on E2E was the only check that would catch this in advance, and the loop-211 E2E test is gated, so it didn't catch it at PR time.
+
+**Act.** `scripts/serve_qwen.sh`: case-statement before `KV_OFFLOAD_ARG` builds; logs the override to stderr when it fires. Tests updated/added: 6 hybrid families pinned plus a positive-control test on Qwen2.5-7B.
+
+**Verify.** Full suite 1380 passed, 2 skipped (was 1378). Help-validation pairing tests still green (they use `_argv_with()` which keeps the default hybrid model — and they correctly observe that offloading flags are absent now). Smoke check: `vllm serve <new-default-argv> --help` parses cleanly.

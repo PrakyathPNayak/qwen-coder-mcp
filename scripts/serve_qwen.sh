@@ -67,6 +67,27 @@ EXTRA="${QWEN_SERVE_EXTRA:-}"
 # QWEN_SERVE_SWAP_SPACE is honoured as a deprecated alias so existing
 # operator scripts keep working.
 KV_OFFLOAD_GIB="${QWEN_SERVE_KV_OFFLOAD_GIB:-${QWEN_SERVE_SWAP_SPACE:-16}}"
+
+# Hybrid models (Qwen3-Next, Jamba, mamba/attention mixes) REQUIRE the
+# Hybrid KV Cache Manager so vLLM can unify the heterogeneous KV cache
+# specs across attention and mamba layers. The native OffloadingConnector
+# is structurally incompatible with HMA (loop 211). For hybrid models
+# the conflict is unresolvable: HMA must be on AND off, so offloading
+# is just not available. Force KV_OFFLOAD_GIB=0 in that case.
+#
+# Detection is by model-name substring -- there is no vLLM CLI to ask
+# "is this model hybrid?" pre-launch. The substrings cover the families
+# we know are hybrid as of vLLM 0.11. False negatives just mean a louder
+# engine-init failure (the loop 215 /sysinfo --probe surfaces this);
+# false positives just mean offloading is unnecessarily disabled.
+case "$(echo "$MODEL" | tr '[:upper:]' '[:lower:]')" in
+  *qwen3-next*|*qwen3_next*|*qwen3.6*|*qwen3_6*|*jamba*|*mamba*|*hybrid*|*nemotronh*|*minimax-text*)
+    if [ "$KV_OFFLOAD_GIB" != "0" ]; then
+      echo "[serve_qwen] hybrid model detected ($MODEL); forcing KV_OFFLOAD_GIB=0 (offloading is incompatible with HMA which hybrid models require)" >&2
+      KV_OFFLOAD_GIB=0
+    fi
+    ;;
+esac
 # Chunked prefill processes long prompts in slices instead of one
 # 65k-token forward pass that would OOM. Default on; set to 0 only
 # if you know prefill fits in VRAM.

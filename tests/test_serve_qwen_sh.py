@@ -68,18 +68,21 @@ class TestServeScriptDefaults:
     def test_default_oom_safe_kv_settings(self) -> None:
         argv = _argv_after_marker(_run())
         # Loop 171 raised the long-context defaults: 64k context, fp8
-        # KV, 0.95 GPU util, single sequence, 16 GiB CPU offload.
+        # KV, 0.95 GPU util, single sequence.
         # Loop 205 migrated --swap-space to --kv-offloading-size when
         # vLLM 0.11 removed the legacy flag (see test_serve_qwen_help_validation.py).
-        # Loop 211 added --disable-hybrid-kv-cache-manager because the
-        # native OffloadingConnector is incompatible with vLLM's HMA.
+        # Loop 215' (this loop): the default Qwen3.6 model is hybrid
+        # (mamba+attention). Hybrid models REQUIRE the Hybrid KV Cache
+        # Manager which the native OffloadingConnector forbids -- so
+        # offloading is structurally unavailable for the default model.
+        # Pin: HMA stays enabled, no offloading flags emitted.
         assert _flag_value(argv, "--max-model-len") == "65536"
         assert _flag_value(argv, "--max-num-seqs") == "1"
         assert _flag_value(argv, "--kv-cache-dtype") == "fp8"
         assert _flag_value(argv, "--gpu-memory-utilization") == "0.95"
-        assert _flag_value(argv, "--kv-offloading-size") == "16"
-        assert _flag_value(argv, "--kv-offloading-backend") == "native"
-        assert "--disable-hybrid-kv-cache-manager" in argv
+        assert "--kv-offloading-size" not in argv
+        assert "--kv-offloading-backend" not in argv
+        assert "--disable-hybrid-kv-cache-manager" not in argv
 
     def test_default_enables_chunked_prefill(self) -> None:
         argv = _argv_after_marker(_run())
@@ -166,13 +169,30 @@ class TestServeScriptOverrides:
         assert "4" in argv
 
     def test_kv_offload_override(self) -> None:
-        argv = _argv_after_marker(_run({"QWEN_SERVE_KV_OFFLOAD_GIB": "64"}))
+        # Use a non-hybrid model name so the hybrid-detection guard
+        # doesn't force offloading off.
+        argv = _argv_after_marker(
+            _run(
+                {
+                    "QWEN_SERVE_KV_OFFLOAD_GIB": "64",
+                    "QWEN_SERVE_MODEL": "Qwen/Qwen2.5-7B-Instruct",
+                }
+            )
+        )
         assert _flag_value(argv, "--kv-offloading-size") == "64"
         assert _flag_value(argv, "--kv-offloading-backend") == "native"
 
     def test_kv_offload_zero_drops_flag(self) -> None:
         # Operators on RAM-constrained hosts can opt out of CPU offload.
-        argv = _argv_after_marker(_run({"QWEN_SERVE_KV_OFFLOAD_GIB": "0"}))
+        # Use a non-hybrid model to isolate this check from the hybrid guard.
+        argv = _argv_after_marker(
+            _run(
+                {
+                    "QWEN_SERVE_KV_OFFLOAD_GIB": "0",
+                    "QWEN_SERVE_MODEL": "Qwen/Qwen2.5-7B-Instruct",
+                }
+            )
+        )
         assert "--kv-offloading-size" not in argv
         assert "--kv-offloading-backend" not in argv
         # The HMA-disable flag is paired *with* offloading, so it should
@@ -182,19 +202,77 @@ class TestServeScriptOverrides:
     def test_kv_offload_pairs_with_disable_hybrid_kv_manager(self) -> None:
         # Loop 211: the native OffloadingConnector raises at engine init
         # if HMA is enabled. Whenever we emit --kv-offloading-size we
-        # must also emit --disable-hybrid-kv-cache-manager. Pin both
-        # the default and an override path.
-        argv = _argv_after_marker(_run())
+        # must also emit --disable-hybrid-kv-cache-manager. Use a
+        # non-hybrid model so the hybrid guard does not pre-empt this.
+        argv = _argv_after_marker(
+            _run({"QWEN_SERVE_MODEL": "Qwen/Qwen2.5-7B-Instruct"})
+        )
         assert "--kv-offloading-size" in argv
         assert "--disable-hybrid-kv-cache-manager" in argv
-        argv2 = _argv_after_marker(_run({"QWEN_SERVE_KV_OFFLOAD_GIB": "32"}))
+        argv2 = _argv_after_marker(
+            _run(
+                {
+                    "QWEN_SERVE_KV_OFFLOAD_GIB": "32",
+                    "QWEN_SERVE_MODEL": "Qwen/Qwen2.5-7B-Instruct",
+                }
+            )
+        )
         assert "--kv-offloading-size" in argv2
         assert "--disable-hybrid-kv-cache-manager" in argv2
+
+    def test_hybrid_model_forces_offloading_off_even_when_requested(
+        self,
+    ) -> None:
+        # Loop 215' (this loop): hybrid models (Qwen3-Next, Qwen3.6,
+        # Jamba, mamba) REQUIRE the Hybrid KV Cache Manager. The native
+        # OffloadingConnector forbids HMA. Mutual exclusion ->
+        # offloading must be force-disabled for hybrid models, even if
+        # the operator explicitly sets KV_OFFLOAD_GIB=64. Pin every
+        # known hybrid family.
+        for model in (
+            "Lorbus/Qwen3.6-27B-int4-AutoRound",       # default
+            "Qwen/Qwen3-Next-80B-A3B-Instruct",
+            "ai21labs/Jamba-v0.1",
+            "state-spaces/mamba-130m",
+            "nvidia/NemotronH-8B-Instruct",
+            "MiniMaxAI/MiniMax-Text-01",
+        ):
+            argv = _argv_after_marker(
+                _run(
+                    {
+                        "QWEN_SERVE_MODEL": model,
+                        "QWEN_SERVE_KV_OFFLOAD_GIB": "64",
+                    }
+                )
+            )
+            assert "--kv-offloading-size" not in argv, (
+                f"hybrid model {model} must NOT receive offloading flags "
+                "(HMA conflict; vLLM will fail engine init)"
+            )
+            assert "--kv-offloading-backend" not in argv
+            assert "--disable-hybrid-kv-cache-manager" not in argv
+
+    def test_non_hybrid_model_keeps_offloading(self) -> None:
+        # The guard must be selective: dense models like Qwen2.5 are
+        # NOT hybrid and benefit from offloading. Pin both directions.
+        argv = _argv_after_marker(
+            _run({"QWEN_SERVE_MODEL": "Qwen/Qwen2.5-7B-Instruct"})
+        )
+        assert "--kv-offloading-size" in argv
+        assert "--disable-hybrid-kv-cache-manager" in argv
 
     def test_swap_space_alias_still_honoured(self) -> None:
         # Backwards compat for operators with QWEN_SERVE_SWAP_SPACE
         # already in their environment files. Maps to the new flag.
-        argv = _argv_after_marker(_run({"QWEN_SERVE_SWAP_SPACE": "32"}))
+        # Use a non-hybrid model to bypass the hybrid offloading guard.
+        argv = _argv_after_marker(
+            _run(
+                {
+                    "QWEN_SERVE_SWAP_SPACE": "32",
+                    "QWEN_SERVE_MODEL": "Qwen/Qwen2.5-7B-Instruct",
+                }
+            )
+        )
         assert _flag_value(argv, "--kv-offloading-size") == "32"
         # And the obsolete --swap-space flag is no longer in argv.
         assert "--swap-space" not in argv
@@ -205,6 +283,7 @@ class TestServeScriptOverrides:
                 {
                     "QWEN_SERVE_SWAP_SPACE": "32",
                     "QWEN_SERVE_KV_OFFLOAD_GIB": "8",
+                    "QWEN_SERVE_MODEL": "Qwen/Qwen2.5-7B-Instruct",
                 }
             )
         )
