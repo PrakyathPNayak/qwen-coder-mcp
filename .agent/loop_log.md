@@ -1406,3 +1406,15 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 5/6; was next.md #3.
 - ACT: 5 new tests (prune linear cadence + path context, cursor linear cadence + idx context, swallow_loggers registration, context format, no-context legacy format). Migrated 1 existing cursor test to new label. 436 passed.
 - COMMIT: pending.
+
+## Loop 77 — rate-limit `_commit_and_push` git fault paths
+- OBSERVE: Continuing the `_log` audit from loop 76. `_commit_and_push` had four spam-vulnerable paths: `git add failed`, `git commit failed`, `git pull --rebase failed`, `git push failed`. A network outage or stale credential would log every iteration where push=True.
+- ORIENT: Two distinct fault classes: remote (pull/push, network) and local (add/commit, repo state). Two loggers, exponential schedule.
+- DECIDE: Wrap each `_log` call with `_GIT_REMOTE_SWALLOW_LOG.report(RuntimeError(stderr), context=...)` or `_GIT_LOCAL_SWALLOW_LOG`. Register both in `_swallow_loggers()`.
+- DEVIL:
+  - Correctness: stderr previously appeared bare; now it's wrapped as a RuntimeError. The `_log` call still emits the stderr text via the exception's str. ✓
+  - Scope: leaves the "empty staged tree" anomaly path alone — that's an indicator of a different bug, not iteration spam, and it's already rare-by-construction.
+  - Priority: bucket 5; was next.md #5.
+  - Edge: tests for stderr text format ("commit-err", "pull-err") still pass — exception str is the bare stderr.
+- ACT: 5 new tests covering push, pull, add, commit rate limits + logger registration. 441 passed.
+- COMMIT: pending.

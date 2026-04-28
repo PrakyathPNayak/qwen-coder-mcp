@@ -1547,3 +1547,90 @@ class TestPruneAndCursorRateLimited:
         monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
         lg.report(OSError("boom"))
         assert log_lines == ["test_noctx failed (count=1): boom"]
+
+
+class TestGitFailureRateLimited:
+    """Loop 77: git add/commit/pull/push failures route through
+    rate-limited swallow loggers so a persistent network or repo fault
+    stops spamming one log line per iteration."""
+
+    def _stub_run_git(self, monkeypatch, *, add_rc=0, commit_rc=0,
+                     pull_rc=0, push_rc=0, status_out=" M f.py\n"):
+        from agent import loop as L
+        from types import SimpleNamespace
+        def fake(*args, **kw):
+            sub = args[0] if args else ""
+            if sub == "add":
+                return SimpleNamespace(returncode=add_rc, stdout="", stderr="add-err")
+            if sub == "status":
+                return SimpleNamespace(returncode=0, stdout=status_out, stderr="")
+            if sub == "commit":
+                return SimpleNamespace(returncode=commit_rc, stdout="", stderr="commit-err")
+            if sub == "pull":
+                return SimpleNamespace(returncode=pull_rc, stdout="", stderr="pull-err")
+            if sub == "push":
+                return SimpleNamespace(returncode=push_rc, stdout="", stderr="push-err")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(L, "_run_git", fake)
+        monkeypatch.setattr(L, "_abort_rebase_if_any", lambda: None)
+
+    def test_git_push_failure_rate_limited(self, monkeypatch):
+        from agent import loop as L
+        L._GIT_REMOTE_SWALLOW_LOG.reset()
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        monkeypatch.setattr(L._GIT_REMOTE_SWALLOW_LOG, "schedule", "linear")
+        monkeypatch.setattr(L._GIT_REMOTE_SWALLOW_LOG, "every", 5)
+        self._stub_run_git(monkeypatch, push_rc=1)
+        for _ in range(7):
+            assert L._commit_and_push("msg", push=True) == "failed"
+        push_lines = [l for l in log_lines if "git_remote failed" in l and "git push" in l]
+        # Linear every=5: count=1 logs, count=5 logs.
+        assert len(push_lines) == 2
+        assert L._GIT_REMOTE_SWALLOW_LOG.count == 7
+
+    def test_git_pull_failure_rate_limited(self, monkeypatch):
+        from agent import loop as L
+        L._GIT_REMOTE_SWALLOW_LOG.reset()
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        monkeypatch.setattr(L._GIT_REMOTE_SWALLOW_LOG, "schedule", "linear")
+        monkeypatch.setattr(L._GIT_REMOTE_SWALLOW_LOG, "every", 100)
+        self._stub_run_git(monkeypatch, pull_rc=1)
+        L._commit_and_push("msg", push=True)
+        pull_lines = [l for l in log_lines if "git pull --rebase" in l]
+        assert len(pull_lines) == 1
+        assert "pull-err" in pull_lines[0]
+
+    def test_git_add_failure_rate_limited(self, monkeypatch):
+        from agent import loop as L
+        L._GIT_LOCAL_SWALLOW_LOG.reset()
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        monkeypatch.setattr(L._GIT_LOCAL_SWALLOW_LOG, "schedule", "linear")
+        monkeypatch.setattr(L._GIT_LOCAL_SWALLOW_LOG, "every", 4)
+        self._stub_run_git(monkeypatch, add_rc=1)
+        for _ in range(5):
+            assert L._commit_and_push("msg", push=True) == "failed"
+        add_lines = [l for l in log_lines if "git_local failed" in l and "git add" in l]
+        # count=1 logs, count=4 logs.
+        assert len(add_lines) == 2
+
+    def test_git_commit_failure_rate_limited(self, monkeypatch):
+        from agent import loop as L
+        L._GIT_LOCAL_SWALLOW_LOG.reset()
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        monkeypatch.setattr(L._GIT_LOCAL_SWALLOW_LOG, "schedule", "linear")
+        monkeypatch.setattr(L._GIT_LOCAL_SWALLOW_LOG, "every", 100)
+        self._stub_run_git(monkeypatch, commit_rc=1)
+        L._commit_and_push("msg", push=True)
+        c_lines = [l for l in log_lines if "git commit" in l and "git_local failed" in l]
+        assert len(c_lines) == 1
+        assert "commit-err" in c_lines[0]
+
+    def test_git_loggers_registered_for_summary(self):
+        from agent import loop as L
+        labels = {lg.label for lg in L._swallow_loggers()}
+        assert "git_remote" in labels
+        assert "git_local" in labels

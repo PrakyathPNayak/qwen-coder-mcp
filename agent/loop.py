@@ -1308,6 +1308,8 @@ _STATE_SWALLOW_LOG = _RateLimitedSwallowLogger("_append_state", schedule="expone
 _HISTORY_SWALLOW_LOG = _RateLimitedSwallowLogger("_write_history", schedule="exponential")
 _PRUNE_SWALLOW_LOG = _RateLimitedSwallowLogger("_prune_dir_oldest", schedule="exponential")
 _CURSOR_SWALLOW_LOG = _RateLimitedSwallowLogger("_save_cursor", schedule="exponential")
+_GIT_REMOTE_SWALLOW_LOG = _RateLimitedSwallowLogger("git_remote", schedule="exponential")
+_GIT_LOCAL_SWALLOW_LOG = _RateLimitedSwallowLogger("git_local", schedule="exponential")
 
 
 # -------------------------------------------------------------------- core
@@ -1337,7 +1339,7 @@ def _commit_and_push(message: str, push: bool) -> str:
     """
     add = _run_git("add", "-A", check=False)
     if add.returncode != 0:
-        _log(f"git add failed: {add.stderr.strip()}")
+        _GIT_LOCAL_SWALLOW_LOG.report(RuntimeError(add.stderr.strip()), context="git add")
         return "failed"
     status = _run_git("status", "--porcelain", check=False).stdout
     if not status.strip():
@@ -1349,7 +1351,7 @@ def _commit_and_push(message: str, push: bool) -> str:
         return "empty"
     commit = _run_git("commit", "-m", message, check=False)
     if commit.returncode != 0:
-        _log(f"git commit failed: {commit.stderr.strip()}")
+        _GIT_LOCAL_SWALLOW_LOG.report(RuntimeError(commit.stderr.strip()), context="git commit")
         return "failed"
     if not push:
         return "ok"
@@ -1357,12 +1359,18 @@ def _commit_and_push(message: str, push: bool) -> str:
     # the next iteration starts from a known-good tree instead of wedging.
     pull = _run_git("pull", "--rebase", "--autostash", "origin", "main", check=False)
     if pull.returncode != 0:
-        _log(f"git pull --rebase failed: {pull.stderr.strip()[:300]}")
+        _GIT_REMOTE_SWALLOW_LOG.report(
+            RuntimeError(pull.stderr.strip()[:300]),
+            context="git pull --rebase",
+        )
         _abort_rebase_if_any()
         return "failed"
     push_proc = _run_git("push", "origin", "HEAD:main", check=False)
     if push_proc.returncode != 0:
-        _log(f"git push failed: {push_proc.stderr.strip()}")
+        _GIT_REMOTE_SWALLOW_LOG.report(
+            RuntimeError(push_proc.stderr.strip()),
+            context="git push",
+        )
         return "failed"
     return "ok"
 
@@ -1400,6 +1408,8 @@ def _swallow_loggers() -> tuple["_RateLimitedSwallowLogger", ...]:
         _HISTORY_SWALLOW_LOG,
         _PRUNE_SWALLOW_LOG,
         _CURSOR_SWALLOW_LOG,
+        _GIT_REMOTE_SWALLOW_LOG,
+        _GIT_LOCAL_SWALLOW_LOG,
     )
 
 
