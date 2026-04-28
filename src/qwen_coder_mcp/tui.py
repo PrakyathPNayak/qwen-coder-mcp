@@ -144,7 +144,7 @@ Slash commands:
   /resume [--preview]  Reload .agent/agent_state.json into chat history;
                        `--preview` (also `--dry-run`) shows the diff and
                        leaves history untouched
-  /checkpoints [load N|prune K|diff N [--inline]|diff --since-resume [--inline]]
+  /checkpoints [load N|prune K|diff N [--inline]|diff --since-resume [--inline]|export N path]
                        List rotated agent-state snapshots; `load N` rehydrates
                        snapshot N (1-based, oldest first) into history;
                        `prune K` deletes all but the newest K snapshots;
@@ -1436,6 +1436,51 @@ def dispatch_slash(
                 ),
                 False,
             )
+        if sub == "export":
+            # /checkpoints export <N> <path> — copy snapshot N to <path>
+            # without mutating history. Lets users archive a snapshot
+            # before /checkpoints prune removes it.
+            if len(cmd.args) < 3:
+                return "usage: /checkpoints export <N> <path>", False
+            try:
+                idx = int(cmd.args[1])
+            except ValueError:
+                return f"invalid index: {cmd.args[1]!r}", False
+            if not snaps:
+                return "(no rotated checkpoints to export)", False
+            if idx < 1 or idx > len(snaps):
+                return (
+                    f"index {idx} out of range (have {len(snaps)} snapshots)",
+                    False,
+                )
+            chosen = snaps[idx - 1]
+            dest_arg = cmd.args[2]
+            try:
+                dest = fs_tools._resolve_inside_root(fs_cfg, dest_arg)
+            except fs_tools.FsError as exc:
+                return f"export failed: {exc}", False
+            try:
+                data = chosen.read_bytes()
+            except OSError as exc:
+                return f"export failed: cannot read {chosen.name}: {exc}", False
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                tmp = dest.with_suffix(dest.suffix + ".tmp")
+                with open(tmp, "wb") as fh:
+                    fh.write(data)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, dest)
+            except OSError as exc:
+                try:
+                    tmp.unlink()
+                except (OSError, NameError, UnboundLocalError):
+                    pass
+                return f"export failed: {exc}", False
+            return (
+                f"exported {chosen.name} ({len(data)} bytes) to {dest_arg}",
+                False,
+            )
         if sub == "prune":
             if len(cmd.args) < 2:
                 return "usage: /checkpoints prune <K>", False
@@ -1460,7 +1505,7 @@ def dispatch_slash(
                 f"pruned {removed} snapshot(s); {len(snaps) - removed} remain",
                 False,
             )
-        return f"unknown subcommand: {sub!r} (expected load|prune|diff)", False
+        return f"unknown subcommand: {sub!r} (expected load|prune|diff|export)", False
     if name == "save":
         if history is None:
             return "no history available", False

@@ -2927,3 +2927,20 @@ read-only operation, no state changes.
 **Act.** New `turn_profiles_as_json` next to `format_turn_profiles`. Strip flags before integer/reset parse. JSON path branches in both the empty-buffer and populated-buffer paths. HELP_TEXT entry expanded. New `tests/test_lat_json.py` with 11 cases: 4 for the renderer (empty, single, tool-calls flattened, indent), 7 for dispatch (--json no-N, --json with N, --format=json alias, empty buffer, position-independent, plain-text default still text-not-json).
 
 **Verify.** All 11 new tests pass. Full suite ~1.2k passed, 1 skipped.
+
+## Loop 199 — `/checkpoints export N <path>`
+
+**Observe.** Users could `load`, `prune`, or `diff` a rotated checkpoint, but couldn't archive one before pruning removed it. The atomic-write recipe now sits in three places (save_agent_checkpoint, save_history_jsonl, fs_tools.write_file) — natural to apply it here too.
+
+**Orient.** A read-only-from-snapshot, atomic-write-to-dest copy. Path validated through `fs_tools._resolve_inside_root` so `../escape.json` and absolute paths outside root are rejected. History never mutated — strictly side-effecting on disk.
+
+**Decide.** New `export` subcommand. `/checkpoints export <N> <path>`. Dest path is interpreted relative to the FS root, parent dirs auto-created (`mkdir parents=True`), atomic via `.tmp + fsync + os.replace`. On any OSError, tmp cleaned up and a text error returned (no exception leaks).
+
+**Devil.**
+- *Correctness:* What if the destination already exists? `os.replace` overwrites — pinned by `test_export_overwrites_existing`. Symlink shenanigans? `_resolve_inside_root` resolves symlinks before the boundary check, so escape attempts via symlinks are caught. ✅
+- *Scope:* Should this support an `--all` flag to archive every snapshot? Out of scope — single-snapshot export is the atomic primitive; a script can loop. ✅
+- *Priority:* The atomic recipe means a failed export never half-writes a file users might trust as a backup. That makes this safer than handing them the raw cp command. ✅
+
+**Act.** New `export` branch in `/checkpoints` dispatch, between `diff` and `prune`. HELP_TEXT updated. Unknown-subcommand message lists `export` (pinned by test). 11 new tests in `test_checkpoints_export.py`: usage error, no-snapshots, invalid index, out-of-range, byte-identical copy, path-escape rejection, history non-mutation, parent dir auto-creation, unknown-subcommand listing, no-tmp-leftover, overwrite-existing.
+
+**Verify.** All 11 pass. Full suite ~1.25k passed, 1 skipped.
