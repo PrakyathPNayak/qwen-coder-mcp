@@ -2026,13 +2026,18 @@ def _build_app(
                             head = ev.text.splitlines()[0] if ev.text else ""
                             if len(head) > 200:
                                 head = head[:200] + "…"
-                            if tool_started_at is not None:
+                            # Prefer the authoritative latency from
+                            # run_agent; fall back to wall-clock delta
+                            # when an older client emits no field.
+                            if ev.latency_s is not None:
+                                lat = format_tool_latency(ev.latency_s)
+                            elif tool_started_at is not None:
                                 lat = format_tool_latency(
                                     time.monotonic() - tool_started_at
                                 )
-                                tool_started_at = None
                             else:
                                 lat = ""
+                            tool_started_at = None
                             suffix = f" {lat}" if lat else ""
                             self.call_from_thread(
                                 self._agent_status,

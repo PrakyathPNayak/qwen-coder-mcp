@@ -2535,3 +2535,20 @@ read-only operation, no state changes.
 **Act.** New `format_tool_latency` module-level helper. Updated the `runner` closure in `_start_agent_turn` to stamp+compute. New `tests/test_format_tool_latency.py` with 10 cases covering: zero, sub-second, exactly-1s, decimal-precision, just-under-60s, exactly-60s, padded mm:ss, multi-minute, negative-as-fallback.
 
 **Verify.** `pytest -x -q` → ~1k passed, 1 skipped.
+
+## Loop 176 — push tool latency into AgentEvent so non-TUI consumers benefit too
+
+**Observe.** Loop 175 added per-tool latency rendering, but the timing logic lived in `tui.py`'s runner closure. Any future non-TUI consumer (the MCP server, a remote agent driver, log replay) would need to re-implement the same wall-clock bookkeeping. That's exactly the kind of "fragile assumption that breaks the next person" item in the priority list.
+
+**Orient.** The natural home for tool latency is on `AgentEvent` itself — it's already the contract between `run_agent` and any consumer. Adding a `latency_s: float | None` field is a backward-compatible additive change (default None) and the timing measurement happens at the only place it can be authoritative: inside `run_tool`'s call site in `run_agent`.
+
+**Decide.** Add `latency_s: float | None = None` to `AgentEvent`. Stamp `time.monotonic()` either side of `run_tool`; populate the field on the emitted `tool_result` event. Update TUI's runner to prefer `ev.latency_s`, falling back to its existing wall-clock bookkeeping when the field is None (keeps the loop-175 helper meaningful for any old client/stub still emitting bare events).
+
+**Devil.**
+- *Correctness:* `time.monotonic()` is the right clock — it never goes backwards under NTP. ✅
+- *Scope:* Should we time the model turn too? That'd be a bigger change (track first-chunk in `chat_stream`); leave it for the next loop since this one already has tests + commit ready. ✅
+- *Priority:* Higher impact than `/diff`? Yes — `/diff` is a one-off polish; this is a contract change that compounds across every future consumer. The MCP server already receives these events via the streaming endpoint, so as soon as a client renders them it gets latency for free. ✅
+
+**Act.** Added `import time` to agent_loop. Extended `AgentEvent` dataclass with `latency_s` field + docstring noting `monotonic`-based semantics. Stamped before/after `run_tool` and threaded into the emitted `tool_result`. Updated TUI runner to prefer `ev.latency_s`. New `tests/test_agent_event_latency.py` with 4 cases: default None, tool_result carries field, other kinds keep None, latency reflects actual sleep duration in a custom slow tool.
+
+**Verify.** `pytest -x -q` → ~1k passed, 1 skipped.

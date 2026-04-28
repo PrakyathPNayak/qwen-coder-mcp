@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
 
@@ -53,11 +54,19 @@ class ToolResult:
 
 @dataclass
 class AgentEvent:
-    """Yielded by ``run_agent`` so the UI can render progress live."""
-    kind: str  # "assistant" | "tool_call" | "tool_result" | "limit" | "final"
+    """Yielded by ``run_agent`` so the UI can render progress live.
+
+    ``latency_s`` is populated on ``tool_result`` events with the wall-
+    clock elapsed time between the matching ``tool_call`` event and the
+    result landing. ``None`` on every other event kind. Consumers can
+    treat it as advisory — it's monotonic-clock-based so it's safe to
+    sum, but a process suspended mid-call will report inflated values.
+    """
+    kind: str  # "assistant" | "tool_call" | "tool_result" | "limit" | "final" | "chunk"
     text: str = ""
     tool: str = ""
     args: dict[str, Any] | None = None
+    latency_s: float | None = None
 
 
 # ------------------------------------------------------------- tool registry
@@ -514,10 +523,15 @@ def run_agent(
             yield AgentEvent(
                 kind="tool_call", tool=call.name, args=dict(call.args)
             )
+            _t0 = time.monotonic()
             result = run_tool(call, fs_cfg=fs_cfg, tools=tools, confirm=confirm)
+            elapsed = time.monotonic() - _t0
             results.append(result)
             yield AgentEvent(
-                kind="tool_result", tool=result.name, text=result.output
+                kind="tool_result",
+                tool=result.name,
+                text=result.output,
+                latency_s=elapsed,
             )
 
         feedback = format_tool_results(results)
