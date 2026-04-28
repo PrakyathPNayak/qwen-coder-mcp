@@ -813,3 +813,32 @@ list / object). chat() retries 3× then surfaces.
 empty list, blocks-with-empty-text, whitespace-only.
 
 **Result**: 222/222 green.
+
+## Loop 28 — `_apply_diff` had no subprocess timeout
+**Bug**: `subprocess.run(["git", "apply", ...])` had no `timeout=`
+kwarg. A pathological diff could hang `git apply` indefinitely
+(e.g., a malformed binary patch hint, certain renames, or simply a
+disk-bound git operation). The agent loop would block forever on a
+single iteration with no recovery — the supposed-infinite-improvement
+loop becomes stuck.
+
+**Devil**: (a) Correctness — what timeout? 30s is generous for a
+file-level patch (git apply on 5000 lines at most takes <1s). False
+positives on slow disks are possible; the tradeoff is "iteration
+slow" vs "loop wedged forever". Pick wedged-recovery. (b) Could we
+miss a legitimate large patch? `_has_oversized_diff` already caps at
+256KB / 5000 lines; within that, 30s is huge. (c) Scope — root
+cause is "subprocess can hang"; this caps the bound. (d) Priority —
+keeps the operating-law promise that the loop never stops. Without
+this, a single hung subprocess defeats the whole agent.
+
+**Fix**: `_GIT_APPLY_TIMEOUT_SECONDS = 30`; new `_run_git_apply`
+helper wraps subprocess.run with timeout, kills on TimeoutExpired,
+returns `(124, "timed_out_after_30s")`. Both check and apply calls
+now go through it.
+
+**Tests**: 4 new — wrapper returns 124 on timeout, end-to-end
+`apply_check_failed:` and `apply_failed:` carry the timeout marker,
+timeout kwarg is actually forwarded.
+
+**Result**: 226/226 green.

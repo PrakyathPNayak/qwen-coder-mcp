@@ -455,6 +455,29 @@ def _has_oversized_diff(diff: str) -> str | None:
     return None
 
 
+_GIT_APPLY_TIMEOUT_SECONDS = 30
+
+
+def _run_git_apply(args: list[str], diff: str) -> tuple[int, str]:
+    """Run `git <args>` feeding `diff` on stdin with a hard timeout.
+
+    Returns (returncode, stderr-text). On TimeoutExpired the process is
+    killed and (124, "timed_out_after_<N>s") is returned.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=_REPO,
+            input=diff,
+            text=True,
+            capture_output=True,
+            timeout=_GIT_APPLY_TIMEOUT_SECONDS,
+        )
+        return proc.returncode, proc.stderr.strip()[:300]
+    except subprocess.TimeoutExpired:
+        return 124, f"timed_out_after_{_GIT_APPLY_TIMEOUT_SECONDS}s"
+
+
 def _apply_diff(diff_text: str) -> tuple[bool, str]:
     """Try `git apply --check` then `git apply`. Returns (ok, message)."""
     diff = _strip_fence(diff_text)
@@ -482,24 +505,12 @@ def _apply_diff(diff_text: str) -> tuple[bool, str]:
     structural = _has_structural_defect(diff)
     if structural is not None:
         return False, f"malformed_diff: {structural}"
-    proc = subprocess.run(
-        ["git", "apply", "--check", "-"],
-        cwd=_REPO,
-        input=diff,
-        text=True,
-        capture_output=True,
-    )
-    if proc.returncode != 0:
-        return False, f"apply_check_failed: {proc.stderr.strip()[:300]}"
-    proc = subprocess.run(
-        ["git", "apply", "-"],
-        cwd=_REPO,
-        input=diff,
-        text=True,
-        capture_output=True,
-    )
-    if proc.returncode != 0:
-        return False, f"apply_failed: {proc.stderr.strip()[:300]}"
+    rc, err = _run_git_apply(["apply", "--check", "-"], diff)
+    if rc != 0:
+        return False, f"apply_check_failed: {err}"
+    rc, err = _run_git_apply(["apply", "-"], diff)
+    if rc != 0:
+        return False, f"apply_failed: {err}"
     return True, "applied"
 
 

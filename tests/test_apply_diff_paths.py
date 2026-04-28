@@ -451,3 +451,72 @@ def test_oversized_check_runs_before_path_check(monkeypatch):
     ok, msg = loop._apply_diff(diff)
     assert ok is False
     assert msg.startswith("oversized_diff:")
+
+
+# ---------------------------------------------------- git-apply timeout tests
+def test_run_git_apply_timeout_returns_124(monkeypatch):
+    """When subprocess.run raises TimeoutExpired, the wrapper returns
+    (124, 'timed_out_after_<N>s') instead of propagating."""
+    import subprocess as sp
+
+    def fake_run(*a, **kw):
+        raise sp.TimeoutExpired(cmd="git apply", timeout=kw.get("timeout"))
+
+    monkeypatch.setattr(loop.subprocess, "run", fake_run)
+    rc, err = loop._run_git_apply(["apply", "-"], "irrelevant\n")
+    assert rc == 124
+    assert err.startswith("timed_out_after_")
+
+
+def test_apply_diff_timeout_on_check_returns_apply_check_failed(monkeypatch):
+    import subprocess as sp
+
+    def fake_run(*a, **kw):
+        raise sp.TimeoutExpired(cmd="git apply --check", timeout=kw.get("timeout"))
+
+    monkeypatch.setattr(loop.subprocess, "run", fake_run)
+    diff = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+2\n"
+    ok, msg = loop._apply_diff(diff)
+    assert ok is False
+    assert msg.startswith("apply_check_failed:")
+    assert "timed_out_after_" in msg
+
+
+def test_apply_diff_timeout_only_on_apply_returns_apply_failed(monkeypatch):
+    """`--check` succeeds normally; `apply` itself times out."""
+    import subprocess as sp
+
+    real_run = loop.subprocess.run
+    state = {"first": True}
+
+    def fake_run(args, *a, **kw):
+        if state["first"] and "--check" in args:
+            state["first"] = False
+            class P:
+                returncode = 0
+                stderr = ""
+            return P()
+        raise sp.TimeoutExpired(cmd="git apply", timeout=kw.get("timeout"))
+
+    monkeypatch.setattr(loop.subprocess, "run", fake_run)
+    diff = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-1\n+2\n"
+    ok, msg = loop._apply_diff(diff)
+    assert ok is False
+    assert msg.startswith("apply_failed:")
+    assert "timed_out_after_" in msg
+
+
+def test_run_git_apply_passes_timeout_kwarg(monkeypatch):
+    """Verify the wrapper actually passes timeout= to subprocess.run."""
+    captured = {}
+
+    def fake_run(args, *a, **kw):
+        captured.update(kw)
+        class P:
+            returncode = 0
+            stderr = ""
+        return P()
+
+    monkeypatch.setattr(loop.subprocess, "run", fake_run)
+    loop._run_git_apply(["apply", "-"], "x\n")
+    assert captured.get("timeout") == loop._GIT_APPLY_TIMEOUT_SECONDS
