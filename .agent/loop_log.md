@@ -1619,3 +1619,13 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: Other module-level state? `_CURRENT_ITERATION` is reset by tests via monkeypatch (per loop 89 audit). No other dict-shaped contamination vectors found.
   - Priority: Direct follow-up to loop 94. Cheap.
 - ACT: 1-line conftest addition x2, 2 tests. 504 passed.
+
+## Loop 96 — _revert_changes left untracked files after reset --hard fallback (REAL BUG)
+- OBSERVE: `_revert_changes` already runs `git clean -fd` on the happy path to remove untracked files (a brand-new file produced by a bad model diff). But the fallback path triggered when the initial clean fails uses `git reset --hard HEAD`, which only restores tracked content -- the untracked file survives. Same bug on the `reset --hard origin/main` second fallback.
+- ORIENT: P1 priority (correctness regression on data-discarding code path). The fallback was added to recover from a checkout failure but inadvertently broke the contract that the function leaves the tree identical to HEAD.
+- DECIDE: After every successful reset (HEAD or origin/main), best-effort re-run `git clean -fd`. Best-effort because if it fails again we can't recover further, but ok=True is still semantically correct: the tracked tree IS restored, and the next iteration's in-scope check will reject any diff that touches a file outside the iteration's chosen target.
+- DEVIL:
+  - Correctness: A second `clean -fd` failure leaves the file behind. The next iteration's `_diff_in_scope` check guards downstream — even if the orphan persists, it can't be patched on top of without an in-scope reject. Acceptable.
+  - Scope: Could escalate to `git clean -fdx` (also remove ignored files) but that's destructive: a developer's local untracked notes/scratch would die. Stay with `-fd`.
+  - Priority: This is the highest-leverage fix in the queue (correctness > observability > polish). Took priority over the next.md candidates.
+- ACT: 2-line code change (new clean-after-reset call in both fallback branches with explanatory comment). 3 new tests covering HEAD-reset clean, origin-reset clean, and post-reset clean failure not flipping ok. 507 passed.

@@ -2718,3 +2718,82 @@ class TestLastSwallowSummaryCountsAutoReset:
     def test_b_observes_clean_dict(self):
         from agent import loop as L
         assert L._LAST_SWALLOW_SUMMARY_COUNTS == {}
+
+
+class TestRevertChangesUntrackedAfterResetHard:
+    """Loop 96: real bug fix. `git reset --hard HEAD` only restores
+    tracked content, so an untracked file produced by the bad diff
+    survived the fallback path when the initial `git clean -fd` failed.
+    Now every successful reset is followed by a best-effort second
+    `clean -fd` so the tree is genuinely identical to HEAD."""
+
+    def test_clean_runs_after_reset_hard_head(self, monkeypatch):
+        from agent import loop as L
+        import subprocess
+        calls = []
+        def fake(*args, check=True):
+            calls.append(args)
+            sub = args[0]
+            if sub == "checkout":
+                return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+            if sub == "clean" and len(calls) <= 2:
+                # First clean (line ~1216) fails => triggers reset path.
+                return subprocess.CompletedProcess(args=list(args), returncode=1, stdout="", stderr="boom")
+            if sub == "reset":
+                return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+            # Subsequent clean after reset (the new behaviour) succeeds.
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(L, "_run_git", fake)
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        assert L._revert_changes() is True
+        clean_calls = [c for c in calls if c[0] == "clean"]
+        # Original failed clean + post-reset re-clean = 2.
+        assert len(clean_calls) == 2, calls
+
+    def test_clean_runs_after_reset_hard_origin(self, monkeypatch):
+        from agent import loop as L
+        import subprocess
+        calls = []
+        def fake(*args, check=True):
+            calls.append(args)
+            sub = args[0]
+            if sub == "checkout":
+                return subprocess.CompletedProcess(args=list(args), returncode=1, stdout="", stderr="x")
+            if sub == "clean":
+                # Always fail clean before reset; after reset, it
+                # succeeds (the new behaviour) - distinguished by the
+                # number of prior reset calls.
+                prior_resets = [c for c in calls[:-1] if c[0] == "reset"]
+                if not prior_resets:
+                    return subprocess.CompletedProcess(args=list(args), returncode=1, stdout="", stderr="x")
+                return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+            if sub == "reset":
+                # First reset (HEAD) fails so we fall through to origin/main.
+                if "HEAD" in args:
+                    return subprocess.CompletedProcess(args=list(args), returncode=1, stdout="", stderr="x")
+                return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(L, "_run_git", fake)
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        assert L._revert_changes() is True
+        clean_calls = [c for c in calls if c[0] == "clean"]
+        # Original failed clean + post-origin-reset clean = 2.
+        assert len(clean_calls) == 2, calls
+
+    def test_post_reset_clean_failure_does_not_flip_ok(self, monkeypatch):
+        """Belt and suspenders: even if the post-reset clean fails,
+        ok stays True because tracked tree was restored."""
+        from agent import loop as L
+        import subprocess
+        def fake(*args, check=True):
+            sub = args[0]
+            if sub == "checkout":
+                return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+            if sub == "clean":
+                return subprocess.CompletedProcess(args=list(args), returncode=1, stdout="", stderr="boom")
+            if sub == "reset":
+                return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(L, "_run_git", fake)
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        assert L._revert_changes() is True

@@ -1223,6 +1223,14 @@ def _revert_changes() -> bool:
     if not ok:
         rs = _run_git("reset", "--hard", "HEAD", check=False)
         if rs.returncode == 0:
+            # `reset --hard` only restores tracked content; an untracked
+            # file produced by the bad diff survives it. Re-run clean
+            # so the tree is identical to HEAD on every successful
+            # fallback. Best-effort: a second clean failure leaves the
+            # file behind but `ok=True` is still correct because the
+            # tracked tree is restored, and the next iteration's
+            # in-scope check will reject any diff that touches it.
+            _run_git("clean", "-fd", check=False)
             _log("_revert_changes: recovered via reset --hard")
             ok = True
         else:
@@ -1238,6 +1246,8 @@ def _revert_changes() -> bool:
                 "reset", "--hard", "origin/main", check=False
             )
             if rs2.returncode == 0:
+                # Same untracked-file caveat as the HEAD fallback.
+                _run_git("clean", "-fd", check=False)
                 _log(
                     "_revert_changes: recovered via reset --hard origin/main"
                 )
