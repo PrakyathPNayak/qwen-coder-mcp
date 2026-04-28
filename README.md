@@ -42,31 +42,80 @@ pip install -e '.[tui]'
 qwen-coder-tui
 ```
 
-Slash commands: `/help`, `/search <q>`, `/fetch <url>`, `/read <path>`,
-`/ls [path]`, `/find_bugs <path>`, `/explain <path>`, `/apply`,
-`/history [n]`, `/diff <a> <b>`, `/quit`. Anything not starting with
-`/` is sent to Qwen as a chat message with multi-turn memory preserved
-within the session.
+Anything not starting with `/` is sent to Qwen as a chat message with
+multi-turn memory preserved within the session. Press TAB after `/`
+for completions; `@path` expands a file inline.
 
-`/apply` extracts the first unified diff from the assistant's last
-reply (looking for a ```diff or ```patch fence first, then a bare
-`diff --git` header) and runs `git apply --check` before actually
-applying. `/history [n]` shows the last n turns (default 10).
+### Slash commands (selected; `/help` for the full list)
 
-(continued tools list below)
+**Chat & files**
+- `/help [pattern] [--regex]` — full command reference (regex supported)
+- `/read <path>` / `/view <path> <start> [end]` — full or line-range read
+- `/grep <pattern> [path] [--ext .py] [--count]` — repo-wide grep
+- `/ls [path]`, `/find_bugs <path>`, `/explain <path>`
+- `/diff <path>` (HEAD diff) or `/diff <a> <b>` (two paths)
+- `/apply` — extract a unified diff from the last reply, `git apply --check`,
+  then apply
+- `/history [n|clear]`, `/quit`
+
+**Web**
+- `/search [--max N] <query>` — DuckDuckGo HTML search (no API key)
+- `/fetch <url>` — text body, byte-capped, binary refused
+
+**Agent mode (tool-calling loop)**
+- `/agent <task>` / `/agentw <task>` — one-shot agent turn (read-only / write)
+- `/agent_on` / `/agent_off` — make plain chat go through the agent loop
+- `/agent_write_on` / `/agent_write_off` — include `fs_write`/`apply_patch`
+  in the default agent's tool registry
+- `/confirm_writes_on` / `/confirm_writes_off` — y/n modal before each
+  destructive tool call (default ON)
+- `/tools` — list read-only and write tool registries
+
+**Shell with audit log**
+- `/run [--yes] <cmd>` — shell out (default-DENY; `--yes` one-shots,
+  or `/run_on` for the session)
+- `/run_on` / `/run_off` — session-wide auto-approve toggle
+- `/runs [N] [--json]` — tail of `.agent/runs.log` audit trail
+
+**Mega-toggles (loop 258)**
+- `/allow_all` — agent_on + agent_write_on + confirm_writes_off +
+  run_auto_approve. Maximum autonomy; use with care.
+- `/safe_mode` — inverse: every confirmation re-enabled
+
+**Autonomous self-improvement loop (loop 258)**
+- `/loop start` — spawn `python -m agent.loop` as a detached subprocess;
+  pid persisted to `.agent/loop.pid`
+- `/loop stop` — SIGTERM the recorded pid; `/loop kill` forces SIGKILL
+- `/loop status` — pid, alive?, `runtime.log` size
+- `/loop tail [N]` — last N lines of `.loop/runtime.log` (default 30)
+
+**Introspection**
+- `/sysinfo [--json] [--probe]`, `/lat [--json] [--top K] [--by-role]`,
+  `/tokens [--json] [--top K] [--by-role]`
+- `/checkpoints [list|export N <path> [--gzip]]`
+
+### MCP server tools
+
   - `web_search` — DuckDuckGo HTML web search (no API key)
-  - `fetch_url` — fetch a URL's text body (binary content refused, byte-capped)
-  - `read_file` — read a file from the configured repo root
+  - `fetch_url` — fetch a URL's text body (binary refused, byte-capped)
+  - `read_file` — read a file (full / line-range / regex-pattern slice with
+    `--before/--after` context, loop 256)
   - `list_dir` — list a directory inside the repo root
   - `write_file` — write a file inside the repo root (utf-8)
-  - `apply_patch` — apply a unified diff via `git apply` (supports `check_only`)
+  - `apply_patch` — apply a unified diff via `git apply` (`check_only` supported)
 
-The filesystem tools are sandboxed to the directory pointed to by
-`$QWEN_MCP_FS_ROOT` (default: server's cwd). Paths that escape via
-`..` or symlinks are rejected.
+The filesystem tools are sandboxed to `$QWEN_MCP_FS_ROOT` (default:
+server's cwd). Paths that escape via `..` or symlinks are rejected.
+
 - **Backend-agnostic** Qwen client speaking the OpenAI Chat Completions
   protocol — works with vLLM, SGLang, Ollama (OAI shim), DashScope,
   OpenRouter, Together, etc.
+- **Auto-continue on length** (loops 254/255) — when the upstream
+  finishes with `finish_reason="length"`, both `chat()` and
+  `chat_stream()` automatically re-prompt and stitch segments until a
+  natural stop, emitting `[truncated: model hit max_tokens]` only when
+  the round cap fires. Tunable via `QWEN_AUTO_CONTINUE`,
+  `QWEN_AUTO_CONTINUE_MAX_ROUNDS`, `QWEN_AUTO_CONTINUE_PROMPT`.
 - **Self-improving agentic loop** (`agent/loop.py`) that:
   1. picks a file from the repo
   2. asks Qwen to find issues
@@ -75,6 +124,10 @@ The filesystem tools are sandboxed to the directory pointed to by
   5. if the fix survives critique, applies it, commits, and pushes
   6. records every step into `STATE.md` and `.loop/history/`
   7. sleeps briefly and repeats — forever
+
+  Start it from inside the TUI with `/loop start` (loop 258), or
+  directly with `python -m agent.loop`.
+
 
 ## Configuration
 

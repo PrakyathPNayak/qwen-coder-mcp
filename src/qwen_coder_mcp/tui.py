@@ -32,6 +32,7 @@ from __future__ import annotations
 import os
 import json
 import sys
+import signal
 import threading
 import time
 from dataclasses import dataclass, field
@@ -137,6 +138,9 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/agent_write_on",
     "/confirm_writes_off",
     "/confirm_writes_on",
+    "/allow_all",
+    "/safe_mode",
+    "/loop",
     "/tools",
 )
 
@@ -223,6 +227,14 @@ Slash commands:
   /agent_write_off     Disable write tools in default agent mode
   /confirm_writes_on   Pop a y/n modal before each destructive tool call (default)
   /confirm_writes_off  Auto-approve destructive tool calls (audit-log only)
+  /allow_all           One-shot: agent_on + agent_write_on + confirm_writes_off
+                       + run_auto_approve. Maximum autonomy; use with care.
+  /safe_mode           One-shot inverse: agent_off + agent_write_off
+                       + confirm_writes_on + run_auto_approve_off.
+  /loop [start|stop|kill|status|tail [N]]
+                       Manage the autonomous self-improvement loop
+                       (`agent/loop.py`) as a detached subprocess.
+                       /loop with no arg = /loop status.
   /tools               List the read-only and write tool registries
   /quit                Exit
 
@@ -684,6 +696,66 @@ def _audit_run_path(cfg: fs_tools.FsConfig) -> Path:
     return Path(cfg.root) / ".agent" / "runs.log"
 
 
+def _loop_pid_path(cfg: fs_tools.FsConfig) -> Path:
+    """Loop 258: PID file for the autonomous agent loop subprocess."""
+    return Path(cfg.root) / ".agent" / "loop.pid"
+
+
+def _loop_runtime_log_path(cfg: fs_tools.FsConfig) -> Path:
+    """Loop 258: runtime log written by ``agent.loop`` (matches LOG_FILE
+    in agent/loop.py)."""
+    return Path(cfg.root) / ".loop" / "runtime.log"
+
+
+def _loop_pid_alive(pid: int) -> bool:
+    """Loop 258: True if a process with this pid is alive (best-effort).
+
+    On POSIX, ``os.kill(pid, 0)`` raises if the pid is gone or denied.
+    Stale PIDs (file points at a dead process) return False so the
+    caller can restart cleanly.
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _loop_read_pid(cfg: fs_tools.FsConfig) -> int | None:
+    """Loop 258: read the PID file, return ``None`` if missing/invalid."""
+    p = _loop_pid_path(cfg)
+    if not p.exists():
+        return None
+    try:
+        raw = p.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _loop_write_pid(cfg: fs_tools.FsConfig, pid: int) -> None:
+    """Loop 258: persist the autonomous-loop pid for later /loop stop."""
+    p = _loop_pid_path(cfg)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(str(int(pid)), encoding="utf-8")
+
+
+def _loop_clear_pid(cfg: fs_tools.FsConfig) -> None:
+    """Loop 258: best-effort PID-file cleanup; ignores missing file."""
+    p = _loop_pid_path(cfg)
+    try:
+        p.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
 def _audit_run_max_bytes() -> int:
     """Loop 257: size cap before rotating ``.agent/runs.log``.
 
@@ -757,6 +829,111 @@ def _audit_run(
             fh.write(json.dumps(record, ensure_ascii=True) + "\n")
     except Exception:  # noqa: BLE001 -- audit must never crash a turn
         pass
+
+
+def _render_loop(cfg: fs_tools.FsConfig, args: list[str]) -> str:
+    """Loop 258: manage the autonomous agent loop (`agent/loop.py`)
+    from the TUI.
+
+    Subcommands:
+      /loop                  -> alias for /loop status
+      /loop start            -> spawn `python -m agent.loop` detached;
+                                writes pid to .agent/loop.pid
+      /loop stop             -> SIGTERM the recorded pid (graceful)
+      /loop kill             -> SIGKILL (force) if SIGTERM didn't take
+      /loop status           -> running? pid? runtime.log size?
+      /loop tail [N]         -> tail N lines of .loop/runtime.log
+                                (default 30, max 500)
+    """
+    sub = args[0].lower() if args else "status"
+    if sub == "start":
+        existing = _loop_read_pid(cfg)
+        if existing is not None and _loop_pid_alive(existing):
+            return f"loop already running (pid {existing}); /loop stop first"
+        # Stale PID file? Clear it so the subprocess spawn is clean.
+        if existing is not None:
+            _loop_clear_pid(cfg)
+        try:
+            import subprocess
+            # Detach: setsid on POSIX so SIGINT in the TUI doesn't
+            # cascade to the loop. stdout/stderr -> the loop's own
+            # runtime.log via the agent.loop logger; we just discard
+            # what hits the FDs.
+            kwargs: dict = {
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "stdin": subprocess.DEVNULL,
+                "cwd": str(cfg.root),
+                "close_fds": True,
+            }
+            if hasattr(os, "setsid"):
+                kwargs["start_new_session"] = True
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "agent.loop"], **kwargs
+            )
+        except OSError as exc:
+            return f"loop start failed: {exc}"
+        _loop_write_pid(cfg, proc.pid)
+        return (
+            f"loop started (pid {proc.pid}); "
+            f"tail with /loop tail or watch .loop/runtime.log"
+        )
+    if sub in ("stop", "kill"):
+        pid = _loop_read_pid(cfg)
+        if pid is None:
+            return "loop not running (no .agent/loop.pid)"
+        if not _loop_pid_alive(pid):
+            _loop_clear_pid(cfg)
+            return f"loop pid {pid} not alive; cleared stale pid file"
+        sig = signal.SIGKILL if sub == "kill" else signal.SIGTERM
+        try:
+            os.kill(pid, sig)
+        except OSError as exc:
+            return f"loop {sub} failed: {exc}"
+        if sub == "kill":
+            _loop_clear_pid(cfg)
+            return f"loop pid {pid} killed (SIGKILL)"
+        return (
+            f"loop pid {pid} sent SIGTERM; check /loop status to confirm exit"
+        )
+    if sub == "status":
+        pid = _loop_read_pid(cfg)
+        log_path = _loop_runtime_log_path(cfg)
+        log_info = (
+            f"runtime.log: {log_path.stat().st_size} bytes"
+            if log_path.exists()
+            else "runtime.log: (not yet created)"
+        )
+        if pid is None:
+            return f"loop: stopped (no pid file)\n{log_info}"
+        if _loop_pid_alive(pid):
+            return f"loop: running (pid {pid})\n{log_info}"
+        return (
+            f"loop: stopped (pid {pid} not alive; "
+            f"pid file is stale)\n{log_info}"
+        )
+    if sub == "tail":
+        n = 30
+        if len(args) > 1:
+            try:
+                n = max(1, min(500, int(args[1])))
+            except ValueError:
+                return "usage: /loop tail [N]"
+        log_path = _loop_runtime_log_path(cfg)
+        if not log_path.exists():
+            return f"runtime.log not found at {log_path}"
+        try:
+            text = log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return f"runtime.log read error: {exc}"
+        lines = text.splitlines()[-n:]
+        if not lines:
+            return "(runtime.log is empty)"
+        return "\n".join(lines)
+    return (
+        "usage: /loop [start|stop|kill|status|tail [N]]\n"
+        "       /loop with no arg is /loop status"
+    )
 
 
 def _render_runs_audit(cfg: fs_tools.FsConfig, args: list[str]) -> str:
@@ -1822,6 +1999,12 @@ def dispatch_slash(
         return _AGENT_TOGGLE_SENTINEL + "confirm_on", False
     if name == "confirm_writes_off":
         return _AGENT_TOGGLE_SENTINEL + "confirm_off", False
+    if name == "allow_all":
+        return _AGENT_TOGGLE_SENTINEL + "allow_all", False
+    if name == "safe_mode":
+        return _AGENT_TOGGLE_SENTINEL + "safe_mode", False
+    if name == "loop":
+        return _render_loop(fs_cfg, list(cmd.args)), False
     if name == "search":
         if not cmd.rest:
             return "usage: /search [--max N] <query>", False
@@ -3259,6 +3442,25 @@ def _build_app(
                         self.agent_confirm_writes = True
                     elif flag == "confirm_off":
                         self.agent_confirm_writes = False
+                    elif flag == "allow_all":
+                        self.agent_default = True
+                        self.agent_write_default = True
+                        self.agent_confirm_writes = False
+                        self.run_auto_approve = True
+                        log.write(
+                            "[bold red]/allow_all: agent + writes + "
+                            "auto-approve all ON. No confirmation prompts. "
+                            "Operator owns the blast radius.[/bold red]"
+                        )
+                    elif flag == "safe_mode":
+                        self.agent_default = False
+                        self.agent_write_default = False
+                        self.agent_confirm_writes = True
+                        self.run_auto_approve = False
+                        log.write(
+                            "[bold green]/safe_mode: agent + writes off, "
+                            "all confirmations re-enabled.[/bold green]"
+                        )
                     state = (
                         f"agent={'on' if self.agent_default else 'off'} "
                         f"write={'on' if self.agent_write_default else 'off'} "

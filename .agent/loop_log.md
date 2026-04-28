@@ -4274,3 +4274,26 @@ logic), Priority (P2 -- diagnostic only, not behavioural). Suite
 - README env table extended with the new knob.
 **Tests:** +9 in new `tests/test_runs_log_rotation.py` — disabled-when-cap-zero, fires-when-exceeded (single rotation), backup overwrite on subsequent rotation (single-generation contract), invalid-env fallback to default, negative env clamps to 0, default is exactly 1 MiB, helper no-op when log missing, helper no-op under cap, audit-failure-after-rotation swallowed (chat session keeps running). Pre-existing 41 audit + 24 approval + tui tests stayed green. Suite at around 1.86k tests, all green.
 **Devil step:** Correctness — single-generation rotation is intentional (most operators just want "don't fill the disk"; multi-gen would need timestamped names + a cleanup policy). Rotation on-write rather than on-startup means no surprise shrink when re-opening a workspace; the size check is one stat() per audit append (cheap). Scope — purely additive: 1 env knob, 2 helpers, 1 four-line addition to `_audit_run`. Priority — P1 hygiene fix; the user didn't explicitly ask but it's a direct consequence of "never stop". Caveat: `/runs` viewer doesn't yet read from `runs.log.1`, so the most recent rotation's records are invisible to the operator until they read the file directly. Queued as a follow-on (loop 258).
+
+---
+
+## Loop 258 — TUI mega-toggles + autonomous launcher
+
+**Why**: operator asked for one-shot toggles to flip the TUI between maximum-autonomy and safe-default modes, plus a way to start/stop `agent/loop.py` from inside the chat without leaving the terminal. Also: the README slash-command list was stale (named ~10 of the 50+ commands).
+
+**Change** (src/qwen_coder_mcp/tui.py):
+- New helpers: `_loop_pid_path`, `_loop_runtime_log_path`, `_loop_pid_alive`, `_loop_read_pid`, `_loop_write_pid`, `_loop_clear_pid`.
+- New renderer `_render_loop(cfg, args)` handling `start | stop | kill | status | tail [N]`. `start` spawns `[sys.executable, -m, agent.loop]` detached via `start_new_session=True`, persists pid to `.agent/loop.pid`. `stop` sends SIGTERM, `kill` sends SIGKILL and clears pid. `status` reports alive/dead/stale + runtime.log size. `tail` reads `.loop/runtime.log` (default 30 lines, max 500).
+- Added `/allow_all` and `/safe_mode` mega-toggles (sentinel-routed) that flip `agent_default`, `agent_write_default`, `agent_confirm_writes`, `run_auto_approve` together.
+- Slash registry, HELP_TEXT, and dispatcher all updated. `signal` import added.
+
+**Change** (README.md): TUI section rewritten to enumerate slash commands by category (chat/files, web, agent mode, /run shell, mega-toggles, /loop, introspection). Auto-continue (loops 254/255) called out under features. `/loop start` documented as the operator on-ramp.
+
+**Tests** (tests/test_tui_loop_and_megatoggles.py — 33 new): mega-toggle sentinels, slash-completion + help-text wiring, every PID-file helper edge case, `/loop status` four states, `/loop start` happy path + already-running refusal + stale-pid restart + OSError, `/loop stop` no-pid + stale-pid + SIGTERM, `/loop kill` SIGKILL + clears pid, `/loop tail` missing/default-30/explicit-N/invalid-N/empty.
+
+**Devil step** (Correctness/Scope/Priority):
+- *Correctness*: spawning a subprocess that mutates the tree while the TUI is also editing it is a real race risk. Mitigation: `.loop/cursor.json` and chat history are separate, and `.agent/runs.log` rotation is best-effort. Worst case is a missed rotation, not corruption.
+- *Scope*: deliberately did NOT add `/loop restart`, log-streaming via reactive widgets, or PID-file locking. Operator asked for a button; status+tail give visibility, start+stop give control. Minimum-viable launcher.
+- *Priority*: README correction had been carried for ~6 loops; new commands need documentation the moment they ship. Suite 1855 -> 1888.
+
+**Suite**: 1888 passed, 7 skipped.
