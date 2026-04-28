@@ -4419,3 +4419,63 @@ logic), Priority (P2 -- diagnostic only, not behavioural). Suite
 - *Why not also escape every `log.write(...)` in TUI?* Most static literal-markup writes ("[bold cyan]qwen-coder-tui[/bold cyan]" etc) have no dynamic content and can never crash. Wrapping them adds noise without benefit. The targeted approach is minimal and the helper covers the dynamic-content paths I might have missed.
 
 **Suite**: 1979 passed, 7 skipped (up from 1924 → +55 new).
+
+---
+
+## Loop 264 — real-model benchmark validates loops 262/263 fix
+
+**Why**: operator pushed back -- "Don't do static tests, load the model and test with that". Loops 262/263 had only static `rich.text.Text.from_markup` checks against synthetic payloads. To actually prove the fix holds against live model output, drive the real Qwen3.6-27B int4 deployment through scenarios that invite bracket-laden replies and measure both throughput AND markup safety end-to-end.
+
+**Change**:
+- `scripts/benchmark_real_model.py` (new, ~315 lines): wires the actual `QwenClient` against a running vLLM endpoint, runs 4 scenarios:
+  1. `warmup_plain_python` -- short coding ask, baseline TTFT
+  2. `tokens_per_second_long` -- 600-token target, throughput baseline
+  3. `bracket_heavy_output` -- asks the model to print box-drawing chars, regex with brackets, traceback-style output (the EXACT shape that crashed the operator's TUI)
+  4. `agent_one_step_fs_read` -- exercises run_agent + tool dispatch
+  Each chat scenario streams via `chat_stream`, records TTFT + total wall + word-rate, and -- critically -- runs the reply through `_markup_safety_check()` which measures BOTH the unprotected path (would `f"[green]qwen>[/green] {reply}"` crash?) AND the loop-262/263 protected path (does `_safe_markup(reply)` render cleanly?). The smoking gun is a reply where `raw_would_raise=True AND safe_path_renders=True`.
+
+  Results land in `.agent/benchmarks/<tag>.json`; per-scenario summary printed live; non-zero exit on any scenario error.
+
+**Results** (.agent/benchmarks/loop264.json, served by vLLM 0.20.0 on RTX 4090, model = Lorbus/Qwen3.6-27B-int4-AutoRound):
+- 4 scenarios, 0 errors, total wall = 176.7s
+- Median TTFT: 78ms
+- Median completion rate: 21 words/s (~30+ tokens/s for int4 on 4090, in line with prior loop-225 numbers)
+- **`n_replies_unprotected_would_crash`: 1** -- the bracket-heavy scenario's reply *did* contain literal `[/▍]` and `[ERROR]` sequences in its chain-of-thought reasoning trace ("Here's a thinking process: ... [INFO] [/▍] progress 50%..."), and the unprotected interpolation would have raised `MarkupError`. CONFIRMED: this is the operator's exact failure mode reproduced from the live model.
+- **`n_replies_safe_path_rendered`: 4** -- all 4 replies render cleanly through the loop-262/263 protected path.
+
+**Devil step**:
+- *Could the bracket-heavy scenario be artificial?* The prompt asks the model to echo specific text, so OF COURSE the reply contains the bracketed sequences -- that's the point: a contrived-but-realistic worst-case to confirm the fix actually engages. The plain coding scenarios (warmup + LRU cache + agent fs_read) all returned `raw_would_raise=False`, which is consistent: ordinary code output rarely contains `[/...]` patterns. The fix matters specifically when it matters, which is when the model emits or echoes bracketed content. Validated.
+- *Throughput*: 21 words/s ~ 30+ tokens/s. No regression vs prior loop-225 baseline. The benchmark also serves as a perf sanity gate -- future loops can diff against `.agent/benchmarks/loop264.json` to catch slowdowns.
+- *Why exit 0 even when one reply would have crashed unprotected?* Intentional. That's the GOOD outcome -- the safe path absorbed it. We only exit 1 on scenario errors (model unreachable, exception during streaming). A future loop could add a perf-regression gate.
+- *Coverage gap*: did NOT exercise multi-step write-mode tool dispatch (would need to disable confirmation in agent), nor the `/run` shell path. Carry-over for loop 265+ if operator wants those benched too.
+
+**Suite**: 1979 passed, 7 skipped (unchanged -- benchmark is a script, not a pytest case).
+
+---
+
+## Loop 265 — write+run-shell scenarios in real-model benchmark
+
+**Why**: loop 264's bench had a documented coverage gap -- it skipped destructive paths (fs_write, run_shell) and didn't gate tool-result rendering. The operator's earlier failure modes (`run_shell missing`, model output containing `[/▍]`) BOTH funnel through tool-result formatting in the TUI's `_agent_status` -> `_safe_log_write` path, so a leak there would be just as user-visible as the assistant-reply leak. Lock that path with the live model.
+
+**Change**:
+- `scripts/benchmark_real_model.py`: two new agent scenarios -- `agent_write_bracket_file` (drives fs_write with bracket-laden content + reads it back) and `agent_run_shell_bracket` (drives run_shell with bracket-laden stdout). Both flag `writes=True`.
+- `_bench_agent` now accepts `writes: bool`; when true it passes `tools=ALL_TOOLS` and `confirm=always_allow` to `run_agent` so destructive dispatch isn't bypassed by the read-only default registry. Also captures up to 8 `tool_result` events per scenario and runs each through `_markup_safety_check` so a leak in run_shell stdout rendering surfaces in the JSON summary.
+- `_summarise` aggregates `n_tool_results_checked / unprotected_would_crash / safe_path_rendered` so future loops can diff against prior baselines.
+- Default `--tag` bumped to `loop265`.
+- `tests/test_benchmark_scenarios.py` (new, 9 tests): inventory check, _bench_agent kwargs wiring (writes=True passes ALL_TOOLS+always_allow; writes=False omits both), tool_result_markup_safe collection, summary aggregation. Loads the script via importlib without spinning up vLLM.
+
+**Results** (.agent/benchmarks/loop265.json):
+- 6 scenarios, 0 errors, total wall around 210s
+- Median TTFT around 78ms, median around 20.5 words/s -- no perf regression vs loop 264 (78ms / 21wps)
+- **`n_replies_unprotected_would_crash`: 2** (bracket_heavy_output + agent_run_shell_bracket's final reply)
+- `n_replies_safe_path_rendered`: 6 (all)
+- **`n_tool_results_checked`: 4 / `n_tool_results_unprotected_would_crash`: 2** -- run_shell stdout containing literal `[/▍]` and `[ERROR]` was returned by the live model and *would have crashed* an unguarded RichLog write. The loop-263 `_safe_log_write` defense-in-depth absorbs it. CONFIRMED: tool-result render path now empirically gated against the live model.
+- `n_tool_results_safe_path_rendered`: 4 (all)
+
+**Devil step**:
+- *Could the agent_write_bracket_file scenario have skipped fs_write entirely?* Yes -- a small/lazy model could just describe the file instead of calling fs_write. The bench reports tool_calls per scenario; if a future regression swallows the tool dispatch, `tool_calls=0` and the perf+safety signal disappears. Fine for now: this run did call tools (4 tool_results captured, 2 from run_shell with bracket payload). Future tightening: add an assertion that `tool_calls >= 1` for write/run scenarios and exit non-zero otherwise.
+- *Why not also exit non-zero on `n_tool_results_unprotected_would_crash > 0`?* Same reasoning as loop 264 -- that's the GOOD outcome (the safe path absorbed it). We only exit 1 on scenario errors. The non-zero count is the smoking gun in the JSON, not a CI failure signal.
+- *Coverage gap remaining*: still no exercise of the `/run` two-phase preview flow (would need TUI harness, not just QwenClient). Carry-over for loop 266+. Also no apply_patch scenario.
+- *Bench takes ~3.5 minutes now*: acceptable for an on-demand validation gate, not a per-loop test.
+
+**Suite**: 1988 passed, 7 skipped (up from 1979 → +9 new bench-script tests).

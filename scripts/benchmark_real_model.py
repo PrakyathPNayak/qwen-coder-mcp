@@ -86,6 +86,39 @@ SCENARIOS: list[dict[str, Any]] = [
         ),
         "max_steps": 4,
     },
+    # Loop 265 -- write-mode scenario. Exercises fs_write through the
+    # full registry with confirmation auto-allowed, so we catch any
+    # markup leaks in the write-confirmation preview path AND verify
+    # multi-step tool dispatch survives bracket-laden file content.
+    {
+        "name": "agent_write_bracket_file",
+        "kind": "agent",
+        "task": (
+            "Use the fs_write tool to create a file at "
+            "'.agent/benchmarks/_bench_write_probe.txt' with this exact "
+            "content:\n"
+            "[INFO] [/▍] progress\n"
+            "[ERROR] closing tag '[/▍]'\n"
+            "Then use fs_read to read it back and confirm in 1 sentence."
+        ),
+        "max_steps": 5,
+        "writes": True,
+    },
+    # Loop 265 -- run_shell scenario. The operator's earlier failure
+    # mode ('run_shell missing'/'run_command not in parser') makes
+    # this dispatch path worth gating: alias resolution + bracket-heavy
+    # stdout going through the tool-result render path.
+    {
+        "name": "agent_run_shell_bracket",
+        "kind": "agent",
+        "task": (
+            "Use the run_shell tool to run exactly: "
+            "echo '[INFO] [/▍] progress 50%' && echo '[ERROR] closing tag'\n"
+            "Then state in one sentence what the command printed."
+        ),
+        "max_steps": 4,
+        "writes": True,
+    },
 ]
 
 
@@ -120,22 +153,45 @@ def _bench_chat(client: QwenClient, prompt: str, max_tokens: int) -> dict[str, A
     }
 
 
-def _bench_agent(client: QwenClient, task: str, max_steps: int) -> dict[str, Any]:
+def _bench_agent(
+    client: QwenClient,
+    task: str,
+    max_steps: int,
+    *,
+    writes: bool = False,
+) -> dict[str, Any]:
     """Drive run_agent for a few steps, counting tool calls and
-    measuring total wall-clock + final-answer markup safety."""
+    measuring total wall-clock + final-answer markup safety.
+
+    When ``writes=True`` the full ``ALL_TOOLS`` registry is exposed
+    and ``always_allow`` is passed as the confirmation hook so the
+    benchmark can exercise destructive paths (fs_write, run_shell)
+    without an interactive prompt. Tool-result strings are also
+    fed through the markup-safety check so a leak in run_shell
+    stdout rendering would surface here.
+    """
     cfg = fs_tools.FsConfig(root=ROOT)
     t0 = time.monotonic()
     tool_calls = 0
     final = ""
     chunks = 0
+    tool_results: list[str] = []
+    kwargs: dict[str, Any] = {
+        "client": client,
+        "fs_cfg": cfg,
+        "max_steps": max_steps,
+    }
+    if writes:
+        kwargs["tools"] = agent_loop.ALL_TOOLS
+        kwargs["confirm"] = agent_loop.always_allow
     try:
-        for ev in agent_loop.run_agent(
-            [], task, client=client, fs_cfg=cfg, max_steps=max_steps
-        ):
+        for ev in agent_loop.run_agent([], task, **kwargs):
             if ev.kind == "chunk":
                 chunks += 1
             elif ev.kind == "tool_call":
                 tool_calls += 1
+            elif ev.kind == "tool_result":
+                tool_results.append(getattr(ev, "text", "") or "")
             elif ev.kind == "final" or ev.kind == "limit":
                 final = ev.text
     except Exception as exc:  # noqa: BLE001
@@ -144,6 +200,7 @@ def _bench_agent(client: QwenClient, task: str, max_steps: int) -> dict[str, Any
             "trace": traceback.format_exc(),
         }
     elapsed = time.monotonic() - t0
+    tool_safety = [_markup_safety_check(t) for t in tool_results[:8]]
     return {
         "wall_s": elapsed,
         "tool_calls": tool_calls,
@@ -151,6 +208,8 @@ def _bench_agent(client: QwenClient, task: str, max_steps: int) -> dict[str, Any
         "final_chars": len(final),
         "final_head": final[:400],
         "markup_safe": _markup_safety_check(final),
+        "tool_result_markup_safe": tool_safety,
+        "tool_result_heads": [t[:200] for t in tool_results[:8]],
     }
 
 
@@ -201,7 +260,7 @@ def main() -> int:
     ap.add_argument("--base-url", default=os.environ.get("QWEN_BASE_URL", "http://127.0.0.1:8000/v1"))
     ap.add_argument("--api-key", default=os.environ.get("QWEN_API_KEY", "EMPTY"))
     ap.add_argument("--model", default=os.environ.get("QWEN_MODEL"))
-    ap.add_argument("--tag", default="loop264")
+    ap.add_argument("--tag", default="loop265")
     ap.add_argument("--out-dir", default=str(ROOT / ".agent" / "benchmarks"))
     args = ap.parse_args()
 
@@ -242,7 +301,12 @@ def main() -> int:
         if sc["kind"] == "chat":
             r = _bench_chat(client, sc["prompt"], sc["max_tokens"])
         else:
-            r = _bench_agent(client, sc["task"], sc["max_steps"])
+            r = _bench_agent(
+                client,
+                sc["task"],
+                sc["max_steps"],
+                writes=bool(sc.get("writes")),
+            )
         r["scenario"] = sc["name"]
         r["kind"] = sc["kind"]
         r["bench_wall_s"] = time.monotonic() - t0
@@ -286,6 +350,21 @@ def _summarise(results: list[dict[str, Any]]) -> dict[str, Any]:
     chat_results = [r for r in results if r.get("kind") == "chat" and "error" not in r]
     ttfts = [r["ttft_s"] for r in chat_results if r.get("ttft_s") is not None]
     wps_values = [r["words_per_s"] for r in chat_results if r.get("words_per_s") is not None]
+    # Loop 265 -- aggregate tool-result markup safety across agent
+    # scenarios so a regression in run_shell/fs_write rendering
+    # surfaces in the top-level summary.
+    tool_safe_total = 0
+    tool_safe_raw_would_crash = 0
+    tool_safe_path_rendered = 0
+    for r in results:
+        for ts in r.get("tool_result_markup_safe", []) or []:
+            if not ts.get("checked"):
+                continue
+            tool_safe_total += 1
+            if ts.get("raw_would_raise"):
+                tool_safe_raw_would_crash += 1
+            if ts.get("safe_path_renders"):
+                tool_safe_path_rendered += 1
     return {
         "n_scenarios": len(results),
         "n_errors": sum(1 for r in results if "error" in r),
@@ -300,6 +379,9 @@ def _summarise(results: list[dict[str, Any]]) -> dict[str, Any]:
             1 for r in results
             if r.get("markup_safe", {}).get("safe_path_renders")
         ),
+        "n_tool_results_checked": tool_safe_total,
+        "n_tool_results_unprotected_would_crash": tool_safe_raw_would_crash,
+        "n_tool_results_safe_path_rendered": tool_safe_path_rendered,
     }
 
 

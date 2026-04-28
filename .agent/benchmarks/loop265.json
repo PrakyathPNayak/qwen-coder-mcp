@@ -1,0 +1,149 @@
+{
+  "tag": "loop265",
+  "base_url": "http://127.0.0.1:8000/v1",
+  "model": "qwen3.6-27b",
+  "wall_s": 209.8719810259645,
+  "scenarios": [
+    {
+      "ttft_s": 0.09253951100981794,
+      "wall_s": 57.78488726800424,
+      "completion_chars": 8290,
+      "completion_words": 1373,
+      "words_per_s": 23.760537831147357,
+      "reply_head": "Here's a thinking process:\n\n1.  **Analyze User Request:**\n   - Function name: `fizzbuzz(n)`\n   - Purpose: Print FizzBuzz for numbers from 1 to n (inclusive)\n   - Constraint: Exactly 5 lines of Python code\n   - Output: Just the code, no explanation\n\n2.  **Understand FizzBuzz Rules:**\n   - For each number i from 1 to n:\n     - If divisible by 3 and 5: print \"FizzBuzz\"\n     - Else if divisible by 3: ",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": false,
+        "safe_path_renders": true
+      },
+      "scenario": "warmup_plain_python",
+      "kind": "chat",
+      "bench_wall_s": 57.78690132198972
+    },
+    {
+      "ttft_s": 0.0781653480080422,
+      "wall_s": 64.78018941899063,
+      "completion_chars": 9374,
+      "completion_words": 1263,
+      "words_per_s": 19.496701249683987,
+      "reply_head": "Here's a thinking process:\n\n1.  **Understand User Requirements:**\n   - Class name: `LRUCache`\n   - Methods: `get`, `put`\n   - Data structure: `OrderedDict` from `collections`\n   - Include a brief docstring\n   - Output ONLY code (no explanations, no markdown except code block if necessary, but the prompt says \"Output ONLY code\", so I'll just output the raw Python code)\n\n2.  **Key Concepts of LRU Ca",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": false,
+        "safe_path_renders": true
+      },
+      "scenario": "tokens_per_second_long",
+      "kind": "chat",
+      "bench_wall_s": 64.78091567399679
+    },
+    {
+      "ttft_s": 0.07638304200372659,
+      "wall_s": 67.98118538601557,
+      "completion_chars": 8737,
+      "completion_words": 1394,
+      "words_per_s": 20.505673622554397,
+      "reply_head": "Here's a thinking process:\n\n1.  **Analyze User Input:**\n   - The user wants me to print *exactly* the provided text verbatim, character-for-character.\n   - The text must be wrapped in ````text` fences.\n   - The provided text is:\n     ```\n     [INFO] [/\u258d] progress 50%\n     regex matched: /\\[(.*?)\\]/g\n     Traceback (most recent call last):\n       File '[/x]', line 1\n     [ERROR] closing tag '[/\u258d]' ",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": true,
+        "safe_path_renders": true
+      },
+      "scenario": "bracket_heavy_output",
+      "kind": "chat",
+      "bench_wall_s": 67.98174464100157
+    },
+    {
+      "wall_s": 7.321822997997515,
+      "tool_calls": 1,
+      "stream_chunks": 237,
+      "final_chars": 696,
+      "final_head": "The user wants me to summarize the project in 1 sentence based on the first 30 lines of README.md.\n\nFrom the README, I can see this is:\n- An MCP (Model Context Protocol) server backed by Qwen3.6-27B running locally on an RTX 4090\n- It focuses on coding workflows\n- It includes a self-improving agentic loop that audits the repo, proposes fixes, and commits changes\n\nLet me craft a concise 1-sentence ",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": false,
+        "safe_path_renders": true
+      },
+      "tool_result_markup_safe": [
+        {
+          "checked": true,
+          "raw_would_raise": false,
+          "safe_path_renders": true
+        }
+      ],
+      "tool_result_heads": [
+        "# README.md lines 1-30 of 384\n# qwen-coder-mcp\n\nA Model Context Protocol (MCP) server backed by **Qwen3.6-27B running\nlocally on a single RTX 4090** via vLLM (4-bit AutoRound, OpenAI-compatible),\nfocu"
+      ],
+      "scenario": "agent_one_step_fs_read",
+      "kind": "agent",
+      "bench_wall_s": 7.3220824519812595
+    },
+    {
+      "wall_s": 6.616948039998533,
+      "tool_calls": 2,
+      "stream_chunks": 191,
+      "final_chars": 257,
+      "final_head": "The user wants me to confirm the file was written correctly in 1 sentence. The content matches exactly what was requested.\n</think>\n\nThe file was successfully created and contains the exact expected content with both the `[INFO]` and `[ERROR]` lines intact.",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": false,
+        "safe_path_renders": true
+      },
+      "tool_result_markup_safe": [
+        {
+          "checked": true,
+          "raw_would_raise": false,
+          "safe_path_renders": true
+        },
+        {
+          "checked": true,
+          "raw_would_raise": true,
+          "safe_path_renders": true
+        }
+      ],
+      "tool_result_heads": [
+        "wrote 52 bytes to .agent/benchmarks/_bench_write_probe.txt",
+        "[INFO] [/\u258d] progress\n[ERROR] closing tag '[/\u258d]'\n"
+      ],
+      "scenario": "agent_write_bracket_file",
+      "kind": "agent",
+      "bench_wall_s": 6.617118480004137
+    },
+    {
+      "wall_s": 5.383073238976067,
+      "tool_calls": 1,
+      "stream_chunks": 159,
+      "final_chars": 251,
+      "final_head": "The user wants me to state in one sentence what the command printed. The output was two lines: \"[INFO] [/\u258d] progress 50%\" and \"[ERROR] closing tag\".\n</think>\n\nThe command printed two lines: `[INFO] [/\u258d] progress 50%` followed by `[ERROR] closing tag`.",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": true,
+        "safe_path_renders": true
+      },
+      "tool_result_markup_safe": [
+        {
+          "checked": true,
+          "raw_would_raise": true,
+          "safe_path_renders": true
+        }
+      ],
+      "tool_result_heads": [
+        "$ echo '[INFO] [/\u258d] progress 50%' && echo '[ERROR] closing tag'\nexit=0\n--- stdout ---\n[INFO] [/\u258d] progress 50%\n[ERROR] closing tag"
+      ],
+      "scenario": "agent_run_shell_bracket",
+      "kind": "agent",
+      "bench_wall_s": 5.383218456991017
+    }
+  ],
+  "summary": {
+    "n_scenarios": 6,
+    "n_errors": 0,
+    "total_wall_s": 209.86810634998255,
+    "median_ttft_s": 0.0781653480080422,
+    "median_words_per_s": 20.505673622554397,
+    "n_replies_unprotected_would_crash": 2,
+    "n_replies_safe_path_rendered": 6,
+    "n_tool_results_checked": 4,
+    "n_tool_results_unprotected_would_crash": 2,
+    "n_tool_results_safe_path_rendered": 4
+  }
+}
