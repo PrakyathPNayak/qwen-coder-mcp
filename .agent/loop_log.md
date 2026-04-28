@@ -3577,3 +3577,50 @@ fixture cleanup. Reaping is best-effort: SIGTERM, poll for 2s,
 fall back to SIGKILL if needed -- mirrors the loop-222 pattern.
 
 Verify: full suite 1456 passed, 6 skipped (was 1448 + 8).
+
+## Loop 225 - structured exit-reason logging in agent/loop.py
+
+Observe. Before this loop, the autonomous loop terminated silently:
+no SIGTERM handler, no exit-reason line. If stop_qwen.sh-style
+external management SIGTERM-ed the loop, runtime.log just stopped --
+no breadcrumb to distinguish a SIGTERM from a crash from a
+KeyboardInterrupt. The only termination signal we logged was the
+SIGUSR1 logger-state dump, which only fires on demand.
+
+Orient. Three new pieces:
+1. _format_exit_line(reason, iteration, exc=None) - pure helper.
+   Format: "loop exit reason=<reason> | iter=<N>[ | exc=<Type>: <msg>]"
+   Multi-line exc messages collapsed to first line (grep-friendly);
+   long messages truncated at 240 chars + ellipsis.
+2. _log_exit(...) - thin wrapper around _format_exit_line that calls
+   _log inside a try/except so observability never breaks the loop.
+3. _install_sigterm_handler() - installs a handler that raises
+   _ShutdownRequested (SystemExit subclass, code=0). The mains
+   while-True is now wrapped in matching except branches:
+     except _ShutdownRequested: log reason=sigterm
+     except KeyboardInterrupt: log reason=keyboard-interrupt
+     except SystemExit: log reason=system-exit, preserve code
+     except BaseException: log reason=unhandled-exception
+   All paths re-raise after logging so downstream supervisors
+   (run_loop.sh, systemd) see correct exit codes. The existing
+   finally: client.close() still runs.
+
+Devil step. Why _ShutdownRequested instead of just SystemExit? Two
+reasons: (a) clarity in the except branch -- we know it came from
+SIGTERM specifically, not a sys.exit() somewhere else; (b) lets
+SystemExit raised by _other_ code paths get a different reason
+label. Why log before re-raise? Because the SystemExit propagation
+unwinds the stack through finally blocks instantly; only an explicit
+log call before the raise gets the line on disk. Why is _log_exit
+itself try/except-wrapped? If _log fails (disk full mid-shutdown),
+we still want SystemExit to propagate cleanly to the kernel.
+
+Thirteen tests across four classes pin every branch: format helper
+(7 tests covering normal/no-exc-msg/multiline-collapse/truncation/
+zero-iter/keyboard-interrupt), _ShutdownRequested invariants (2 -
+SystemExit-subclass, default-code-zero), sigterm handler (2 -
+returns True on Linux, raises _ShutdownRequested when fired via
+signal.raise_signal), and _log_exit observability guarantees (2 -
+swallows _log failures, calls _log with the formatted line).
+
+Verify: full suite 1469 passed, 6 skipped (was 1456 + 13).

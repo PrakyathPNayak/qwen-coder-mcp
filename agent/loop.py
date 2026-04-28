@@ -2046,6 +2046,70 @@ def _install_sigusr1_handler() -> bool:
         return False
 
 
+def _format_exit_line(
+    reason: str, iteration: int, exc: BaseException | None = None
+) -> str:
+    """Build the single structured line emitted on autonomous-loop
+    termination. Pure helper for direct testing.
+
+    The format is fixed:
+
+        loop exit reason=<reason> | iter=<N>[ | exc=<Type>: <msg>]
+
+    Multi-line exception messages are collapsed to their first line
+    so the runtime.log stays grep-friendly. Long messages are
+    truncated at 240 chars; the iteration number lets operators
+    correlate to timing.log.
+    """
+    parts = [f"loop exit reason={reason}", f"iter={iteration}"]
+    if exc is not None:
+        msg = str(exc).splitlines()[0] if str(exc) else ""
+        if len(msg) > 240:
+            msg = msg[:237] + "..."
+        exc_part = f"exc={type(exc).__name__}"
+        if msg:
+            exc_part += f": {msg}"
+        parts.append(exc_part)
+    return " | ".join(parts)
+
+
+def _log_exit(
+    reason: str, iteration: int, exc: BaseException | None = None
+) -> None:
+    """Emit the structured exit line via ``_log``. Never raises."""
+    try:
+        _log(_format_exit_line(reason, iteration, exc))
+    except Exception:
+        pass
+
+
+class _ShutdownRequested(SystemExit):
+    """Raised from the SIGTERM handler so the main loop's
+    structured shutdown path runs (logging + client.close())
+    instead of the kernel reaping the process silently.
+    """
+
+
+def _install_sigterm_handler() -> bool:
+    """Convert SIGTERM into a ``_ShutdownRequested`` exception so the
+    main loop emits an exit line and runs ``client.close()`` before
+    exiting. Returns True on success, False on platforms without
+    SIGTERM (Windows) or if installation failed.
+    """
+    try:
+        import signal
+        if not hasattr(signal, "SIGTERM"):
+            return False
+
+        def _handler(_signum, _frame):  # type: ignore[no-untyped-def]
+            raise _ShutdownRequested(0)
+
+        signal.signal(signal.SIGTERM, _handler)
+        return True
+    except Exception:
+        return False
+
+
 def main() -> None:
     from qwen_coder_mcp.config import load_settings  # local import
     settings = load_settings()
@@ -2064,9 +2128,11 @@ def main() -> None:
     iteration_count = 0
     aggregate_every = _aggregate_summary_every()
     sigusr1_installed = _install_sigusr1_handler()
+    sigterm_installed = _install_sigterm_handler()
     _log(
         f"loop diagnostics | aggregate_summary_every={aggregate_every} "
-        f"sigusr1_handler={'installed' if sigusr1_installed else 'unavailable'}"
+        f"sigusr1_handler={'installed' if sigusr1_installed else 'unavailable'} "
+        f"sigterm_handler={'installed' if sigterm_installed else 'unavailable'}"
     )
     try:
         while True:
@@ -2110,6 +2176,23 @@ def main() -> None:
             if aggregate_every > 0 and iteration_count % aggregate_every == 0:
                 _log_aggregate_swallow_summary(iteration_count)
             time.sleep(max(1, settings.loop_interval_seconds))
+    except _ShutdownRequested as exc:
+        # SIGTERM converted by _install_sigterm_handler. Graceful.
+        _log_exit("sigterm", iteration_count, exc=None if exc.code == 0 else exc)
+        raise
+    except KeyboardInterrupt:
+        # Operator pressed Ctrl-C in the foreground. Graceful.
+        _log_exit("keyboard-interrupt", iteration_count)
+        raise
+    except SystemExit as exc:
+        # Some other code called sys.exit(); preserve the code.
+        _log_exit("system-exit", iteration_count, exc=exc if exc.code else None)
+        raise
+    except BaseException as exc:  # pragma: no cover - defensive
+        # Anything else is an unhandled crash escaping the inner
+        # try/except. Surface it loudly before re-raising.
+        _log_exit("unhandled-exception", iteration_count, exc=exc)
+        raise
     finally:
         client.close()
 
