@@ -4387,3 +4387,35 @@ logic), Priority (P2 -- diagnostic only, not behavioural). Suite
 - *Why not add a `[json` fence pattern to the parser too?* The operator complaint was about names, not formats. Adding ```json detection would risk eating accidental JSON in regular replies. Conservative now; revisit if telemetry shows the model preferring that fence.
 
 **Suite**: 1924 passed, 7 skipped (up from 1900 -> +24 new).
+
+---
+
+## Loop 263 — full TUI markup-leak audit + defense-in-depth fallback
+
+**Why**: operator hit `MarkupError: closing tag '[/▍]' does not match any open tag` *again* after loop 262 had already escaped the assistant-reply / user-echo paths. Audit revealed loop 262 only patched two of ~10 leak sites. The hottest leak path was `_agent_status` and its callers -- tool-call previews, tool-result heads, summary lines, checkpoint-failure messages all interpolated raw model output (or exception text containing model output) into a markup-templated f-string. Any bracketed character in tool stdout (progress bars, regex output, escaped sequences) would crash mid-turn.
+
+**Change**:
+- `src/qwen_coder_mcp/tui.py`:
+  - new `_safe_log_write(log, content)` helper -- defense in depth. Tries the markup write; on `rich.errors.MarkupError` only, retries with the entire content escaped via `rich.markup.escape`. Prefix styling is lost in the fallback but the line still renders. Non-MarkupError exceptions are swallowed (logging is observability, must never crash the worker thread).
+  - `_agent_status` now routes through `_safe_log_write`. This single change covers every status emission in the agent runner without per-call-site changes.
+  - Targeted `_safe_markup(...)` escapes added at 6 high-risk dynamic-content sites: tool-call summary line (3680), checkpoint-failure line (3719), tool-call status line (3771), tool-result status line (3795), summary status line (3806), agent-error final_text (3853). The targeted escapes preserve the prefix styling; the helper is the safety net for any path I didn't think to audit.
+  - Health banner (`_render_health_banner`, `_render_engine_probe_line`) and history-save / `/agent --resume` / `/cd` write paths also got `_safe_markup` applied to their dynamic suffixes.
+  - Slash-dispatcher result write `log.write(text)` swapped to `_safe_log_write(log, text)` because some `_render_*` helpers splice tool-result audit content.
+  - `final_text` for runner exceptions changed from `f"[agent error: ...]"` to `f"agent error: ..."` -- the outer brackets were themselves ambiguous markup once the downstream `[green]qwen>[/green] {reply}` template concatenated them, forcing `_safe_markup` to render them as literal `\[` to the user. Plain-text wrapping renders cleanly.
+- `src/qwen_coder_mcp/agent_loop.py:957`: same plain-text wrapping for the chat-call exception path so non-TUI consumers (loop.py audit, MCP) see the same readable form.
+
+**Tests** (55 new in tests/test_tui_markup_e2e.py + carries the old 24 from loop 262):
+- `_CapturingLog` stand-in actually parses markup via `rich.text.Text.from_markup` so MarkupError fall-back is exercised against real renderer behaviour, not a mock.
+- 8 representative bracket-laden payloads (the literal operator complaint, regex-with-brackets, ANSI progress bars, dangling closing tags, traceback-with-bracket, error message containing `'[/▍]'`).
+- `TestSafeLogWriteFallback`: parametrised over all 8 payloads -- bad markup falls back successfully; clean markup keeps its styling; non-MarkupError exceptions (IOError) are swallowed; renderable objects (Markdown, Text) bypass markup parsing.
+- `TestStatusLineEscaping`: 5 markup templates × 8 payloads = 40 parametrised cases asserting tool-call/result/write-confirm/summary/checkpoint-failure status lines all render without crashing.
+- `TestAgentErrorWrapping`: end-to-end assertion that `agent error: ValueError: '[/▍]' is bad` flows through the same path `_post_assistant` uses for plain replies and renders with the box char preserved and no literal `\\[` leaking out.
+- `TestE2EBenchmark`: 500 status writes complete in <1s (perf sanity check so the TUI doesn't lag during long agent turns); fallback path under pressure (50 × 8 = 400 writes via the MarkupError retry loop) also <1s.
+
+**Devil step**:
+- *Could the fallback hide real bugs?* Yes -- a markup-error in TUI-internal code (e.g. someone typos `[gren]` instead of `[green]`) would now degrade silently to escaped output instead of crashing into a stack trace. Mitigation: targeted escapes at known dynamic sites cover the 6 hottest paths so the fallback is a last resort, and the test suite asserts those specific templates render correctly with bad payloads. Any future template typo would still surface in tests.
+- *Format change to "agent error:" without brackets*: only one downstream parser exists (`tests/test_agent_loop.py:268` checks for `"agent error"` substring) and it still passes. The MCP server doesn't parse this string. Audit log stores it as opaque text. Safe.
+- *Performance*: 500 writes in <1s on this CI hardware (real run: ~50ms). Real agent turns emit 10-50 status lines per turn so the headroom is huge. Fallback path (~10x slower than success path due to two markup parses + escape) still bounded.
+- *Why not also escape every `log.write(...)` in TUI?* Most static literal-markup writes ("[bold cyan]qwen-coder-tui[/bold cyan]" etc) have no dynamic content and can never crash. Wrapping them adds noise without benefit. The targeted approach is minimal and the helper covers the dynamic-content paths I might have missed.
+
+**Suite**: 1979 passed, 7 skipped (up from 1924 → +55 new).

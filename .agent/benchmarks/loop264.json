@@ -1,0 +1,80 @@
+{
+  "tag": "loop264",
+  "base_url": "http://127.0.0.1:8000/v1",
+  "model": "qwen3.6-27b",
+  "wall_s": 176.6696193969983,
+  "scenarios": [
+    {
+      "ttft_s": 0.14166316299815662,
+      "wall_s": 57.10862377501326,
+      "completion_chars": 7104,
+      "completion_words": 1216,
+      "words_per_s": 21.292756148188545,
+      "reply_head": "Here's a thinking process:\n\n1.  **Analyze User Request:**\n   - Function name: `fizzbuzz(n)`\n   - Purpose: Print FizzBuzz for numbers from 1 to n (inclusive)\n   - Constraint: Exactly 5 lines of Python code\n   - Output: Just the code, no explanation\n\n2.  **Understand FizzBuzz Rules:**\n   - For each number i from 1 to n:\n     - If divisible by both 3 and 5, print \"FizzBuzz\"\n     - Else if divisible b",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": false,
+        "safe_path_renders": true
+      },
+      "scenario": "warmup_plain_python",
+      "kind": "chat",
+      "bench_wall_s": 57.11052152499906
+    },
+    {
+      "ttft_s": 0.07605281000724062,
+      "wall_s": 43.02234149898868,
+      "completion_chars": 6394,
+      "completion_words": 802,
+      "words_per_s": 18.641477243140113,
+      "reply_head": "Here's a thinking process:\n\n1.  **Understand User Request:**\n   - Class name: `LRUCache`\n   - Methods: `get`, `put`\n   - Data structure: `OrderedDict` from `collections`\n   - Include a brief docstring\n   - Output ONLY code (no explanations, no markdown except code block if necessary, but the prompt says \"Output ONLY code\", so I'll just output the raw Python code)\n\n2.  **Key Requirements for LRU Ca",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": false,
+        "safe_path_renders": true
+      },
+      "scenario": "tokens_per_second_long",
+      "kind": "chat",
+      "bench_wall_s": 43.022926400997676
+    },
+    {
+      "ttft_s": 0.0776859650213737,
+      "wall_s": 68.83285575199989,
+      "completion_chars": 9092,
+      "completion_words": 1484,
+      "words_per_s": 21.559471618419426,
+      "reply_head": "Here's a thinking process:\n\n1.  **Analyze User Input:**\n   - The user wants me to print *exactly* the provided text verbatim, character-for-character.\n   - The text must be wrapped in ````text` fences.\n   - The provided text is:\n     ```\n     [INFO] [/\u258d] progress 50%\n     regex matched: /\\[(.*?)\\]/g\n     Traceback (most recent call last):\n       File '[/x]', line 1\n     [ERROR] closing tag '[/\u258d]' ",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": true,
+        "safe_path_renders": true
+      },
+      "scenario": "bracket_heavy_output",
+      "kind": "chat",
+      "bench_wall_s": 68.83344417400076
+    },
+    {
+      "wall_s": 7.7026278149860445,
+      "tool_calls": 1,
+      "stream_chunks": 248,
+      "final_chars": 723,
+      "final_head": "The user wants me to summarize the project in 1 sentence based on the first 30 lines of README.md.\n\nFrom the README, I can see this is:\n- An MCP (Model Context Protocol) server backed by Qwen3.6-27B running locally on an RTX 4090 via vLLM\n- Focused on coding workflows\n- Includes a self-improving agentic loop that audits the repo, proposes fixes, debates them, and commits changes\n\nI'll craft a conc",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": false,
+        "safe_path_renders": true
+      },
+      "scenario": "agent_one_step_fs_read",
+      "kind": "agent",
+      "bench_wall_s": 7.70272729700082
+    }
+  ],
+  "summary": {
+    "n_scenarios": 4,
+    "n_errors": 0,
+    "total_wall_s": 176.66644884098787,
+    "median_ttft_s": 0.0776859650213737,
+    "median_words_per_s": 21.292756148188545,
+    "n_replies_unprotected_would_crash": 1,
+    "n_replies_safe_path_rendered": 4
+  }
+}
