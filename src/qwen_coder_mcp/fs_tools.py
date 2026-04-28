@@ -59,6 +59,11 @@ def read_file(
     end_line: int | None = None,
     max_lines: int | None = None,
     line_numbers: bool = False,
+    pattern: str | None = None,
+    before: int = 0,
+    after: int = 0,
+    max_matches: int | None = None,
+    ignore_case: bool = False,
 ) -> dict[str, object]:
     """Return ``{path, size, text, truncated, ...}`` for a file inside the root.
 
@@ -69,6 +74,18 @@ def read_file(
     "lines 1..1e9" still receives a bounded payload. ``line_numbers``
     prefixes each emitted line with ``"<n> | "`` so subsequent
     ``edit_file`` calls can quote exact context unambiguously.
+
+    Loop 256 added grep-style pattern reads: when ``pattern`` is a
+    Python regex (case-insensitive via ``ignore_case=True``), only
+    lines that match are returned, padded by ``before``/``after``
+    lines of context. Non-contiguous match groups are separated by
+    ``"--"`` lines (grep -A/-B convention) and line numbers are
+    always emitted. The result includes ``match_lines`` (1-based line
+    numbers where the pattern matched) so the model can plan a
+    follow-up surgical edit. ``max_matches`` caps the number of
+    distinct match groups (default unlimited; the byte cap still
+    applies). ``pattern`` composes with ``start_line``/``end_line``:
+    matching is restricted to the slice if a range was specified.
 
     Range semantics:
       - 1-based, inclusive on both ends, like grep -n / less.
@@ -98,7 +115,8 @@ def read_file(
     range_active = (
         start_line is not None or end_line is not None or max_lines is not None
     )
-    if not range_active and not line_numbers:
+    pattern_active = pattern is not None
+    if not range_active and not line_numbers and not pattern_active:
         truncated = full_size > cfg.max_read_bytes
         if truncated:
             body = raw[: cfg.max_read_bytes]
@@ -134,6 +152,75 @@ def read_file(
         s = 1
     if e > total_lines:
         e = total_lines
+
+    if pattern_active:
+        import re as _re
+
+        try:
+            flags = _re.IGNORECASE if ignore_case else 0
+            rx = _re.compile(pattern, flags)
+        except _re.error as exc:
+            raise FsError(f"invalid regex: {exc}") from exc
+        if before < 0 or after < 0:
+            raise FsError("before/after must be >= 0")
+        # Search inside the (possibly clamped) range.
+        scan_lo, scan_hi = s, e
+        match_lines: list[int] = []
+        for i in range(scan_lo, scan_hi + 1):
+            ln = lines[i - 1].rstrip("\n").rstrip("\r")
+            if rx.search(ln):
+                match_lines.append(i)
+                if max_matches is not None and len(match_lines) >= max_matches:
+                    break
+        if not match_lines:
+            return {
+                "path": rel,
+                "size": full_size,
+                "total_lines": total_lines,
+                "text": "",
+                "truncated": False,
+                "range": {"start": s, "end": e},
+                "match_lines": [],
+                "pattern": pattern,
+            }
+        # Build merged windows: [(lo, hi), ...] in ascending order.
+        windows: list[tuple[int, int]] = []
+        for m in match_lines:
+            lo = max(1, m - before)
+            hi = min(total_lines, m + after)
+            if windows and lo <= windows[-1][1] + 1:
+                prev_lo, prev_hi = windows[-1]
+                windows[-1] = (prev_lo, max(prev_hi, hi))
+            else:
+                windows.append((lo, hi))
+        out_parts: list[str] = []
+        for idx, (lo, hi) in enumerate(windows):
+            if idx > 0:
+                out_parts.append("--\n")
+            width = len(str(hi))
+            for i in range(lo, hi + 1):
+                ln = lines[i - 1]
+                if not ln.endswith("\n") and i < total_lines:
+                    ln = ln + "\n"
+                out_parts.append(f"{str(i).rjust(width)} | {ln}")
+        text = "".join(out_parts)
+        encoded_len = len(text.encode("utf-8", errors="replace"))
+        truncated = encoded_len > cfg.max_read_bytes
+        if truncated:
+            text = text.encode("utf-8", errors="replace")[: cfg.max_read_bytes].decode(
+                "utf-8", errors="replace"
+            )
+        return {
+            "path": rel,
+            "size": full_size,
+            "total_lines": total_lines,
+            "text": text,
+            "truncated": truncated,
+            "range": {"start": s, "end": e},
+            "match_lines": match_lines,
+            "pattern": pattern,
+        }
+
     if s > e:
         # Empty slice -- still legal, returns "".
         slice_lines: list[str] = []

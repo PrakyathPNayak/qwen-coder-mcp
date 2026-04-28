@@ -119,6 +119,15 @@ def _tool_fs_read(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     end_line = _maybe_int("end_line")
     max_lines = _maybe_int("max_lines")
     line_numbers = bool(args.get("line_numbers", False))
+    # Loop 256: regex-based slicing. Composes with start_line/end_line
+    # to restrict the search window.
+    pattern = args.get("pattern")
+    if pattern is not None and not isinstance(pattern, str):
+        return "error: fs_read 'pattern' must be a string"
+    before = _maybe_int("before") or 0
+    after = _maybe_int("after") or 0
+    max_matches = _maybe_int("max_matches")
+    ignore_case = bool(args.get("ignore_case", False))
     res = fs_tools.read_file(
         cfg,
         path,
@@ -126,12 +135,28 @@ def _tool_fs_read(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
         end_line=end_line,
         max_lines=max_lines,
         line_numbers=line_numbers,
+        pattern=pattern,
+        before=before,
+        after=after,
+        max_matches=max_matches,
+        ignore_case=ignore_case,
     )
     text = str(res.get("text", ""))
     cap = int(args.get("max_bytes", 16000))
     if len(text) > cap:
         text = text[:cap] + "\n... [truncated]"
     rng = res.get("range")
+    match_lines = res.get("match_lines")
+    if match_lines is not None:
+        total = res.get("total_lines", "?")
+        n = len(match_lines) if isinstance(match_lines, list) else 0
+        header = (
+            f"# {path} pattern={pattern!r} matches={n} "
+            f"of {total} lines (before={before}, after={after})\n"
+        )
+        if n == 0:
+            return header + "(no matches)"
+        return header + text
     if rng:
         total = res.get("total_lines", "?")
         header = f"# {path} lines {rng['start']}-{rng['end']} of {total}\n"
@@ -472,10 +497,16 @@ Available tools:
 - web_search(query: str, max_results: int=5) -- DuckDuckGo web search
 - web_fetch(url: str, max_bytes: int=8000) -- fetch a URL's text body
 - fs_read(path: str, start_line: int|None=None, end_line: int|None=None,
-  max_lines: int|None=None, line_numbers: bool=false, max_bytes: int=16000)
+  max_lines: int|None=None, line_numbers: bool=false, pattern: str|None=None,
+  before: int=0, after: int=0, max_matches: int|None=None,
+  ignore_case: bool=false, max_bytes: int=16000)
   -- read a file (or a 1-based inclusive line range; negative indices
   count from the end; pass line_numbers=true to get "<n> | " prefixes
-  so subsequent fs_edit calls can quote exact context)
+  so subsequent fs_edit calls can quote exact context). When `pattern`
+  is supplied, only lines matching that regex are returned, padded by
+  `before`/`after` context lines (grep -A/-B style). Non-contiguous
+  matches are separated by "--" lines and line numbers are always
+  emitted. Use this for navigating huge files without slurping them.
 - fs_list(path: str=".") -- list a workspace directory
 - grep(pattern: str, path: str=".", ext: str|None=None) -- regex search
 - find(glob: str, path: str=".") -- glob search
