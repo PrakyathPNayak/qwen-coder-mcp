@@ -2047,6 +2047,11 @@ def _build_app(
                             final_text = ev.text
                         elif ev.kind == "limit":
                             final_text = ev.text
+                        elif ev.kind == "summary":
+                            self.call_from_thread(
+                                self._agent_status,
+                                f"[dim]· {ev.text}[/dim]",
+                            )
                 except Exception as exc:  # noqa: BLE001
                     final_text = f"[agent error: {type(exc).__name__}: {exc}]"
                 self.call_from_thread(

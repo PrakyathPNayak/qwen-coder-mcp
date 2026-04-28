@@ -2552,3 +2552,20 @@ read-only operation, no state changes.
 **Act.** Added `import time` to agent_loop. Extended `AgentEvent` dataclass with `latency_s` field + docstring noting `monotonic`-based semantics. Stamped before/after `run_tool` and threaded into the emitted `tool_result`. Updated TUI runner to prefer `ev.latency_s`. New `tests/test_agent_event_latency.py` with 4 cases: default None, tool_result carries field, other kinds keep None, latency reflects actual sleep duration in a custom slow tool.
 
 **Verify.** `pytest -x -q` → ~1k passed, 1 skipped.
+
+## Loop 177 — emit a summary event with tool count + total wall time
+
+**Observe.** Per-tool latency (loop 175) and per-event latency on the AgentEvent (loop 176) gave us all the raw timings, but a user watching a long agent run still couldn't see "how much total time did tools eat?" without doing the addition themselves. The loop_log already flagged this as the next low-risk continuation.
+
+**Orient.** The cleanest place to compute the aggregate is inside `run_agent` itself — it's the only point that sees every tool round-trip. Emit a synthetic `AgentEvent(kind="summary", text=..., latency_s=total)` exactly once, right before the terminating `final`/`limit` event. Consumers that don't care can ignore the event; the TUI renders it as a dim status line.
+
+**Decide.** Track `tool_count` and `tool_time_total` across the loop. Emit `summary` in both terminal branches (no-tool path and max-steps path). Update three existing tests in `test_agent_loop.py` whose `kinds == [...]` assertions enumerate the event sequence. Update loop-176's "other kinds leave latency None" test to allow `summary` (alongside `tool_result`) to carry timing data.
+
+**Devil.**
+- *Correctness:* What about exception paths? `chat()` raising emits an early `final` event and returns — no summary in that branch. That's fine; the summary is informational and the user already sees the error. ✅
+- *Scope:* Should the summary also count model turns / tokens? That'd duplicate the `/tokens` slash command. Keep it focused on tool wall time. ✅
+- *Priority:* Higher-impact items? `/checkpoints` listing and the live vLLM smoke test exist but neither moves a metric. The summary completes a three-loop arc on agent observability with one isolated diff. ✅
+
+**Act.** Added `tool_count`, `tool_time_total`, and `_summary_text()` in `run_agent`. Emit `summary` in the no-tool branch and the max-steps branch. Updated the docstring's event-sequence list. Wired the TUI's runner to render `[dim]· {ev.text}[/dim]` on `summary`. Updated 3 existing assertions in `test_agent_loop.py` and 1 in `test_agent_event_latency.py`. Added `tests/test_agent_summary_event.py` with 6 cases covering: position before final, zero-tools text, singular vs plural phrasing, running total across multiple tools, position before limit at max_steps, exactly-once emission.
+
+**Verify.** `pytest -x -q` → ~1k passed, 1 skipped.

@@ -466,9 +466,16 @@ def run_agent(
       AgentEvent(kind="chunk", text=...)             token-by-token
       AgentEvent(kind="assistant", text=...)         each model turn (full)
       AgentEvent(kind="tool_call", tool=..., args=...)
-      AgentEvent(kind="tool_result", tool=..., text=...)
+      AgentEvent(kind="tool_result", tool=..., text=..., latency_s=...)
+      AgentEvent(kind="summary", text="N tools, ...", latency_s=total)
       AgentEvent(kind="final", text=...)             terminal reply
       AgentEvent(kind="limit", text=...)             max_steps hit
+
+    A ``summary`` event is emitted exactly once, right before the
+    terminating ``final`` or ``limit`` event. Its ``latency_s`` is the
+    total wall-clock time spent inside ``run_tool`` across the whole
+    turn; ``text`` is a human-readable one-liner suitable for a status
+    log (e.g. ``"3 tool calls, 1.2s total"``).
 
     When ``stream=True`` (default) and the client exposes
     ``chat_stream``, the loop streams each model turn and emits
@@ -490,6 +497,15 @@ def run_agent(
     history.append(ChatMessage(role="user", content=user_text))
 
     use_stream = stream and hasattr(client, "chat_stream")
+
+    tool_count = 0
+    tool_time_total = 0.0
+
+    def _summary_text() -> str:
+        if tool_count == 0:
+            return "0 tool calls"
+        plural = "" if tool_count == 1 else "s"
+        return f"{tool_count} tool call{plural}, {tool_time_total:.2f}s total"
 
     for _step in range(max_steps):
         try:
@@ -515,6 +531,11 @@ def run_agent(
 
         calls = parse_tool_calls(reply)
         if not calls:
+            yield AgentEvent(
+                kind="summary",
+                text=_summary_text(),
+                latency_s=tool_time_total,
+            )
             yield AgentEvent(kind="final", text=strip_tool_calls(reply) or reply)
             return
 
@@ -526,6 +547,8 @@ def run_agent(
             _t0 = time.monotonic()
             result = run_tool(call, fs_cfg=fs_cfg, tools=tools, confirm=confirm)
             elapsed = time.monotonic() - _t0
+            tool_count += 1
+            tool_time_total += elapsed
             results.append(result)
             yield AgentEvent(
                 kind="tool_result",
@@ -549,5 +572,10 @@ def run_agent(
         f"[agent stopped after {max_steps} steps without final answer]"
     )
     history.append(ChatMessage(role="assistant", content=cap_msg))
+    yield AgentEvent(
+        kind="summary",
+        text=_summary_text(),
+        latency_s=tool_time_total,
+    )
     yield AgentEvent(kind="limit", text=cap_msg)
     yield AgentEvent(kind="final", text=cap_msg)

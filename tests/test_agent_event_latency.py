@@ -68,7 +68,9 @@ class TestAgentEventLatency:
             )
         )
         for e in events:
-            if e.kind != "tool_result":
+            # tool_result and summary are the two event kinds that
+            # legitimately carry timing data.
+            if e.kind not in {"tool_result", "summary"}:
                 assert e.latency_s is None, f"{e.kind} carried latency"
 
     def test_latency_reflects_tool_runtime(self, tmp_path: Path) -> None:

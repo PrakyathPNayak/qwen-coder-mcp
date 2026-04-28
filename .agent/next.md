@@ -1,9 +1,9 @@
-# Loop 177 candidates
+# Loop 178 candidates
 
-1. **Time-to-first-token (TTFT) on model turns.** Track `time.monotonic()` of the first `chunk` event after each `tool_result` (or task start); emit a synthetic `AgentEvent(kind="ttft", latency_s=...)` so consumers can show "model started replying in 0.4s" alongside per-tool timing.
-2. **`/checkpoints` slash command** — list available checkpoints with timestamps, supporting future multi-checkpoint history.
+1. **Time-to-first-token (TTFT) on model turns.** Track time from prompt-flush to first chunk; emit `AgentEvent(kind="ttft", latency_s=...)` right after the first chunk of each model turn.
+2. **`/checkpoints` slash command** — list available checkpoints with timestamps under `.agent/`, prepping for multi-checkpoint history.
 3. **Live vLLM smoke test of `<tool_call>` protocol** (opt-in, `pytest -m live`).
-4. **Per-loop devil's advocate prompt** — `--devil` flag on `run_agent`.
-5. **Aggregate latency summary at end of agent run** — sum per-tool latencies and emit a final `[agent] used 5 tools, total tool time 3.2s` line.
+4. **Per-loop devil's advocate prompt** — `--devil` flag on `run_agent` injecting a critic turn before final answer.
+5. **Surface summary in MCP server response** — the JSON-RPC streaming endpoint can include the summary line in its terminal frame so non-TUI clients render it identically.
 
-(5) is small + complementary to loops 175/176. (1) extends timing coverage but needs a new event kind. Pick (5) next loop for low-risk continuation.
+(5) is the natural next step in the observability arc — propagate the new event kind through the existing MCP wire format.

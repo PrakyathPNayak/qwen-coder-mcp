@@ -205,7 +205,7 @@ class TestRunAgent:
             )
         )
         kinds = [e.kind for e in events]
-        assert kinds == ["assistant", "final"]
+        assert kinds == ["assistant", "summary", "final"]
         assert events[-1].text == "just an answer"
         # Exactly one model call.
         assert len(client.calls) == 1
@@ -249,6 +249,8 @@ class TestRunAgent:
         )
         kinds = [e.kind for e in events]
         assert kinds.count("assistant") == 3
+        # Tail order is now: ..., summary, limit, final.
+        assert kinds[-3] == "summary"
         assert kinds[-2] == "limit"
         assert kinds[-1] == "final"
         assert "stopped after 3 steps" in events[-1].text
