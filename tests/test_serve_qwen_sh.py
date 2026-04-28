@@ -304,3 +304,125 @@ class TestServeScriptOverrides:
         # actually forwards the value.
         argv = _argv_after_marker(_run({"QWEN_SERVE_MAX_LEN": "131072"}))
         assert _flag_value(argv, "--max-model-len") == "131072"
+
+
+class TestForceOffloadEscapeHatch:
+    """Loop 221: ``QWEN_SERVE_FORCE_OFFLOAD=1`` overrides the
+    hybrid-model guard from loop 216.
+
+    Why it exists: the guard matches by model-name substring (no vLLM
+    CLI to ask "is this model hybrid?" pre-launch). False positives
+    are possible for forks/mirrors whose HF id happens to contain a
+    matching substring (e.g. a dense model named
+    ``acme/dense-mamba-distilled-7b``). The escape hatch lets the
+    operator override the guard at their own risk -- if the model
+    really is hybrid, vLLM's engine init will raise the loop-216
+    ValueError. The user has explicitly opted in.
+    """
+
+    def test_force_offload_keeps_offloading_for_qwen3_6(self) -> None:
+        # The default hybrid model with the escape hatch on. Operator
+        # is asserting "I know what I'm doing; emit the flags anyway."
+        argv = _argv_after_marker(
+            _run(
+                {
+                    "QWEN_SERVE_FORCE_OFFLOAD": "1",
+                    "QWEN_SERVE_KV_OFFLOAD_GIB": "16",
+                }
+            )
+        )
+        assert "--kv-offloading-size" in argv, (
+            "QWEN_SERVE_FORCE_OFFLOAD=1 must bypass the hybrid guard"
+        )
+        assert _flag_value(argv, "--kv-offloading-size") == "16"
+        # And HMA must be disabled, since OffloadingConnector requires
+        # that (loop 211 invariant): whenever offloading flags are
+        # emitted, --disable-hybrid-kv-cache-manager goes with them.
+        assert "--disable-hybrid-kv-cache-manager" in argv
+
+    def test_force_offload_keeps_offloading_for_jamba(self) -> None:
+        # Pin a different hybrid family to make sure the escape hatch
+        # is not accidentally Qwen-specific.
+        argv = _argv_after_marker(
+            _run(
+                {
+                    "QWEN_SERVE_FORCE_OFFLOAD": "1",
+                    "QWEN_SERVE_MODEL": "ai21labs/Jamba-v0.1",
+                    "QWEN_SERVE_KV_OFFLOAD_GIB": "8",
+                }
+            )
+        )
+        assert "--kv-offloading-size" in argv
+        assert _flag_value(argv, "--kv-offloading-size") == "8"
+
+    def test_force_offload_true_also_works(self) -> None:
+        # Mirrors the QWEN_SERVE_EAGER convention: accept '1' or 'true'.
+        argv = _argv_after_marker(
+            _run(
+                {
+                    "QWEN_SERVE_FORCE_OFFLOAD": "true",
+                    "QWEN_SERVE_KV_OFFLOAD_GIB": "16",
+                }
+            )
+        )
+        assert "--kv-offloading-size" in argv
+
+    def test_force_offload_zero_does_not_re_enable_offloading(self) -> None:
+        # If the operator explicitly set KV_OFFLOAD_GIB=0 AND turned
+        # the escape hatch on, we must NOT re-add offloading flags --
+        # the user's explicit 0 wins. The escape hatch only bypasses
+        # the *guard*; it does not invent offloading.
+        argv = _argv_after_marker(
+            _run(
+                {
+                    "QWEN_SERVE_FORCE_OFFLOAD": "1",
+                    "QWEN_SERVE_KV_OFFLOAD_GIB": "0",
+                }
+            )
+        )
+        assert "--kv-offloading-size" not in argv
+        assert "--disable-hybrid-kv-cache-manager" not in argv
+
+    def test_force_offload_unset_keeps_guard_active(self) -> None:
+        # Default behaviour (no env var) is the loop-216 guard --
+        # offloading off for hybrid models. Make sure the escape hatch
+        # is opt-in, not opt-out.
+        argv = _argv_after_marker(_run({"QWEN_SERVE_KV_OFFLOAD_GIB": "16"}))
+        assert "--kv-offloading-size" not in argv
+
+    def test_force_offload_zero_string_keeps_guard_active(self) -> None:
+        # Symmetry with QWEN_SERVE_EAGER: '0' must NOT enable the
+        # escape hatch (would be a footgun for shells that leave the
+        # var defined as 0 from a previous run).
+        argv = _argv_after_marker(
+            _run(
+                {
+                    "QWEN_SERVE_FORCE_OFFLOAD": "0",
+                    "QWEN_SERVE_KV_OFFLOAD_GIB": "16",
+                }
+            )
+        )
+        assert "--kv-offloading-size" not in argv
+
+    def test_force_offload_emits_warning_to_stderr(self) -> None:
+        # Operators need a loud-enough breadcrumb in case the engine
+        # then fails init -- they should be able to grep `serve.log`
+        # for why offloading flags appeared on a hybrid model. Pin
+        # the warning so a future refactor cannot silently drop it.
+        env = {k: v for k, v in os.environ.items() if not k.startswith("QWEN_SERVE_")}
+        env["QWEN_SERVE_DRY_RUN"] = "1"
+        env["PATH"] = os.environ.get("PATH", "")
+        env["QWEN_SERVE_FORCE_OFFLOAD"] = "1"
+        env["QWEN_SERVE_KV_OFFLOAD_GIB"] = "16"
+        proc = subprocess.run(
+            ["bash", str(SCRIPT)],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        assert "QWEN_SERVE_FORCE_OFFLOAD" in proc.stderr
+        assert "skipping" in proc.stderr.lower()
+

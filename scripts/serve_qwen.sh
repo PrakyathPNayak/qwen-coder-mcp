@@ -22,6 +22,11 @@
 #                           --kv-offloading-size (default 16). Replaces the
 #                           removed-in-vLLM-0.11 --swap-space flag.
 #                           QWEN_SERVE_SWAP_SPACE accepted as deprecated alias.
+#                           Auto-forced to 0 for hybrid models (Qwen3-Next,
+#                           Jamba, mamba mixes) which require the Hybrid KV
+#                           Cache Manager. Set QWEN_SERVE_FORCE_OFFLOAD=1 to
+#                           bypass this guard (e.g. for a misnamed dense
+#                           model whose HF id triggers the substring match).
 #   QWEN_SERVE_CHUNKED_PREFILL  chunked prefill on long prompts (default 1)
 #   QWEN_SERVE_MAX_BATCHED  per-step batched-token cap (default 4096)
 #   QWEN_SERVE_LIMIT_MM     --limit-mm-per-prompt JSON; default disables
@@ -80,14 +85,28 @@ KV_OFFLOAD_GIB="${QWEN_SERVE_KV_OFFLOAD_GIB:-${QWEN_SERVE_SWAP_SPACE:-16}}"
 # we know are hybrid as of vLLM 0.11. False negatives just mean a louder
 # engine-init failure (the loop 215 /sysinfo --probe surfaces this);
 # false positives just mean offloading is unnecessarily disabled.
-case "$(echo "$MODEL" | tr '[:upper:]' '[:lower:]')" in
-  *qwen3-next*|*qwen3_next*|*qwen3.6*|*qwen3_6*|*jamba*|*mamba*|*hybrid*|*nemotronh*|*minimax-text*)
-    if [ "$KV_OFFLOAD_GIB" != "0" ]; then
-      echo "[serve_qwen] hybrid model detected ($MODEL); forcing KV_OFFLOAD_GIB=0 (offloading is incompatible with HMA which hybrid models require)" >&2
-      KV_OFFLOAD_GIB=0
-    fi
-    ;;
-esac
+#
+# Escape hatch (loop 221): operators serving a misnamed dense model
+# (e.g. a fork that happens to contain "hybrid" in its HF id but isn't
+# actually hybrid) can set QWEN_SERVE_FORCE_OFFLOAD=1 to skip this
+# guard entirely. If the model truly is hybrid, the engine will fail
+# init with the loop-216 ValueError -- the user has explicitly opted
+# into that risk.
+FORCE_OFFLOAD="${QWEN_SERVE_FORCE_OFFLOAD:-0}"
+if [ "$FORCE_OFFLOAD" = "1" ] || [ "$FORCE_OFFLOAD" = "true" ]; then
+  if [ "$KV_OFFLOAD_GIB" != "0" ]; then
+    echo "[serve_qwen] QWEN_SERVE_FORCE_OFFLOAD=1; skipping hybrid-model offload guard (engine init may fail if the model really is hybrid)" >&2
+  fi
+else
+  case "$(echo "$MODEL" | tr '[:upper:]' '[:lower:]')" in
+    *qwen3-next*|*qwen3_next*|*qwen3.6*|*qwen3_6*|*jamba*|*mamba*|*hybrid*|*nemotronh*|*minimax-text*)
+      if [ "$KV_OFFLOAD_GIB" != "0" ]; then
+        echo "[serve_qwen] hybrid model detected ($MODEL); forcing KV_OFFLOAD_GIB=0 (offloading is incompatible with HMA which hybrid models require)" >&2
+        KV_OFFLOAD_GIB=0
+      fi
+      ;;
+  esac
+fi
 # Chunked prefill processes long prompts in slices instead of one
 # 65k-token forward pass that would OOM. Default on; set to 0 only
 # if you know prefill fits in VRAM.

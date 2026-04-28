@@ -3458,3 +3458,42 @@ it and writes each line. `_render_health_banner` calls
 `_render_engine_probe_line` only when the API probe succeeded.
 
 **Verify.** Full suite 1424 passed, 6 skipped (was 1416 + 8).
+
+## Loop 221 — `QWEN_SERVE_FORCE_OFFLOAD=1` escape hatch
+
+**Observe.** Loop 216's hybrid-model guard matches by lowercased
+substring (`qwen3-next|qwen3.6|jamba|mamba|hybrid|nemotronh|minimax-text`).
+There is no vLLM CLI to ask "is this model hybrid?" pre-launch, so
+substring matching is the best we can do. False positives are
+inevitable: a fork named `acme/dense-mamba-distilled-7b` would
+trigger the guard despite being a regular dense model. Operators
+need an escape hatch.
+
+**Orient.** `QWEN_SERVE_FORCE_OFFLOAD=1` (or `=true`) bypasses the
+hybrid guard entirely. If the model really is hybrid the engine
+will fail init with the loop-216 ValueError; the user has
+explicitly opted into that risk. Loud stderr breadcrumb when the
+hatch is engaged so post-mortem grep on `serve.log` finds it.
+
+**Devil.**
+- *Correctness — does the hatch override `KV_OFFLOAD_GIB=0`?* No.
+  The hatch only bypasses the *guard*; if the operator explicitly
+  set `KV_OFFLOAD_GIB=0`, that value wins. Pinned by
+  `test_force_offload_zero_does_not_re_enable_offloading`. ✅
+- *Correctness — does `=0` accidentally enable the hatch?* No.
+  Tested: `QWEN_SERVE_FORCE_OFFLOAD=0` keeps the guard active. ✅
+- *Scope — should we also gate on a known-hybrid allowlist instead
+  of substring matching?* No: the substring approach is already
+  conservative (false-positive offload-disable is fine; the user's
+  override path is now provided). An allowlist would couple us to
+  vLLM's hybrid-model registry which churns. ✅
+- *Priority — P3.* Edge case for forked / mirror model names.
+
+**Act.** scripts/serve_qwen.sh wraps the hybrid-detection case
+statement in `if [ "$FORCE_OFFLOAD" != "1" ] && != "true" ]; then
+... fi`. Header-comment env-var docs mention the hatch. Added 7
+tests covering: hybrid model with hatch on (Qwen3.6, Jamba); `=true`
+synonym; explicit `KV_OFFLOAD_GIB=0` still wins; default off; `=0`
+also off; loud stderr breadcrumb pinned.
+
+**Verify.** Full suite 1431 passed, 6 skipped (was 1424 + 7).
