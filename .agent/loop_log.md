@@ -3544,3 +3544,36 @@ just that the engine process started. Documented in the test as
 load-bearing.
 
 Verify: full suite 1448 passed, 6 skipped (was 1438 + 10).
+
+## Loop 224 - run_loop.sh test (scripts/ arc complete)
+
+Closes the scripts/ test-coverage arc: serve_qwen.sh (loop 205, 39
+tests via dry-run), stop_qwen.sh (loop 222, 7 tests via sandbox),
+wait_ready.sh (loop 223, 10 tests via PATH overlay), and now
+run_loop.sh (loop 224, 8 tests). All four scripts are now pinned.
+
+Eight tests across four classes: static invariants (shebang,
+syntax, strict-mode, python -m agent.loop invocation, nohup
+detachment), fresh start (pidfile written, child alive, argv
+captured), already-running guard (live pidfile -> exit 1, stderr
+already-running, original pidfile preserved), stale pidfile (dead
+pid -> new loop spawned, pidfile overwritten with new pid).
+
+Test technique: sandbox fixture copies the script into
+tmp_path/scripts/ so its cd ../.. lands in tmp_path (no real
+.loop/ pollution -- critical because the autonomous loop ALSO
+runs in this very repo, so a misdirected sandbox could wedge the
+running loops own pidfile). Fake python on PATH writes argv to a
+side-channel and execs sleep so we can observe PID bookkeeping
+without booting agent.loop itself.
+
+Devil step. Why fake python instead of fake agent.loop module?
+Because run_loop.sh shells python -m, not the entry point
+directly -- the kernel-level invocation is what matters and we
+test exactly that. Why exec sleep rather than a Python sleep?
+Because Linux exec-replace gives us the same PID before/after,
+so the pidfile points at a real live PID we can SIGTERM in the
+fixture cleanup. Reaping is best-effort: SIGTERM, poll for 2s,
+fall back to SIGKILL if needed -- mirrors the loop-222 pattern.
+
+Verify: full suite 1456 passed, 6 skipped (was 1448 + 8).
