@@ -99,6 +99,8 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/agent",
     "/agent_off",
     "/agent_on",
+    "/agent_write_off",
+    "/agent_write_on",
 )
 
 
@@ -149,9 +151,12 @@ Slash commands:
   /pinned              List currently pinned files
   /open <path>         Launch $EDITOR on a file in the repo
   /cd [path]           Show or change the fs sandbox root for the session
-  /agent <task>        Run an agentic tool-calling turn (one-off)
+  /agent <task>        Run an agentic tool-calling turn (one-off, read-only)
+  /agent --write <task> Same, but with fs_write + apply_patch enabled
   /agent_on            Make all subsequent chats agentic by default
   /agent_off           Disable default agent mode (back to plain chat)
+  /agent_write_on      Enable fs_write + apply_patch in default agent mode
+  /agent_write_off     Disable write tools in default agent mode
   /quit                Exit
 
 @<path> tokens in plain chat are expanded inline as file contents.
@@ -373,6 +378,7 @@ def _render_open(cfg: fs_tools.FsConfig, path: str) -> str:
 
 _CD_SENTINEL = "__CD__"
 _AGENT_SENTINEL = "__AGENT__"
+_AGENT_WRITE_SENTINEL = "__AGENTW__"
 _AGENT_TOGGLE_SENTINEL = "__AGENT_TOGGLE__"
 
 
@@ -829,12 +835,25 @@ def dispatch_slash(
         return "bye", True
     if name == "agent":
         if not cmd.rest:
-            return "usage: /agent <task>", False
-        return _AGENT_SENTINEL + cmd.rest, False
+            return "usage: /agent [--write] <task>", False
+        rest = cmd.rest
+        write_mode = False
+        toks = rest.split(None, 1)
+        if toks and toks[0] in ("--write", "-w"):
+            write_mode = True
+            rest = toks[1] if len(toks) > 1 else ""
+            if not rest.strip():
+                return "usage: /agent --write <task>", False
+        prefix = _AGENT_WRITE_SENTINEL if write_mode else _AGENT_SENTINEL
+        return prefix + rest, False
     if name == "agent_on":
         return _AGENT_TOGGLE_SENTINEL + "on", False
     if name == "agent_off":
         return _AGENT_TOGGLE_SENTINEL + "off", False
+    if name == "agent_write_on":
+        return _AGENT_TOGGLE_SENTINEL + "write_on", False
+    if name == "agent_write_off":
+        return _AGENT_TOGGLE_SENTINEL + "write_off", False
     if name == "search":
         if not cmd.rest:
             return "usage: /search [--max N] <query>", False
@@ -1368,6 +1387,9 @@ def _build_app(
             # tool-calling loop. Off by default so simple turns stay
             # streamed and cheap. Toggle with /agent_on /agent_off.
             self.agent_default: bool = False
+            # Write mode adds fs_write + apply_patch to the agent's tool
+            # registry. Off by default since these mutate the workspace.
+            self.agent_write_default: bool = False
 
         def compose(self) -> ComposeResult:  # type: ignore[override]
             yield Header(show_clock=True)
@@ -1500,13 +1522,28 @@ def _build_app(
                 elif isinstance(text, str) and text.startswith(_AGENT_SENTINEL):
                     task = text[len(_AGENT_SENTINEL):]
                     self._streaming = True
-                    self._start_agent_turn(task)
+                    self._start_agent_turn(task, write=self.agent_write_default)
+                    return
+                elif isinstance(text, str) and text.startswith(_AGENT_WRITE_SENTINEL):
+                    task = text[len(_AGENT_WRITE_SENTINEL):]
+                    self._streaming = True
+                    self._start_agent_turn(task, write=True)
                     return
                 elif isinstance(text, str) and text.startswith(_AGENT_TOGGLE_SENTINEL):
                     flag = text[len(_AGENT_TOGGLE_SENTINEL):]
-                    self.agent_default = (flag == "on")
-                    state = "on" if self.agent_default else "off"
-                    log.write(f"[dim]agent default → {state}[/dim]")
+                    if flag == "on":
+                        self.agent_default = True
+                    elif flag == "off":
+                        self.agent_default = False
+                    elif flag == "write_on":
+                        self.agent_write_default = True
+                    elif flag == "write_off":
+                        self.agent_write_default = False
+                    state = (
+                        f"agent={'on' if self.agent_default else 'off'} "
+                        f"write={'on' if self.agent_write_default else 'off'}"
+                    )
+                    log.write(f"[dim]{state}[/dim]")
                     return
                 elif isinstance(text, str) and text.startswith(_CD_SENTINEL):
                     new_root = text[len(_CD_SENTINEL):]
@@ -1581,6 +1618,14 @@ def _build_app(
             tail = accum[-2000:]
             stream.update(f"[green]qwen›[/green] {tail}▍")
 
+        def _reset_stream_buffer(self) -> None:
+            """Clear the live stream widget between agent turns."""
+            try:
+                stream = self.query_one("#stream", Static)
+                stream.update("[yellow]…[/yellow]")
+            except Exception:  # noqa: BLE001
+                return
+
         def _finalize_stream(self, prompt: str, reply: str, elapsed: float) -> None:
             try:
                 stream = self.query_one("#stream", Static)
@@ -1613,32 +1658,47 @@ def _build_app(
             self._refresh_status()
             self._streaming = False
 
-        def _start_agent_turn(self, task: str) -> None:
+        def _start_agent_turn(self, task: str, *, write: bool = False) -> None:
             """Run an agentic tool-calling turn in a worker thread.
 
             Reuses the streaming Static widget for live status of which
             tool is firing; final answer is rendered via _post_assistant
-            once the loop ends.
+            once the loop ends. ``write=True`` exposes fs_write +
+            apply_patch tools, allowing the agent to edit the workspace.
             """
             t0 = time.monotonic()
             try:
                 stream = self.query_one("#stream", Static)
-                stream.update("[yellow]agent: thinking…[/yellow]")
+                badge = "agent+write" if write else "agent"
+                stream.update(f"[yellow]{badge}: thinking…[/yellow]")
                 stream.add_class("live")
             except Exception:  # noqa: BLE001
                 pass
             self._refresh_status(streaming=True)
+            tools = agent_loop.ALL_TOOLS if write else agent_loop.DEFAULT_TOOLS
 
             def runner() -> None:
                 final_text = ""
+                live_buf: list[str] = []
                 try:
                     for ev in agent_loop.run_agent(
                         self.history,
                         task,
                         client=self.client,
                         fs_cfg=self.fs_cfg,
+                        tools=tools,
                     ):
-                        if ev.kind == "tool_call":
+                        if ev.kind == "chunk":
+                            live_buf.append(ev.text)
+                            self.call_from_thread(
+                                self._on_stream_chunk, "".join(live_buf)
+                            )
+                        elif ev.kind == "assistant":
+                            # End of one model turn -- reset live buffer
+                            # so the next turn's chunks render fresh.
+                            live_buf.clear()
+                            self.call_from_thread(self._reset_stream_buffer)
+                        elif ev.kind == "tool_call":
                             args_repr = ""
                             if ev.args:
                                 bits = []

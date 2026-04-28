@@ -2270,3 +2270,38 @@ kwarg actually forwarded. Existing tests still pass.
 - Priority: priority-1. Without an executor, model emitting tool_call tags would leak XML to the user.
 **ACT:** New module agent_loop.py (zero Textual deps). DEFAULT_TOOLS registry, AgentEvent dataclass, parse/run/format helpers, run_agent generator. CODER_SYSTEM rewritten. New slash commands with sentinels. App _start_agent_turn worker + auto-fallback. 24 + 6 new tests.
 **RESULT:** 977 passed (+30 from 947). Tree clean.
+
+## Loop 165 — streaming agent mode + write tools (fs_write, apply_patch)
+
+**Observe**: 977 tests green from loop 164. next.md flagged streaming + write
+tools as highest impact. `run_agent` was using blocking `client.chat()` only,
+so users saw nothing during agent thinking time. No way for the agent to edit
+the workspace.
+
+**Decide**: (1) add `stream=True` path to `run_agent` using `client.chat_stream`
+when available, yielding `AgentEvent(kind="chunk", text=...)` events; rewire
+`_start_agent_turn` to push chunks through `_on_stream_chunk` with a per-turn
+buffer reset. (2) add `fs_write`, `apply_patch` to a new `WRITE_TOOLS` registry
+and an `ALL_TOOLS` union; gate them behind a `/agent --write` flag, an
+`agent_write_default` toggle, and pass-through to `run_agent(tools=...)`.
+
+**Devil's advocate**:
+- Correctness: chunk deltas joined into accumulator → matches non-agent
+  streaming. Multi-step turns clear the live buffer at each `assistant`
+  boundary so the next turn renders cleanly.
+- Scope: write tools opt-in, default registry unchanged. Test confirms
+  fs_write returns "unknown tool" when ALL_TOOLS isn't passed.
+- Priority: both items were #1 and #2 in next.md and addressed user
+  complaint about no streaming during agent invocations.
+
+**Act**:
+- agent_loop.py: added `stream` kwarg to `run_agent`, `WRITE_TOOLS`,
+  `ALL_TOOLS`, `_tool_fs_write`, `_tool_apply_patch`. Updated
+  `TOOL_PROTOCOL_DOC` to advertise the two write tools.
+- tui.py: new `_AGENT_WRITE_SENTINEL`, `/agent --write` parser, two new
+  slash commands `/agent_write_on` `/agent_write_off`, `agent_write_default`
+  flag, chunk dispatch in `_start_agent_turn` (with `_reset_stream_buffer`
+  helper), HELP_TEXT updated.
+- tests: 7 new tests across streaming (3) + write tools (4).
+
+**Result**: 984 passed, 1 skipped.

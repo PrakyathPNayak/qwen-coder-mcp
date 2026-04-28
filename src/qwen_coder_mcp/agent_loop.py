@@ -139,6 +139,35 @@ def _tool_find(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     return shell_tools.format_find(hits) or "(no matches)"
 
 
+def _tool_fs_write(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    path = str(args.get("path", "")).strip()
+    if not path:
+        return "error: fs_write needs a 'path' arg"
+    content = args.get("content", "")
+    if not isinstance(content, str):
+        content = str(content)
+    create_parents = bool(args.get("create_parents", False))
+    res = fs_tools.write_file(
+        cfg, path, content, create_parents=create_parents
+    )
+    return f"wrote {res.get('size')} bytes to {res.get('path')}"
+
+
+def _tool_apply_patch(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    diff = args.get("diff", "")
+    if not isinstance(diff, str) or not diff.strip():
+        return "error: apply_patch needs a 'diff' arg (unified diff text)"
+    check_only = bool(args.get("check_only", False))
+    res = fs_tools.apply_patch(cfg, diff, check_only=check_only)
+    if isinstance(res, dict):
+        ok = res.get("ok", False)
+        msg = res.get("message", "")
+        prefix = "ok" if ok else "FAILED"
+        mode = "check" if check_only else "applied"
+        return f"{prefix} ({mode}): {msg}"
+    return str(res)
+
+
 DEFAULT_TOOLS: dict[str, ToolFn] = {
     "web_search": _tool_web_search,
     "web_fetch": _tool_web_fetch,
@@ -147,6 +176,16 @@ DEFAULT_TOOLS: dict[str, ToolFn] = {
     "grep": _tool_grep,
     "find": _tool_find,
 }
+
+# Write tools are opt-in -- they can mutate the workspace, so the
+# caller has to explicitly enable them via ``run_agent(..., write=True)``
+# or pass ``tools=ALL_TOOLS``. The default registry is read-only.
+WRITE_TOOLS: dict[str, ToolFn] = {
+    "fs_write": _tool_fs_write,
+    "apply_patch": _tool_apply_patch,
+}
+
+ALL_TOOLS: dict[str, ToolFn] = {**DEFAULT_TOOLS, **WRITE_TOOLS}
 
 
 TOOL_PROTOCOL_DOC = """\
@@ -170,6 +209,10 @@ Available tools:
 - fs_list(path: str=".") -- list a workspace directory
 - grep(pattern: str, path: str=".", ext: str|None=None) -- regex search
 - find(glob: str, path: str=".") -- glob search
+- fs_write(path: str, content: str, create_parents: bool=False) -- write a
+  file (only available when the user has opted into write mode)
+- apply_patch(diff: str, check_only: bool=False) -- apply a unified diff
+  via git apply (only available in write mode; prefer check_only=true first)
 
 Rules:
 - Use tools when you need information you don't already have. Do not
@@ -272,6 +315,7 @@ def run_agent(
     system: str | None = None,
     max_steps: int = 6,
     tools: dict[str, ToolFn] | None = None,
+    stream: bool = True,
 ) -> Iterator[AgentEvent]:
     """Run an agentic turn against ``client``, yielding events as they
     happen.
@@ -282,11 +326,17 @@ def run_agent(
     one user message containing the tool results.
 
     Yields:
-      AgentEvent(kind="assistant", text=...)         each model turn
+      AgentEvent(kind="chunk", text=...)             token-by-token
+      AgentEvent(kind="assistant", text=...)         each model turn (full)
       AgentEvent(kind="tool_call", tool=..., args=...)
       AgentEvent(kind="tool_result", tool=..., text=...)
       AgentEvent(kind="final", text=...)             terminal reply
       AgentEvent(kind="limit", text=...)             max_steps hit
+
+    When ``stream=True`` (default) and the client exposes
+    ``chat_stream``, the loop streams each model turn and emits
+    per-chunk events. Falls back to the blocking ``chat`` API
+    otherwise (e.g. test stubs).
     """
     from . import prompts as _prompts  # avoid import cycle at module top
 
@@ -302,9 +352,20 @@ def run_agent(
 
     history.append(ChatMessage(role="user", content=user_text))
 
+    use_stream = stream and hasattr(client, "chat_stream")
+
     for _step in range(max_steps):
         try:
-            reply = client.chat(history)
+            if use_stream:
+                buf: list[str] = []
+                for chunk in client.chat_stream(history):
+                    if not chunk:
+                        continue
+                    buf.append(chunk)
+                    yield AgentEvent(kind="chunk", text=chunk)
+                reply = "".join(buf)
+            else:
+                reply = client.chat(history)
         except Exception as exc:  # noqa: BLE001
             err = f"[agent error: {type(exc).__name__}: {exc}]"
             history.append(ChatMessage(role="assistant", content=err))

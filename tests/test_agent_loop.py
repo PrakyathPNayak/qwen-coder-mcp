@@ -326,3 +326,147 @@ class TestFormatToolResults:
         assert "first" in out
         assert "second" in out
         assert out.count("</tool_result>") == 2
+
+
+# ----------------------------------------------------------- streaming
+class _StreamingClient:
+    """Scripted client that supports both chat() and chat_stream().
+
+    chat_stream yields the reply broken into 4-char chunks; chat returns
+    the same reply as a single string. Tracks which entrypoint was used.
+    """
+
+    def __init__(self, replies):
+        self._replies = list(replies)
+        self.stream_calls = 0
+        self.blocking_calls = 0
+
+    def chat(self, history):
+        self.blocking_calls += 1
+        if not self._replies:
+            return ""
+        return self._replies.pop(0)
+
+    def chat_stream(self, history):
+        self.stream_calls += 1
+        if not self._replies:
+            return iter([])
+        full = self._replies.pop(0)
+        return iter([full[i : i + 4] for i in range(0, len(full), 4)])
+
+
+class TestRunAgentStreaming:
+    def test_emits_chunks_when_stream_true(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        client = _StreamingClient(["hello world from qwen"])
+        events = list(
+            agent_loop.run_agent(
+                [], "ping", client=client, fs_cfg=cfg, stream=True
+            )
+        )
+        chunks = [e for e in events if e.kind == "chunk"]
+        assert chunks, "expected per-chunk events when streaming"
+        joined = "".join(e.text for e in chunks)
+        assert joined == "hello world from qwen"
+        assert client.stream_calls == 1 and client.blocking_calls == 0
+        finals = [e for e in events if e.kind == "final"]
+        assert finals[-1].text == "hello world from qwen"
+
+    def test_falls_back_to_blocking_when_stream_false(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        client = _StreamingClient(["plain reply"])
+        events = list(
+            agent_loop.run_agent(
+                [], "ping", client=client, fs_cfg=cfg, stream=False
+            )
+        )
+        assert client.stream_calls == 0 and client.blocking_calls == 1
+        assert not [e for e in events if e.kind == "chunk"]
+
+    def test_streaming_with_tool_call(self, tmp_path: Path) -> None:
+        (tmp_path / "x.txt").write_text("hi", encoding="utf-8")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        client = _StreamingClient(
+            [
+                '<tool_call>{"name":"fs_read","args":{"path":"x.txt"}}</tool_call>',
+                "done reading",
+            ]
+        )
+        events = list(
+            agent_loop.run_agent(
+                [], "read", client=client, fs_cfg=cfg, stream=True
+            )
+        )
+        kinds = [e.kind for e in events]
+        assert "chunk" in kinds and "tool_call" in kinds and "tool_result" in kinds
+        # Two model turns -> chat_stream invoked twice
+        assert client.stream_calls == 2
+
+
+# ----------------------------------------------------------- write tools
+class TestWriteTools:
+    def test_fs_write_creates_file(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        client = _ScriptedClient(
+            [
+                '<tool_call>{"name":"fs_write","args":{"path":"new.txt","content":"hello"}}</tool_call>',
+                "wrote it",
+            ]
+        )
+        events = list(
+            agent_loop.run_agent(
+                [],
+                "write a file",
+                client=client,
+                fs_cfg=cfg,
+                tools=agent_loop.ALL_TOOLS,
+            )
+        )
+        results = [e for e in events if e.kind == "tool_result"]
+        assert results and "wrote" in results[0].text
+        assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "hello"
+
+    def test_default_tools_excludes_write(self) -> None:
+        assert "fs_write" not in agent_loop.DEFAULT_TOOLS
+        assert "apply_patch" not in agent_loop.DEFAULT_TOOLS
+        assert "fs_write" in agent_loop.ALL_TOOLS
+        assert "apply_patch" in agent_loop.ALL_TOOLS
+
+    def test_write_tool_unavailable_in_default_registry(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        client = _ScriptedClient(
+            [
+                '<tool_call>{"name":"fs_write","args":{"path":"x.txt","content":"y"}}</tool_call>',
+                "ok",
+            ]
+        )
+        events = list(
+            agent_loop.run_agent([], "write", client=client, fs_cfg=cfg)
+        )
+        results = [e for e in events if e.kind == "tool_result"]
+        assert results and "unknown tool" in results[0].text.lower()
+        assert not (tmp_path / "x.txt").exists()
+
+    def test_apply_patch_check_only(self, tmp_path: Path) -> None:
+        # Initialise a tiny git repo so `git apply` has something to chew on.
+        import subprocess
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        (tmp_path / "a.txt").write_text("one\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+             "commit", "-q", "-m", "init"],
+            cwd=tmp_path, check=True,
+        )
+        diff = (
+            "diff --git a/a.txt b/a.txt\n"
+            "--- a/a.txt\n+++ b/a.txt\n"
+            "@@ -1 +1 @@\n-one\n+two\n"
+        )
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = agent_loop._tool_apply_patch(
+            {"diff": diff, "check_only": True}, cfg
+        )
+        assert "ok" in out.lower() or "check" in out.lower()
+        # File unchanged because check_only=True
+        assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "one\n"
