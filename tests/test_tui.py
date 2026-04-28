@@ -780,7 +780,7 @@ class TestAtMentionExpansion:
         (tmp_path / "src.py").write_text("def f(): pass\n")
         cfg = fs_tools.FsConfig(root=tmp_path)
         out = tui.expand_at_mentions(cfg, "look at @src.py please")
-        assert "attached files" in out
+        assert "attached context" in out
         assert "def f()" in out
 
     def test_no_at_returns_unchanged(self, tmp_path: Path) -> None:
@@ -792,7 +792,7 @@ class TestAtMentionExpansion:
         out = tui.expand_at_mentions(cfg, "look at @does_not_exist.py")
         # Original token preserved, no attachment block.
         assert "@does_not_exist.py" in out
-        assert "attached files" not in out
+        assert "attached context" not in out
 
     def test_dedups(self, tmp_path: Path) -> None:
         (tmp_path / "a.py").write_text("alpha")
@@ -2088,3 +2088,149 @@ class TestTuiCss:
         assert "ctrl+c" in keys
         assert "ctrl+l" in keys
         assert "ctrl+r" in keys
+
+
+# -------------------------------------------------- Loop 160: @web / @search
+class TestAtMentionWebExpansion:
+    """Loop 160 extended @-mentions to fetch URLs and run live searches.
+    Tests inject fakes for the network fns so they run offline."""
+
+    def test_at_web_inlines_fetched_body(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        captured: list[str] = []
+
+        def _fetch(url: str):
+            captured.append(url)
+            return {"text": "<html>BODY</html>"}
+
+        out = tui.expand_at_mentions(
+            cfg,
+            "summarize @web:https://example.com/x",
+            web_fetch_fn=_fetch,
+            web_search_fn=lambda *_a, **_k: [],
+        )
+        assert captured == ["https://example.com/x"]
+        assert "@web:https://example.com/x" in out
+        assert "BODY" in out
+        assert "attached context" in out
+
+    def test_at_search_inlines_results(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        from qwen_coder_mcp.web_tools import SearchResult
+
+        def _search(query: str, max_results: int = 5):
+            return [
+                SearchResult(
+                    title="Result A", url="https://a.example", snippet="snip A"
+                ),
+                SearchResult(
+                    title="Result B", url="https://b.example", snippet="snip B"
+                ),
+            ]
+
+        out = tui.expand_at_mentions(
+            cfg,
+            "find docs @search:textual run_worker thread",
+            web_search_fn=_search,
+            web_fetch_fn=lambda *_a, **_k: {"text": ""},
+        )
+        assert "@search:textual run_worker thread" in out
+        assert "Result A" in out
+        assert "https://a.example" in out
+
+    def test_web_fetch_failure_silent(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("offline")
+
+        out = tui.expand_at_mentions(
+            cfg,
+            "see @web:https://nope.example",
+            web_fetch_fn=_boom,
+            web_search_fn=lambda *_a, **_k: [],
+        )
+        # Original mention preserved; no attached context block.
+        assert "@web:https://nope.example" in out
+        assert "attached context" not in out
+
+    def test_web_byte_cap_truncates(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+
+        def _fetch(_url: str):
+            return {"text": "X" * 50000}
+
+        out = tui.expand_at_mentions(
+            cfg,
+            "@web:https://big.example",
+            web_fetch_fn=_fetch,
+            web_search_fn=lambda *_a, **_k: [],
+            web_byte_cap=1024,
+        )
+        assert "[truncated]" in out
+        # Body in the attached block should be capped.
+        block = out.split("@web:https://big.example", 1)[1]
+        assert block.count("X") <= 1100
+
+    def test_max_web_caps_attachments(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        calls: list[str] = []
+
+        def _fetch(url: str):
+            calls.append(url)
+            return {"text": f"body of {url}"}
+
+        out = tui.expand_at_mentions(
+            cfg,
+            "@web:https://a @web:https://b @web:https://c",
+            web_fetch_fn=_fetch,
+            web_search_fn=lambda *_a, **_k: [],
+            max_web=2,
+        )
+        assert len(calls) == 2
+        assert "body of https://a" in out
+        assert "body of https://b" in out
+        assert "body of https://c" not in out
+
+    def test_file_and_web_mix(self, tmp_path: Path) -> None:
+        (tmp_path / "src.py").write_text("def f(): pass\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = tui.expand_at_mentions(
+            cfg,
+            "compare @src.py with @web:https://example.com",
+            web_fetch_fn=lambda u: {"text": f"WEB:{u}"},
+            web_search_fn=lambda *_a, **_k: [],
+        )
+        assert "def f()" in out
+        assert "WEB:https://example.com" in out
+
+    def test_web_token_does_not_leak_into_file_path(self, tmp_path: Path) -> None:
+        """Regression: `@web:url` must NOT also be treated as a file path
+        named `web:url` -- the file expander has to skip it."""
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        opens: list[str] = []
+        original_read = fs_tools.read_file
+
+        def _spy(c, p):
+            opens.append(p)
+            return original_read(c, p)
+
+        import unittest.mock as _m
+
+        with _m.patch.object(fs_tools, "read_file", _spy):
+            tui.expand_at_mentions(
+                cfg,
+                "@web:https://example.com",
+                web_fetch_fn=lambda u: {"text": "ok"},
+                web_search_fn=lambda *_a, **_k: [],
+            )
+        assert all(not p.startswith("web:") for p in opens)
+
+
+class TestPromptAdvertisesWebTools:
+    def test_coder_system_mentions_search_and_fetch(self) -> None:
+        from qwen_coder_mcp.prompts import CODER_SYSTEM
+
+        assert "@web" in CODER_SYSTEM
+        assert "@search" in CODER_SYSTEM
+        assert "/search" in CODER_SYSTEM

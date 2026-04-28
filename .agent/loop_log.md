@@ -2220,3 +2220,13 @@ kwarg actually forwarded. Existing tests still pass.
 - *Priority*: streaming beats internet access in user-visible impact; missing live tokens is what the user mentioned first. Internet access gets loop 160.
 **ACT:** Refactored on_input_submitted to delegate to `_start_streaming_turn` which spawns a worker thread; added `_on_stream_chunk` (per-chunk Static updater w/ tail-truncation) and `_finalize_stream` (clears Static, calls `_post_assistant`, refreshes status). Guarded against re-entry with `_streaming` flag. CSS rewritten (padded borders, accent focus, status dock, theme vars). Status line shows model/msg-count/total-tokens. New tests: `TestStreamingApp` (5), `TestTuiCss` (3).
 **RESULT:** 922 passed (+8). Commit pending.
+
+## Loop 160 -- model gets internet access via @web / @search
+**OBSERVE:** User: "no internet access." `/search` and `/fetch` slash commands existed but the model itself had no inline way to pull web context, and the system prompt didn't tell the model these capabilities exist.
+**DECIDE:** Extend `expand_at_mentions` with `@web:<url>` and `@search:<query>`; advertise both in `CODER_SYSTEM`; keep slash commands for direct user use.
+**DEVIL:**
+- *Correctness*: would `@web:https://x` regex-collide with the existing file mention regex (`@([\w./\-]+)` does NOT match colons, so `@web:url` is safe). Confirmed via `test_web_token_does_not_leak_into_file_path`.
+- *Scope*: real fix is "model can request web access during a turn" -- but Qwen3.6 here is served via vLLM /v1/chat/completions with no tool-calling layer wired up. So inline `@`-attachments are the right scope; tool-calling is a separate, much bigger loop.
+- *Priority*: still beats CSS micro-tweaks. User explicitly listed internet access second after streaming.
+**ACT:** Added `_AT_WEB_RE`, `_AT_SEARCH_RE`. New keyword args `web_search_fn`/`web_fetch_fn` allow test injection. Body capped at 8KB by default; max 2 web fetches and 2 searches per prompt. Updated `CODER_SYSTEM` to advertise the four entry points. Help text in TUI now lists `@web:` and `@search:`. Header in attached block changed `attached files` -> `attached context`. Existing test updated; 8 new tests covering URL fetch, search render, fetch failure silence, byte cap, max_web cap, mixed file+web, regex non-collision, and prompt advertisement.
+**RESULT:** 930 passed (+8). Commit pending.

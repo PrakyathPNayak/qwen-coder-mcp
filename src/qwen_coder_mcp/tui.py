@@ -149,6 +149,8 @@ Slash commands:
   /quit                Exit
 
 @<path> tokens in plain chat are expanded inline as file contents.
+@web:<url> tokens fetch a URL and inline its body.
+@search:<query> tokens run a DuckDuckGo search and inline the top results.
 Anything not starting with `/` is sent to Qwen as a chat message.
 """
 
@@ -656,6 +658,8 @@ def _render_tests(cfg: fs_tools.FsConfig, args: list[str]) -> str:
 
 # ----------------------------------------------------------- @file expansion
 _AT_FILE_RE = __import__("re").compile(r"@([\w./\-]+)")
+_AT_WEB_RE = __import__("re").compile(r"@web:(\S+)")
+_AT_SEARCH_RE = __import__("re").compile(r"@search:([^\s][^\n]*?)(?=\s+@|\s*$)")
 
 
 def expand_at_mentions(
@@ -664,29 +668,88 @@ def expand_at_mentions(
     *,
     max_files: int = 5,
     max_bytes_each: int = 8000,
+    max_web: int = 2,
+    web_byte_cap: int = 8000,
+    web_search_fn: object | None = None,
+    web_fetch_fn: object | None = None,
 ) -> str:
-    """Replace `@path` mentions in `text` with inline file contents.
+    """Replace `@path`, `@web:<url>`, and `@search:<query>` mentions
+    with inline content.
 
-    Recognises tokens of the form `@<path>` where path is a sequence of
-    word characters, dots, slashes, and hyphens. Each resolved file is
-    appended below the original text under a `# <path>` heading,
-    truncated to `max_bytes_each` characters. Up to `max_files`
-    expansions per call. Files that cannot be read (sandbox escape,
-    binary, missing, oversize) are silently skipped so a typo does not
-    block the user's actual prompt -- the original `@token` stays as
-    a literal in the prompt and the model can ask about it.
+    `@<path>`           inlines a workspace file (sandboxed)
+    `@web:<url>`        fetches a URL and inlines its body
+    `@search:<query>`   runs a web search and inlines top results
+
+    Web fetches use `web_tools.fetch_url` / `web_tools.web_search` by
+    default; tests can inject stubs via `web_search_fn` / `web_fetch_fn`.
+    Failures are silent so a typo or network blip never blocks the
+    user's actual prompt.
     """
     if "@" not in text:
         return text
+    appended: list[str] = []
+
+    if web_search_fn is None:
+        try:
+            from . import web_tools as _wt  # type: ignore
+            web_search_fn = _wt.web_search
+        except Exception:  # noqa: BLE001
+            web_search_fn = None
+    if web_fetch_fn is None:
+        try:
+            from . import web_tools as _wt  # type: ignore
+            web_fetch_fn = _wt.fetch_url
+        except Exception:  # noqa: BLE001
+            web_fetch_fn = None
+
+    web_count = 0
+    if web_fetch_fn is not None:
+        for m in _AT_WEB_RE.finditer(text):
+            if web_count >= max_web:
+                break
+            url = m.group(1).rstrip(".,);]")
+            try:
+                res = web_fetch_fn(url)  # type: ignore[misc]
+            except Exception:  # noqa: BLE001
+                continue
+            body = str(res.get("text", "") if isinstance(res, dict) else res)
+            if len(body) > web_byte_cap:
+                body = body[:web_byte_cap] + "\n... [truncated]"
+            appended.append(f"\n# @web:{url}\n```\n{body}\n```")
+            web_count += 1
+
+    search_count = 0
+    if web_search_fn is not None:
+        for m in _AT_SEARCH_RE.finditer(text):
+            if search_count >= max_web:
+                break
+            query = m.group(1).strip()
+            if not query:
+                continue
+            try:
+                results = web_search_fn(query, max_results=5)  # type: ignore[misc]
+            except Exception:  # noqa: BLE001
+                continue
+            try:
+                from . import web_tools as _wt  # type: ignore
+                rendered = _wt.format_search_results(results)
+            except Exception:  # noqa: BLE001
+                rendered = "\n".join(
+                    str(getattr(r, "title", r)) for r in (results or [])
+                )
+            appended.append(f"\n# @search:{query}\n```\n{rendered}\n```")
+            search_count += 1
+
     seen: list[str] = []
     for m in _AT_FILE_RE.finditer(text):
         token = m.group(1)
+        if token.startswith("web:") or token.startswith("search:"):
+            continue
         if token in seen:
             continue
         seen.append(token)
         if len(seen) >= max_files:
             break
-    appended: list[str] = []
     for token in seen:
         try:
             res = fs_tools.read_file(cfg, token)
@@ -698,7 +761,7 @@ def expand_at_mentions(
         appended.append(f"\n# {token}\n```\n{body}\n```")
     if not appended:
         return text
-    return text + "\n\n--- attached files ---" + "".join(appended)
+    return text + "\n\n--- attached context ---" + "".join(appended)
 
 
 def dispatch_slash(
