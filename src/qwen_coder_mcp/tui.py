@@ -150,8 +150,8 @@ Slash commands:
   /git <subcmd>        Read-only git status / log / diff / show / branch
   /tests [args]        Run pytest in the repo
   /tokens              Estimate total tokens in current chat history
-  /lat                 Show the last agent turn's timing breakdown
-                       (TTFT, per-tool latencies, summary)
+  /lat [N]             Show the last N agent turns' timing breakdown
+                       (TTFT, per-tool latencies, summary). Default N=1.
   /sysprompt [text]    Show or replace the system prompt
   /model [id]          Show or switch the served model id
   /undo                Pop the last user/assistant exchange
@@ -1261,8 +1261,26 @@ def dispatch_slash(
             f"(rough estimate, four characters per token)"
         ), False
     if name == "lat":
-        profile = getattr(app, "last_turn_profile", None) if app is not None else None
-        return format_turn_profile(profile), False
+        # Optional N argument: number of recent turns to display.
+        n = 1
+        if cmd.args:
+            try:
+                n = int(cmd.args[0])
+            except ValueError:
+                return f"/lat: expected integer, got {cmd.args[0]!r}", False
+            if n < 1:
+                return "/lat: count must be >= 1", False
+        profiles: list[TurnProfile] = []
+        if app is not None:
+            profiles = list(getattr(app, "turn_profiles", []) or [])
+        if not profiles:
+            # Back-compat: if the App only exposes last_turn_profile
+            # (e.g. older tests / stubs), fall through to single-turn.
+            single = (
+                getattr(app, "last_turn_profile", None) if app is not None else None
+            )
+            return format_turn_profile(single), False
+        return format_turn_profiles(profiles, n=n), False
     if name == "sysprompt":
         if history is None:
             return "no history available", False
@@ -1465,6 +1483,36 @@ def format_turn_profile(profile: TurnProfile | None) -> str:
     if profile.summary_text:
         lines.append(f"  summary: {profile.summary_text}")
     return "\n".join(lines)
+
+
+DEFAULT_TURN_PROFILE_HISTORY = 20
+
+
+def format_turn_profiles(
+    profiles: list[TurnProfile], n: int = 1
+) -> str:
+    """Render the last ``n`` ``TurnProfile``s as a stacked listing.
+
+    Each profile is rendered via ``format_turn_profile`` and prefixed
+    with a ``=== turn -k ===`` header where ``k`` counts back from the
+    most recent (``-1`` is the most recent turn). ``n`` is clamped to
+    ``[1, len(profiles)]``; ``n <= 0`` is treated as 1. Empty input
+    falls back to ``format_turn_profile(None)`` so the empty path
+    matches the single-turn API.
+    """
+    if not profiles:
+        return format_turn_profile(None)
+    if n <= 0:
+        n = 1
+    n = min(n, len(profiles))
+    selected = profiles[-n:]
+    if n == 1:
+        return format_turn_profile(selected[-1])
+    blocks: list[str] = []
+    for offset, prof in enumerate(reversed(selected), start=1):
+        blocks.append(f"=== turn -{offset} ===")
+        blocks.append(format_turn_profile(prof))
+    return "\n".join(blocks)
 
 
 def format_tool_latency(elapsed_s: float) -> str:
@@ -1828,6 +1876,7 @@ def _build_app(
             self.last_turn_tokens: int = 0
             self.last_turn_seconds: float = 0.0
             self.last_turn_profile: TurnProfile | None = None
+            self.turn_profiles: list[TurnProfile] = []
             self.total_tokens: int = 0
             self.total_turns: int = 0
             self._streaming: bool = False
@@ -2344,6 +2393,12 @@ def _build_app(
                     final_text = f"[agent error: {type(exc).__name__}: {exc}]"
                 profile.ended_at = time.monotonic()
                 self.last_turn_profile = profile
+                self.turn_profiles.append(profile)
+                if len(self.turn_profiles) > DEFAULT_TURN_PROFILE_HISTORY:
+                    # Trim from the front so the buffer stays bounded.
+                    del self.turn_profiles[
+                        : len(self.turn_profiles) - DEFAULT_TURN_PROFILE_HISTORY
+                    ]
                 self.call_from_thread(
                     self._finalize_agent, task, final_text, time.monotonic() - t0
                 )

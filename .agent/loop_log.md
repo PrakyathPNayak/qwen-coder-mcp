@@ -2739,3 +2739,20 @@ read-only operation, no state changes.
 **Act.** Two edits to `docs/AGENT_CHECKPOINTS.md`: new table row, new step 5. No code changes.
 
 **Verify.** `pytest -x -q` → ~1.1k passed, 1 skipped (unchanged).
+
+## Loop 188 — `/lat N` ring-buffer view of recent turns
+
+**Observe.** `/lat` shows only the most recent turn's profile. For perf debugging — "did this regression appear in the last 3 turns or the 10 before that?" — single-turn view is insufficient. Loop 182 stored just `last_turn_profile`; the historical data was being thrown away after every turn.
+
+**Orient.** A bounded ring buffer is the natural shape — last N turns, oldest evicted. N=20 is enough for a working session without unbounded memory growth; ~3KB per profile, ~60KB total. The renderer needs a multi-turn variant that stacks individual profiles with offset headers (`-1`, `-2`, ...) so users can read top-to-bottom in recency order.
+
+**Decide.** Add `DEFAULT_TURN_PROFILE_HISTORY = 20` and `format_turn_profiles(profiles, n)` next to `format_turn_profile`. App stores `turn_profiles: list[TurnProfile]` alongside `last_turn_profile`; runner appends each completed profile and trims from the front beyond the cap. `/lat` accepts an optional integer arg (default 1); reject non-integer and `<1`. Back-compat: when the App lacks `turn_profiles` (older stubs), fall through to `last_turn_profile` so existing tests keep passing.
+
+**Devil.**
+- *Correctness:* What if the buffer overflows mid-render? The runner trims after appending; render reads the buffer atomically (no thread reads during write because the runner is the sole writer). ✅
+- *Scope:* Should the cap be env-configurable? Premature — 20 is reasonable, existing `QWEN_AGENT_ROTATION_KEEP` is the precedent if it becomes painful. Defer. ✅
+- *Priority:* Audit-log atomic write was also queued. But `/lat N` directly leverages observability work that was previously throwing away data after one turn — that's higher leverage than hardening a write path that hasn't been observed to corrupt. ✅
+
+**Act.** Three edits in `tui.py`: new constant + `format_turn_profiles` between `format_turn_profile` and `format_tool_latency`; `App.__init__` initialises `self.turn_profiles = []`; runner appends + trims after `last_turn_profile = profile`; `/lat` branch parses optional N arg with two error paths (non-integer, <1). HELP_TEXT updated to mention `[N]`. New `tests/test_lat_multi.py` with 14 cases across three test classes covering: empty buffer, single-profile no-header, multi-profile headers, recency ordering, n-clamp to buffer length, n=0 and negative both treated as 1, dispatcher with no arg, valid arg, non-integer, zero, negative, fallback path when buffer missing, default-cap pin.
+
+**Verify.** `pytest -x -q` → ~1.2k passed, 1 skipped.
