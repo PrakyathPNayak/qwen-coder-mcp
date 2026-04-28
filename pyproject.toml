@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "MCP server backed by Qwen3.6-27B with a self-improving agentic loop."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = { text = "GPL-3.0-or-later" }
 authors = [{ name = "Prakyath P Nayak" }]
 dependencies = [
     "mcp>=1.2.0",
