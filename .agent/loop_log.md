@@ -3045,3 +3045,18 @@ Despite ~1.28k tests passing. Root cause: vLLM 0.11 removed `--swap-space` (repl
 - New `tests/test_serve_qwen_help_validation.py` (6 tests): `test_default_argv_only_uses_recognised_flags` walks every `--*` token in the dry-run argv and asserts it appears in `vllm serve --help=all`; `test_legacy_swap_space_no_longer_emitted` regression pin; `test_kv_offloading_flag_recognised` sanity; `test_chunked_prefill_flag_recognised` sanity; `test_core_flags_recognised` belt-and-braces enumeration of every critical flag; `test_argv_with_kv_offload_zero_still_clean` opt-out path also clean. All skipped if no `vllm` executable found.
 
 **Verify.** All 35 serve-script tests pass. Full suite ~1.29k passed, 1 skipped. Manually ran `vllm serve <real-argv> --help` and confirmed argparse no longer errors.
+
+## Loop 206 — terminal-width awareness for `_format_checkpoint_listing`
+
+**Observe.** Loops 202-204 added auto-width to `format_turn_profile` and `format_history_diff` plus dispatcher wiring. The third user-visible renderer in `tui.py` — `_format_checkpoint_listing`, called from `/checkpoints list` — still hardcoded its row layout and would overflow on narrow terminals when snapshot names are long (date-stamped agent-state-*.json files easily exceed 50 chars).
+
+**Orient.** Same pattern as 202/203. Closes the terminal-width arc.
+
+**Devil.**
+- *Correctness:* Existing callers in `test_checkpoints_slash.py` use no kwargs; `width=None` default with auto-detect must not break them. Verified — those tests pass unchanged. ✅
+- *Scope:* Should the truncation happen at the start of the name (preserving `.json` suffix) instead of the end? End-truncation matches `format_turn_profile`'s tool-name truncation; consistency wins. The user can always run `ls .agent/checkpoints/` for the full names. ✅
+- *Priority:* The lowest of three carried candidates but closes a coherent arc. Defer the larger-impact end-to-end TUI test to next loop. ✅
+
+**Act.** `_format_checkpoint_listing(snapshots, *, width: int | None = None)`; `None` reads `shutil.get_terminal_size`, floors at 40 cols; name budget = `max(8, width - 37)` (37 is the fixed prefix); truncates with `…`. New `tests/test_checkpoint_listing_width.py` (10 tests across explicit-width / auto-width / empty / stat-failure paths). One bug caught at first run — `tiny.json` is 9 chars but at `width=40` budget is 8, so it does truncate; test corrected to use `width=80`.
+
+**Verify.** 10 new + all 1289 prior tests green.

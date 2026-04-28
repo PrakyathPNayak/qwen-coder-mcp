@@ -1,9 +1,9 @@
-# Loop 206 candidates
+# Loop 207 candidates
 
-1. **End-to-end check on `tui.py` startup against real backend** — `test_serve_qwen_help_validation.py` proved the validator-vs-real-tool pattern catches drift. Apply it to the TUI: actually start the app, point it at a fake-vLLM HTTP fixture, walk through 3-4 slash commands, assert no exceptions. Currently TUI tests are all unit-level — same dry-run-vs-reality gap that bit /serve_qwen.sh.
-2. **Audit other shell scripts for vLLM CLI drift** — there are scripts in `scripts/` and `serve/` that may also reference removed flags.
-3. **Terminal-width awareness for `_format_checkpoint_listing`** (carried).
-4. **`/checkpoints export N <path> --gzip`** (carried).
-5. **Live vLLM smoke test** — environment-dependent; this loop's --help-based validator is a partial replacement.
+1. **End-to-end TUI smoke test against fake-vLLM HTTP fixture** (carried from 206 candidates) — same dry-run-vs-reality gap that bit `serve_qwen.sh`. Highest-leverage candidate; the more interesting infra investment.
+2. **`/checkpoints export N <path> --gzip`** — compressed archive variant.
+3. **`/tokens --json --top K`** — top-K heaviest messages.
+4. **Live vLLM smoke test** — env-dependent.
+5. **`/help <term> --regex`** — escape hatch for regex patterns.
 
-**Recommended:** (2) — same class of bug may exist elsewhere. Quick audit, possibly more fixes.
+**Recommended:** (1) — the `--help=all` validator we shipped in loop 205 proves end-to-end harnesses pay off. The TUI doesn't have one.

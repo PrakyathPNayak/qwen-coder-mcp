@@ -286,16 +286,44 @@ def _last_assistant_reply(history: list[ChatMessage]) -> str | None:
     return None
 
 
-def _format_checkpoint_listing(snapshots: list[Path]) -> str:
+def _format_checkpoint_listing(
+    snapshots: list[Path], *, width: int | None = None
+) -> str:
     """Render rotated agent-state snapshots as a one-per-line listing.
 
     Lines are 1-indexed, oldest-first, and include the file's mtime in
     UTC ISO-8601 plus its size in bytes. Pure so /checkpoints tests
     don't need to spin up the App.
+
+    ``width=None`` derives the column count from the current terminal
+    via ``shutil.get_terminal_size`` and truncates the snapshot name
+    with a trailing ``…`` when the row would otherwise overflow. Floored
+    at 40 cols so absurdly narrow terminals still render something
+    legible; capped only by the longest fixed prefix so ridiculously
+    wide terminals don't pad. Pass an explicit integer to override.
     """
     if not snapshots:
         return "(no rotated checkpoints found)"
     from datetime import datetime, timezone
+
+    if width is None:
+        import shutil
+
+        try:
+            cols = shutil.get_terminal_size((80, 24)).columns
+        except Exception:  # noqa: BLE001
+            cols = 80
+        width = max(40, cols)
+
+    # Fixed prefix: " NNN. YYYY-MM-DD HH:MM:SSZ  NNNNNNNB  "
+    #               4 + 2 + 20 + 2 + 7 + 2          = 37 chars
+    prefix_width = 37
+    name_budget = max(8, width - prefix_width)
+
+    def _truncate(name: str) -> str:
+        if len(name) <= name_budget:
+            return name
+        return name[: name_budget - 1] + "…"
 
     rows: list[str] = []
     for idx, snap in enumerate(snapshots, start=1):
@@ -305,9 +333,11 @@ def _format_checkpoint_listing(snapshots: list[Path]) -> str:
                 stat.st_mtime, tz=timezone.utc
             ).strftime("%Y-%m-%d %H:%M:%SZ")
             size = stat.st_size
-            rows.append(f"{idx:>3}. {mtime}  {size:>7}B  {snap.name}")
+            rows.append(
+                f"{idx:>3}. {mtime}  {size:>7}B  {_truncate(snap.name)}"
+            )
         except OSError as exc:
-            rows.append(f"{idx:>3}. <stat failed: {exc}>  {snap.name}")
+            rows.append(f"{idx:>3}. <stat failed: {exc}>  {_truncate(snap.name)}")
     return "\n".join(rows)
 
 
