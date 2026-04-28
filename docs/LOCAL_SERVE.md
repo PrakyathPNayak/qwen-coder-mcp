@@ -74,12 +74,16 @@ require `/v1/chat/completions`.
 
 - **OOM at startup (CUDA out of memory during warmup / KV cache allocation)**:
   the defaults already enforce eager mode, fp8 KV cache, `max_num_seqs=1`,
-  `max_model_len=2048`, `gpu_memory_utilization=0.92`, and disable image+video
-  multimodal (`--limit-mm-per-prompt '{"image":0,"video":0}'`) so the int4
-  27B fits on a 24 GB 4090. If you still see `Available KV cache memory: -X GiB`
-  / `No available memory for the cache blocks`:
-  - `QWEN_SERVE_MAX_LEN=1024` (less KV cache per slot)
-  - `QWEN_SERVE_GPU_UTIL=0.94` (push closer to the limit; risk of OOM kill)
+  `max_model_len=65536`, `gpu_memory_utilization=0.95`, chunked prefill
+  with a 4096-token batch budget, 16 GiB CPU swap-space for preempted
+  KV blocks, and disable image+video multimodal
+  (`--limit-mm-per-prompt '{"image":0,"video":0}'`) so the int4
+  27B fits on a 24 GB 4090 with ~64k tokens of usable context. If you
+  still see `Available KV cache memory: -X GiB` /
+  `No available memory for the cache blocks`:
+  - `QWEN_SERVE_MAX_LEN=32768` (halves KV-cache footprint)
+  - `QWEN_SERVE_GPU_UTIL=0.93` (a touch more headroom for overhead)
+  - `QWEN_SERVE_MAX_BATCHED=2048` (smaller prefill chunk)
   - `QWEN_SERVE_KV_DTYPE=fp8` is already the default; keep it.
   - `QWEN_SERVE_EAGER=1` is already the default; keep it (skips CUDA graph
     capture which briefly doubles peak memory).
@@ -87,6 +91,17 @@ require `/v1/chat/completions`.
     `QWEN_SERVE_LIMIT_MM='' ./scripts/serve_qwen.sh`.
   The script also exports `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`
   which the OOM error itself recommends; it reduces fragmentation.
+- **Going beyond 64k context**: Qwen3.6-27B advertises ~256k via YaRN.
+  Pushing `QWEN_SERVE_MAX_LEN=131072` (or higher) on a 24 GB 4090 with
+  the int4 quant is workable but tight — KV-cache cost is ~128 KiB per
+  token at fp8, so 128k tokens ≈ 16 GiB of VRAM just for KV. Combine
+  with `QWEN_SERVE_SWAP_SPACE=64` (or your free RAM) so prefill of
+  long prompts doesn't preempt-OOM, and consider an FP8 weight build
+  if you need both long context and multiple concurrent sequences.
+- **Disabling chunked prefill**: `QWEN_SERVE_CHUNKED_PREFILL=0`. Only
+  do this if you know your prompts fit in VRAM in a single forward
+  pass; without it a 60k-token prompt will OOM the prefill stage even
+  though the steady-state KV cache would have fit.
 - **`unknown architecture qwen3_5`**: upgrade vLLM (`pip install -U vllm`)
   inside `.venv-serve`. Hybrid Gated-DeltaNet support landed in 0.7.x.
 - **Slow first token**: vLLM compiles CUDA graphs on the first request; the

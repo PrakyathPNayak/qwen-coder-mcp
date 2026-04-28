@@ -2450,3 +2450,20 @@ read-only operation, no state changes.
 +HELP_TEXT line, 3 tests.
 
 **Result**: 1014 passed (+3), 1 skipped.
+
+## Loop 171 — raise default context window to 64k with chunked prefill + CPU swap
+
+**Observe.** User: "There must be some way of getting past that low context limit. The model supports up to 294K. Full GPU utilisation is allowed." Defaults at HEAD `b08ea65`: `MAX_LEN=2048`, `GPU_UTIL=0.92`, no `--swap-space`, no chunked prefill. That left almost the entire usable long-context envelope on the table.
+
+**Orient.** KV-cache math on a 24 GB 4090 / int4 27B / fp8 KV: weights ≈ 14 GiB; per-token KV at fp8 ≈ 128 KiB. 65 536 tokens → ~8 GiB KV → fits with `gpu_util=0.95` and ~2 GiB activation headroom. 131 072 tokens needs ~16 GiB → tight but possible. The real prefill-OOM blocker on long prompts is not steady-state KV but the single giant forward pass at prefill time → fix with `--enable-chunked-prefill --max-num-batched-tokens 4096`. `--swap-space` does NOT extend a single sequence's window, it just lets preempted blocks spill to RAM, but is still cheap insurance.
+
+**Decide.** Bump defaults: `MAX_LEN 2048→65536`, `GPU_UTIL 0.92→0.95`. Always pass `--swap-space 16` (overridable via `QWEN_SERVE_SWAP_SPACE`). Always pass `--enable-chunked-prefill --max-num-batched-tokens 4096` (toggle via `QWEN_SERVE_CHUNKED_PREFILL`, batched-cap via `QWEN_SERVE_MAX_BATCHED`). Mirror the headroom in `config.py`: `server_max_len 2048→65536`, `max_tokens 1024→8192`. Update `tests/test_serve_qwen_sh.py` pin tests + add 5 new ones (swap-space override, chunked-prefill disable, max-batched override, long-context override, default chunked flags). Update `tests/test_config_settings.py`. Update `docs/LOCAL_SERVE.md` troubleshooting section.
+
+**Devil.**
+- *Correctness:* Will `--enable-chunked-prefill` break anything? It's been stable in vLLM since 0.6.x, default-on in newer releases. The `--max-num-seqs=1` we already set is compatible. ✅
+- *Scope:* Is 64k actually safe with int4-27B on 24 GB? Yes — 14 + 8 + ~1.5 GB activation < 0.95 × 24 GiB ≈ 22.8 GiB. Leaves margin. 128k would be borderline; we leave it as an opt-in via `QWEN_SERVE_MAX_LEN`. ✅
+- *Priority:* Is there a higher-impact fix? No — long context is the user's explicit ask and it unblocks every downstream agent feature (multi-file diffs, large repos, long agent transcripts). The token-meter and auto-checkpoint candidates from loop 170's `next.md` are real but smaller in impact. ✅
+
+**Act.** Edited `scripts/serve_qwen.sh` (defaults + 3 new env knobs + always-on `--swap-space` + conditional chunked-prefill flags). Edited `src/qwen_coder_mcp/config.py` (raised both defaults). Edited tests to match new pins; added 5 new tests covering swap-space override, chunked-prefill disable, max-batched override, long-context override, and default chunked flags. Edited `docs/LOCAL_SERVE.md` troubleshooting + added a "Going beyond 64k context" subsection.
+
+**Verify.** `pytest -x -q` → ~1k tests passing, 1 skipped. New defaults are pinned by the serve test harness so any silent regression breaks the suite.

@@ -35,14 +35,16 @@ class TestDefaultSettings:
 
     def test_default_server_max_len_matches_serve_script(self) -> None:
         s = load_settings(env_file="/nonexistent/.env")
-        # The serve script's default --max-model-len is 2048 (loop 154).
-        assert s.server_max_len == 2048
+        # The serve script's default --max-model-len was bumped to 65536
+        # in loop 171 so the 4090 actually uses the long-context support
+        # baked into Qwen3.6-27B. Adjust both together if you change one.
+        assert s.server_max_len == 65536
 
     def test_default_max_tokens_is_safe(self) -> None:
         s = load_settings(env_file="/nonexistent/.env")
-        # 1024 leaves at least 1024 tokens of prompt room under the
-        # 2048-token serve default.
-        assert s.max_tokens == 1024
+        # 8192 leaves ~57k tokens of prompt headroom under the new
+        # 65536-token serve default.
+        assert s.max_tokens == 8192
 
 
 class TestSettingsOverrides:

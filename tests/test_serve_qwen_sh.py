@@ -67,10 +67,18 @@ class TestServeScriptDefaults:
 
     def test_default_oom_safe_kv_settings(self) -> None:
         argv = _argv_after_marker(_run())
-        assert _flag_value(argv, "--max-model-len") == "2048"
+        # Loop 171 raised the long-context defaults: 64k context, fp8
+        # KV, 0.95 GPU util, single sequence, 16 GiB CPU swap.
+        assert _flag_value(argv, "--max-model-len") == "65536"
         assert _flag_value(argv, "--max-num-seqs") == "1"
         assert _flag_value(argv, "--kv-cache-dtype") == "fp8"
-        assert _flag_value(argv, "--gpu-memory-utilization") == "0.92"
+        assert _flag_value(argv, "--gpu-memory-utilization") == "0.95"
+        assert _flag_value(argv, "--swap-space") == "16"
+
+    def test_default_enables_chunked_prefill(self) -> None:
+        argv = _argv_after_marker(_run())
+        assert "--enable-chunked-prefill" in argv
+        assert _flag_value(argv, "--max-num-batched-tokens") == "4096"
 
     def test_default_includes_enforce_eager(self) -> None:
         argv = _argv_after_marker(_run())
@@ -150,3 +158,23 @@ class TestServeScriptOverrides:
         )
         assert "--swap-space" in argv
         assert "4" in argv
+
+    def test_swap_space_override(self) -> None:
+        argv = _argv_after_marker(_run({"QWEN_SERVE_SWAP_SPACE": "64"}))
+        assert _flag_value(argv, "--swap-space") == "64"
+
+    def test_chunked_prefill_disable(self) -> None:
+        argv = _argv_after_marker(_run({"QWEN_SERVE_CHUNKED_PREFILL": "0"}))
+        assert "--enable-chunked-prefill" not in argv
+        assert "--max-num-batched-tokens" not in argv
+
+    def test_max_batched_override(self) -> None:
+        argv = _argv_after_marker(_run({"QWEN_SERVE_MAX_BATCHED": "2048"}))
+        assert _flag_value(argv, "--max-num-batched-tokens") == "2048"
+
+    def test_long_context_override(self) -> None:
+        # Push to 128k for users with extra VRAM headroom (e.g. fp8
+        # weights instead of int4). Just make sure the flag pipeline
+        # actually forwards the value.
+        argv = _argv_after_marker(_run({"QWEN_SERVE_MAX_LEN": "131072"}))
+        assert _flag_value(argv, "--max-model-len") == "131072"
