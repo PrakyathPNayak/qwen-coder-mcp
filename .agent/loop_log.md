@@ -1020,3 +1020,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: low-frequency but recoverable cleanly.
 - ACT: helper + pipeline insertion + 3 tests (clash / no-clash / symlink-ignored). 281/281.
 - COMMIT: pending.
+
+## Loop 42 — `_validate_changed_files` surface SyntaxWarning
+- OBSERVE: `compileall -q` exits 0 even when SyntaxWarning fires (e.g. `is "literal"`, invalid escape `'\d'`). The warning text goes to stderr; we discard it. A model-emitted fix introducing one of these patterns gets committed silently.
+- ORIENT: SyntaxWarning is almost always a real bug in coding-loop output; raising it as a validation failure prevents the worst class.
+- DECIDE: after the existing returncode!=0 branch, if `"SyntaxWarning"` substring appears in `proc.stderr`, return `py_syntax_warning:<stderr-snippet>`.
+- DEVIL:
+  - Correctness: stderr substring match is robust — SyntaxWarning text always contains the literal token. False-positives on legitimate `# SyntaxWarning` mention in stderr — unlikely from compileall.
+  - Scope: cause-level — failing the validation triggers `_revert_changes` and rejects the diff.
+  - Priority: medium-high; covers a class of regressions tests don't always catch (`is "x"` returns truthy in some tests by accident).
+- ACT: 6-line addition. 3 new tests, one skipped on Python <3.12 since invalid-escape was DeprecationWarning before then. 283 passed, 1 skipped.
+- COMMIT: pending.

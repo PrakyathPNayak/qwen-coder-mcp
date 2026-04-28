@@ -708,6 +708,12 @@ def _validate_changed_files(paths: Iterable[Path]) -> tuple[bool, str]:
             return False, f"py_invalid: timed_out_after_{_VALIDATE_TIMEOUT_SECONDS}s"
         if proc.returncode != 0:
             return False, f"py_invalid: {(proc.stdout + proc.stderr).strip()[:300]}"
+        # compileall returncode=0 even when SyntaxWarning fires (e.g.
+        # invalid escape sequences, "is" with a literal). These are
+        # almost always real bugs we don't want to commit. Surface
+        # them as a validation failure.
+        if "SyntaxWarning" in proc.stderr:
+            return False, f"py_syntax_warning: {proc.stderr.strip()[:300]}"
 
     for p in paths:
         full = _REPO / p

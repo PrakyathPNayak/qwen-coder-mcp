@@ -412,3 +412,32 @@ class TestValidateChangedFilesTimeout:
         monkeypatch.setattr(L.subprocess, "run", fake_run)
         L._validate_changed_files([Path("good.py")])
         assert captured.get("timeout") == L._VALIDATE_TIMEOUT_SECONDS
+
+
+class TestValidateChangedFilesSyntaxWarning:
+    """SyntaxWarning surfacing (loop 42)."""
+
+    def test_invalid_escape_sequence_fails(self, tmp_path, monkeypatch):
+        # `"\d"` outside a raw string emits SyntaxWarning on 3.12+
+        # (DeprecationWarning on 3.11). Only assert on 3.12+.
+        import sys
+        if sys.version_info < (3, 12):
+            pytest.skip("invalid escape became SyntaxWarning in 3.12")
+        (tmp_path / "warn.py").write_text("x = '\\d+'\n")
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, msg = L._validate_changed_files([Path("warn.py")])
+        assert ok is False
+        assert msg.startswith("py_syntax_warning")
+
+    def test_is_with_literal_fails(self, tmp_path, monkeypatch):
+        (tmp_path / "isw.py").write_text('x = "abc" is "abc"\n')
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, msg = L._validate_changed_files([Path("isw.py")])
+        assert ok is False
+        assert msg.startswith("py_syntax_warning")
+
+    def test_clean_python_passes_no_warning(self, tmp_path, monkeypatch):
+        (tmp_path / "clean.py").write_text("x = r'\\d+'\ny = 1 == 1\n")
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, msg = L._validate_changed_files([Path("clean.py")])
+        assert ok is True, msg
