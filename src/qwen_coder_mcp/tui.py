@@ -14,6 +14,11 @@ Slash commands implemented:
   /ls [path]                    List a directory
   /find_bugs <path>             Run Qwen find_bugs on a file's contents
   /explain <path>               Run Qwen explain_code on a file's contents
+  /apply <path>                 Write the assistant's last reply to <path>
+                                  as a unified diff via apply_patch (preview
+                                  with check_only first; actual apply only if
+                                  preview succeeds)
+  /history [n]                  Show the last N (default 10) chat turns
   /quit                         Exit the TUI
 
 A line that does NOT start with `/` is treated as a free-form chat
@@ -68,6 +73,8 @@ Slash commands:
   /ls [path]           List a directory
   /find_bugs <path>    Qwen review for bugs
   /explain <path>      Qwen explanation of a file
+  /apply               Apply the last assistant reply as a unified diff
+  /history [n]         Show the last N chat turns (default 10)
   /quit                Exit
 
 Anything not starting with `/` is sent to Qwen as a chat message.
@@ -130,11 +137,79 @@ def _render_explain(client: QwenClient, cfg: fs_tools.FsConfig, path: str) -> st
     )
 
 
+def extract_diff(text: str) -> str | None:
+    """Return the first unified-diff block found in `text`.
+
+    Recognises a fenced code block whose language hint is `diff` or
+    `patch`, otherwise looks for a `diff --git` header anywhere in the
+    text and returns from that point onward (stripping a trailing fence
+    if present). Returns `None` if no diff is found.
+    """
+    if not text:
+        return None
+    for tag in ("```diff", "```patch"):
+        idx = text.find(tag)
+        if idx >= 0:
+            start = idx + len(tag)
+            if start < len(text) and text[start] == "\n":
+                start += 1
+            end = text.find("```", start)
+            if end < 0:
+                return text[start:].strip("\n") + "\n"
+            return text[start:end].strip("\n") + "\n"
+    git_idx = text.find("diff --git")
+    if git_idx >= 0:
+        body = text[git_idx:]
+        end = body.find("```")
+        if end >= 0:
+            body = body[:end]
+        return body.strip("\n") + "\n"
+    return None
+
+
+def _last_assistant_reply(history: list[ChatMessage]) -> str | None:
+    for msg in reversed(history):
+        if msg.role == "assistant":
+            return msg.content
+    return None
+
+
+def _render_apply(
+    cfg: fs_tools.FsConfig, history: list[ChatMessage]
+) -> str:
+    reply = _last_assistant_reply(history)
+    if reply is None:
+        return "no assistant reply to apply"
+    diff = extract_diff(reply)
+    if diff is None:
+        return "no unified diff found in last reply"
+    check = fs_tools.apply_patch(cfg, diff, check_only=True)
+    if not check["ok"]:
+        return f"check failed (not applied):\n{check['message']}"
+    res = fs_tools.apply_patch(cfg, diff)
+    tag = "ok" if res["ok"] else "failed"
+    return f"apply: {tag}\n{res['message']}"
+
+
+def _render_history(history: list[ChatMessage], n: int = 10) -> str:
+    pairs: list[ChatMessage] = [m for m in history if m.role != "system"]
+    take = pairs[-n:]
+    if not take:
+        return "(no history yet)"
+    out: list[str] = []
+    for m in take:
+        prefix = "you" if m.role == "user" else "qwen"
+        body = m.content if len(m.content) <= 400 else m.content[:400] + "..."
+        out.append(f"{prefix}> {body}")
+    return "\n".join(out)
+
+
 def dispatch_slash(
     cmd: SlashCommand,
     *,
     client: QwenClient,
     fs_cfg: fs_tools.FsConfig,
+    history: list[ChatMessage] | None = None,
 ) -> tuple[str, bool]:
     """Run a slash command. Returns `(rendered_text, should_quit)`.
 
@@ -169,6 +244,23 @@ def dispatch_slash(
         if not cmd.args:
             return "usage: /explain <path>", False
         return _render_explain(client, fs_cfg, cmd.args[0]), False
+    if name == "apply":
+        if history is None:
+            return "no history available", False
+        try:
+            return _render_apply(fs_cfg, history), False
+        except fs_tools.FsError as exc:
+            return f"apply error: {exc}", False
+    if name == "history":
+        if history is None:
+            return "no history available", False
+        n = 10
+        if cmd.args:
+            try:
+                n = max(1, int(cmd.args[0]))
+            except ValueError:
+                return "usage: /history [n]", False
+        return _render_history(history, n), False
     return f"unknown command: /{name}  (try /help)", False
 
 
@@ -248,7 +340,12 @@ def _build_app(
             log.write(f"[cyan]you>[/cyan] {line}")
             cmd = parse_slash(line)
             if cmd is not None:
-                text, quit_now = dispatch_slash(cmd, client=self.client, fs_cfg=self.fs_cfg)
+                text, quit_now = dispatch_slash(
+                    cmd,
+                    client=self.client,
+                    fs_cfg=self.fs_cfg,
+                    history=self.history,
+                )
                 log.write(text)
                 if quit_now:
                     self.exit()

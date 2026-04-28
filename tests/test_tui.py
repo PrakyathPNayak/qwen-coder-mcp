@@ -200,3 +200,180 @@ class TestBuildApp:
         )
         app = AppCls()
         assert app is not None
+
+
+class TestExtractDiff:
+    def test_diff_fence(self) -> None:
+        text = "before\n```diff\ndiff --git a/x b/x\n@@\n-a\n+b\n```\nafter"
+        out = tui.extract_diff(text)
+        assert out is not None
+        assert "diff --git a/x b/x" in out
+        assert "after" not in out
+
+    def test_patch_fence(self) -> None:
+        text = "```patch\ndiff --git a/x b/x\n```"
+        out = tui.extract_diff(text)
+        assert out is not None
+        assert "diff --git" in out
+
+    def test_bare_diff(self) -> None:
+        text = "blah\ndiff --git a/x b/x\n@@\n-a\n+b\n"
+        out = tui.extract_diff(text)
+        assert out is not None
+        assert out.startswith("diff --git")
+        assert "blah" not in out
+
+    def test_no_diff(self) -> None:
+        assert tui.extract_diff("just text") is None
+        assert tui.extract_diff("") is None
+
+
+class TestApplySlash:
+    def _git_init(self, root: Path) -> None:
+        import subprocess
+        subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        subprocess.run(
+            [
+                "git", "-c", "user.email=a@b.c", "-c", "user.name=a",
+                "commit", "--allow-empty", "-m", "init",
+            ],
+            cwd=root,
+            check=True,
+            capture_output=True,
+        )
+
+    def test_no_history(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.SlashCommand(name="apply"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "no assistant reply" in text
+
+    def test_no_diff_in_reply(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history = [
+            ChatMessage(role="user", content="hi"),
+            ChatMessage(role="assistant", content="hello back, no diff"),
+        ]
+        text, _ = tui.dispatch_slash(
+            tui.SlashCommand(name="apply"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "no unified diff" in text
+
+    def test_applies_diff(self, tmp_path: Path) -> None:
+        import subprocess
+        self._git_init(tmp_path)
+        (tmp_path / "a.txt").write_text("hello\n")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+        subprocess.run(
+            [
+                "git", "-c", "user.email=a@b.c", "-c", "user.name=a",
+                "commit", "-m", "add",
+            ],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        diff_block = (
+            "```diff\n"
+            "diff --git a/a.txt b/a.txt\n"
+            "--- a/a.txt\n"
+            "+++ b/a.txt\n"
+            "@@ -1 +1 @@\n"
+            "-hello\n"
+            "+world\n"
+            "```\n"
+        )
+        history = [
+            ChatMessage(role="user", content="change hello to world"),
+            ChatMessage(role="assistant", content=diff_block),
+        ]
+        text, _ = tui.dispatch_slash(
+            tui.SlashCommand(name="apply"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "ok" in text
+        assert (tmp_path / "a.txt").read_text() == "world\n"
+
+
+class TestHistorySlash:
+    def test_empty(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.SlashCommand(name="history"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "no history" in text
+
+    def test_renders(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history = [
+            ChatMessage(role="system", content="sys"),
+            ChatMessage(role="user", content="hi"),
+            ChatMessage(role="assistant", content="hello"),
+        ]
+        text, _ = tui.dispatch_slash(
+            tui.SlashCommand(name="history"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "you> hi" in text
+        assert "qwen> hello" in text
+        assert "sys" not in text
+
+    def test_n_limit(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history = [
+            ChatMessage(role="user", content=f"u{i}") for i in range(20)
+        ]
+        text, _ = tui.dispatch_slash(
+            tui.SlashCommand(name="history", args=["3"], rest="3"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "u17" in text
+        assert "u19" in text
+        assert "u0" not in text
+
+    def test_bad_n(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.SlashCommand(name="history", args=["abc"], rest="abc"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[ChatMessage(role="user", content="x")],
+        )
+        assert "usage:" in text
+
+
+class TestPilotSmoke:
+    @pytest.mark.anyio("asyncio")
+    async def test_help_via_pilot(self, tmp_path: Path) -> None:
+        pytest.importorskip("textual")
+        AppCls = tui._build_app(
+            client_factory=lambda: _FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        app = AppCls()
+        async with app.run_test() as pilot:
+            from textual.widgets import Input, RichLog
+            entry = app.query_one("#entry", Input)
+            entry.value = "/help"
+            await pilot.press("enter")
+            await pilot.pause()
+            log = app.query_one("#log", RichLog)
+            rendered = "\n".join(str(line) for line in log.lines)
+            assert "Slash commands" in rendered

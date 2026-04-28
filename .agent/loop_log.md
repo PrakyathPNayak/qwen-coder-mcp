@@ -1936,3 +1936,11 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: textual import is lazy inside _build_app so MCP-only users do not pay the dep cost. Tests use FakeClient so no Qwen server needed.
   - Priority: P3 user-requested feature (TUI parity).
 - ACT: 240-line module, 21 tests, README section, pyproject.toml `tui` extra and `qwen-coder-tui` script. 675 passed.
+
+## Loop 131 — TUI extract_diff + /apply + /history + Pilot smoke test
+- DECIDE: TUI useful only when assistant replies can be acted upon. Add extract_diff (fence then bare git header), /apply (check-only first then real apply), /history [n], and a Pilot-driven smoke test of the actual App.
+- DEVIL:
+  - Correctness: extract_diff prefers ```diff/```patch fence, falls back to bare `diff --git`, returns None when neither present. /apply runs git apply --check first; if check fails, leaves the tree untouched and returns the message. /history truncates each line to 400 chars so a giant reply does not blow the terminal.
+  - Scope: dispatch_slash now takes optional history kwarg so existing call sites without history still work; only /apply and /history require it.
+  - Priority: P3 user-requested feature (TUI parity for actually executing model output).
+- ACT: ~80 lines TUI code + 12 tests (incl one anyio Pilot test that types /help and checks RichLog content). 687 passed.
