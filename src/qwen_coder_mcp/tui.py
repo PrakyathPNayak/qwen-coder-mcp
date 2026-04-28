@@ -142,11 +142,12 @@ Slash commands:
   /find <glob> [path]  Glob search through the repo
   /clear               Clear chat history
   /resume              Reload .agent/agent_state.json into chat history
-  /checkpoints [load N|prune K|diff N]
+  /checkpoints [load N|prune K|diff N [--inline]]
                        List rotated agent-state snapshots; `load N` rehydrates
                        snapshot N (1-based, oldest first) into history;
                        `prune K` deletes all but the newest K snapshots;
                        `diff N` compares current history vs snapshot N
+                       (`--inline` adds per-message unified diffs)
   /save <path>         Save the current chat transcript to a file
   /git <subcmd>        Read-only git status / log / diff / show / branch
   /tests [args]        Run pytest in the repo
@@ -312,6 +313,8 @@ def format_history_diff(
     *,
     snapshot_label: str = "snapshot",
     preview_chars: int = 60,
+    inline_diff: bool = False,
+    inline_diff_max_lines: int = 12,
 ) -> str:
     """Render a paired diff of two histories by index.
 
@@ -364,6 +367,30 @@ def format_history_diff(
                     f"~  {i+1:>3}. {cur.role}  "
                     f"({_preview(cur.content)})"
                 )
+                if inline_diff:
+                    import difflib
+
+                    diff_lines = list(
+                        difflib.unified_diff(
+                            snp.content.splitlines(),
+                            cur.content.splitlines(),
+                            fromfile=f"{snapshot_label}#{i+1}",
+                            tofile=f"current#{i+1}",
+                            n=1,
+                            lineterm="",
+                        )
+                    )
+                    truncated = False
+                    if len(diff_lines) > inline_diff_max_lines:
+                        diff_lines = diff_lines[:inline_diff_max_lines]
+                        truncated = True
+                    for dl in diff_lines:
+                        rows.append(f"     {dl}")
+                    if truncated:
+                        rows.append(
+                            f"     … (diff truncated to "
+                            f"{inline_diff_max_lines} lines)"
+                        )
 
     header = (
         f"diff vs {snapshot_label}: "
@@ -1332,12 +1359,18 @@ def dispatch_slash(
         if sub == "diff":
             if history is None:
                 return "no history available", False
-            if len(cmd.args) < 2:
-                return "usage: /checkpoints diff <N>", False
+            # Strip a `--inline` flag wherever it appears in the args.
+            rest_args = list(cmd.args[1:])
+            inline = False
+            if "--inline" in rest_args:
+                inline = True
+                rest_args = [a for a in rest_args if a != "--inline"]
+            if not rest_args:
+                return "usage: /checkpoints diff <N> [--inline]", False
             try:
-                idx = int(cmd.args[1])
+                idx = int(rest_args[0])
             except ValueError:
-                return f"invalid index: {cmd.args[1]!r}", False
+                return f"invalid index: {rest_args[0]!r}", False
             if not snaps:
                 return "(no rotated checkpoints to diff)", False
             if idx < 1 or idx > len(snaps):
@@ -1349,7 +1382,10 @@ def dispatch_slash(
             loaded = agent_loop.load_agent_checkpoint(chosen)
             return (
                 format_history_diff(
-                    list(history), loaded, snapshot_label=chosen.name
+                    list(history),
+                    loaded,
+                    snapshot_label=chosen.name,
+                    inline_diff=inline,
                 ),
                 False,
             )

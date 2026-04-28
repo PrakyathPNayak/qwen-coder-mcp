@@ -2825,3 +2825,20 @@ read-only operation, no state changes.
 **Act.** Added `format_history_diff` next to `_format_checkpoint_listing`. Added `diff` branch to the `/checkpoints` dispatcher (refused on `history is None`, missing arg, non-int, no snapshots, out-of-range). Updated unknown-subcommand message to list `diff`. Updated HELP_TEXT to multi-line entry. Tightened the loop-191 help filter to greedy continuation collection. New `tests/test_checkpoints_diff.py` with 17 cases: 10 for the renderer (both empty, identical, content changed, role mismatch, added, dropped, preview truncation, newline collapse, snapshot label in header, header counts) and 7 for the dispatcher (no args, no snapshots, OOR, invalid index, success path, no-history, unknown-subcommand-message).
 
 **Verify.** All 17 new tests pass. Full suite ~1.2k passed, 1 skipped.
+
+## Loop 193 — `--inline` per-message unified diff
+
+**Observe.** The loop-192 `/checkpoints diff` shows *which* messages changed but not *how* — users still have to load the snapshot to actually see the difference, which is the very thing they were trying to avoid by running diff in the first place. The renderer's `~` rows have a 60-char preview only.
+
+**Orient.** `difflib.unified_diff` is in the stdlib and is the canonical answer. Two things to be careful about: (1) verbose for long messages (assistant replies can be 4KB+), and (2) it's only meaningful for content-changed rows — role-mismatch and added/dropped rows have no shared "from/to" pair.
+
+**Decide.** Add an `inline_diff: bool = False` kwarg to `format_history_diff` (off by default — back-compat with all 17 existing tests). When on, append a unified-diff fragment under each `~` row, indented with 5 spaces, capped at `inline_diff_max_lines=12` with a "diff truncated" footer. Wire up via a `--inline` flag on the dispatcher; accept it in any position relative to the index.
+
+**Devil.**
+- *Correctness:* Did I get the diff direction right? `unified_diff(snapshot, current)` so snapshot is the "from" — removed lines come from snapshot, added lines come from current. Caught it the first time the test ran (asserted `-line2`, actual was `-LINE2` because LINE2 was in snapshot). ✅
+- *Scope:* Per-message diff *only* on content-changed rows. Role-mismatch rows don't get one — different role means it's not really "the same message edited". Added/dropped rows don't get one — there's nothing to diff against. ✅
+- *Priority:* This finishes the recovery preview story started in 192. Skipping straight to TTY-width formatting would leave users with a half-finished tool. ✅
+
+**Act.** Two kwargs added to `format_history_diff`. `--inline` flag stripped from args before index parsing in the dispatcher (handles before/after the index). HELP_TEXT row updated. Loop-192's `test_diff_no_args` updated to the new usage string. New `tests/test_checkpoints_diff_inline.py` with 12 cases: 7 for the renderer (default off, unified-diff present, only-on-changed, truncation, no-truncate-when-under-cap, snapshot label appears in `---`/`+++` headers, role-mismatch skipped) + 5 for dispatch (flag after index, flag before index, plain mode unchanged, --inline alone errors, sanity).
+
+**Verify.** All 12 new tests pass. Full suite ~1.2k passed, 1 skipped.
