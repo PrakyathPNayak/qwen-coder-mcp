@@ -2705,3 +2705,20 @@ read-only operation, no state changes.
 **Act.** New `docs/AGENT_CHECKPOINTS.md`. README updated with a single-sentence link. No code changes.
 
 **Verify.** `pytest -x -q` → ~1.1k passed, 1 skipped (unchanged). Markdown changes don't need their own tests but verifying nothing broke is cheap insurance.
+
+## Loop 186 — `/agent --resume` flag
+
+**Observe.** A user mid-multi-step task hits a crash. After restart they want to issue *one more agent turn* that continues exactly where the loop died — but `/resume` only fixes chat history; they still have to launch the agent manually with the original task. Two-step recovery for what should be one keystroke.
+
+**Orient.** The resume mechanism (`load_latest_checkpoint`) and the agent-launch mechanism (`_start_agent_turn`) already exist independently. They just need to compose: when `--resume` is seen, do the load, *then* fire the agent turn against the rehydrated history. Encode the flag through the existing sentinel wire format.
+
+**Decide.** Extend `_decode_agent_body` to a 3-tuple `(task, max_steps, resume)` and parse `--resume` as a leading line in any order. Update the `/agent` command parser to recognise `--resume` alongside `--write` and `--max`. App-side: new `_apply_agent_resume(log)` method that calls `load_latest_checkpoint` and clears+extends `self.history`. Both `_AGENT_SENTINEL` and `_AGENT_WRITE_SENTINEL` paths invoke it before `_start_agent_turn`.
+
+**Devil.**
+- *Correctness:* What if `--resume` is set but no checkpoint exists? `_apply_agent_resume` writes a yellow status line and proceeds with the existing history — non-fatal, the user still gets their turn run. ✅
+- *Scope:* Should `--resume` overwrite or append to current history? Overwrite, in-place — matches `/resume`'s semantics so the two commands compose predictably. ✅
+- *Priority:* This completes the recovery story (boot hint → `/resume` → `/agent --resume`). After this, the next backlog item (`/lat n` ring buffer) is purely additive. ✅
+
+**Act.** Refactored `_decode_agent_body` to handle leading flag lines in any order, returning a 3-tuple. Updated four existing test call sites to unpack the new tuple. Extended `/agent` parser with `--resume`. Both sentinel branches in `on_input_submitted` now decode the 3-tuple and call `self._apply_agent_resume(log)` when set. New `_apply_agent_resume` method. HELP_TEXT updated. Twelve tests in `test_agent_resume_flag.py` covering the decoder matrix (no flags, max only, resume only, both orders, unparseable max), the parser (resume alone, with write, with max, with both), the no-task error path, and HELP_TEXT advertisement.
+
+**Verify.** `pytest -x -q` → ~1.1k passed, 1 skipped.

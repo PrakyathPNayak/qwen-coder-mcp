@@ -168,6 +168,8 @@ Slash commands:
   /agent <task>        Run an agentic tool-calling turn (one-off, read-only)
   /agent --write <task> Same, but with fs_write + apply_patch enabled
   /agent --max N <task> Override the 6-step cap (1..50); combinable with --write
+  /agent --resume <task> Pre-load the latest agent checkpoint into history
+                       before running the turn; combinable with --write/--max
   /agent_on            Make all subsequent chats agentic by default
   /agent_off           Disable default agent mode (back to plain chat)
   /agent_write_on      Enable fs_write + apply_patch in default agent mode
@@ -480,20 +482,36 @@ _AGENT_WRITE_SENTINEL = "__AGENTW__"
 _AGENT_TOGGLE_SENTINEL = "__AGENT_TOGGLE__"
 
 
-def _decode_agent_body(body: str) -> tuple[str, int | None]:
-    """Pull a leading ``--max=N\\n`` line off an agent sentinel body.
+def _decode_agent_body(body: str) -> tuple[str, int | None, bool]:
+    """Pull leading flag lines (``--max=N`` and/or ``--resume``) off an
+    agent sentinel body.
 
-    Returns the (task, max_steps) pair; max_steps is None when no
-    ``--max`` was supplied. Mirrors the encoder in ``dispatch_slash``.
+    Returns ``(task, max_steps, resume)``. Flag lines may appear in any
+    order at the head of the body; parsing stops as soon as a non-flag
+    line is encountered. ``max_steps`` is ``None`` when no ``--max`` was
+    supplied; ``resume`` is ``True`` when ``--resume`` was supplied.
+    Mirrors the encoder in ``dispatch_slash``.
     """
-    if body.startswith("--max="):
-        head, _, rest = body.partition("\n")
-        try:
-            n = int(head[len("--max="):])
-        except ValueError:
-            return body, None
-        return rest, n
-    return body, None
+    max_steps: int | None = None
+    resume = False
+    while True:
+        head, sep, rest = body.partition("\n")
+        if head.startswith("--max="):
+            try:
+                max_steps = int(head[len("--max="):])
+            except ValueError:
+                # Unparseable --max — treat the rest as task body so
+                # users see *something* run rather than silently lose
+                # their request.
+                return body, None, resume
+            body = rest if sep else ""
+            continue
+        if head == "--resume":
+            resume = True
+            body = rest if sep else ""
+            continue
+        break
+    return body, max_steps, resume
 
 
 def _render_cd(cfg: fs_tools.FsConfig, path: str) -> str:
@@ -962,10 +980,11 @@ def dispatch_slash(
         return "\n".join(lines), False
     if name == "agent":
         if not cmd.rest:
-            return "usage: /agent [--write] [--max N] <task>", False
+            return "usage: /agent [--write] [--max N] [--resume] <task>", False
         rest = cmd.rest
         write_mode = False
         max_steps: int | None = None
+        resume = False
         # Parse leading flags. Order doesn't matter; loop until we hit
         # something that isn't a flag.
         while True:
@@ -975,6 +994,9 @@ def dispatch_slash(
             head = toks[0]
             if head in ("--write", "-w"):
                 write_mode = True
+                rest = toks[1] if len(toks) > 1 else ""
+            elif head == "--resume":
+                resume = True
                 rest = toks[1] if len(toks) > 1 else ""
             elif head == "--max" or head.startswith("--max="):
                 if head.startswith("--max="):
@@ -996,11 +1018,18 @@ def dispatch_slash(
             else:
                 break
         if not rest.strip():
-            return "usage: /agent [--write] [--max N] <task>", False
+            return "usage: /agent [--write] [--max N] [--resume] <task>", False
         prefix = _AGENT_WRITE_SENTINEL if write_mode else _AGENT_SENTINEL
-        body = rest
+        # Encode flags as leading lines so _decode_agent_body can pull
+        # them off in any order. Keep --max= first for back-compat with
+        # tests that pin the wire format.
+        body_lines: list[str] = []
         if max_steps is not None:
-            body = f"--max={max_steps}\n{rest}"
+            body_lines.append(f"--max={max_steps}")
+        if resume:
+            body_lines.append("--resume")
+        body_lines.append(rest)
+        body = "\n".join(body_lines)
         return prefix + body, False
     if name == "agent_on":
         return _AGENT_TOGGLE_SENTINEL + "on", False
@@ -1949,7 +1978,9 @@ def _build_app(
                     log.write(f"[yellow](retrying)[/yellow] {line}")
                 elif isinstance(text, str) and text.startswith(_AGENT_SENTINEL):
                     task = text[len(_AGENT_SENTINEL):]
-                    task, max_steps = _decode_agent_body(task)
+                    task, max_steps, resume = _decode_agent_body(task)
+                    if resume:
+                        self._apply_agent_resume(log)
                     self._streaming = True
                     self._start_agent_turn(
                         task,
@@ -1959,7 +1990,9 @@ def _build_app(
                     return
                 elif isinstance(text, str) and text.startswith(_AGENT_WRITE_SENTINEL):
                     task = text[len(_AGENT_WRITE_SENTINEL):]
-                    task, max_steps = _decode_agent_body(task)
+                    task, max_steps, resume = _decode_agent_body(task)
+                    if resume:
+                        self._apply_agent_resume(log)
                     self._streaming = True
                     self._start_agent_turn(
                         task, write=True, max_steps=max_steps
@@ -2098,6 +2131,26 @@ def _build_app(
             log.write(self._telemetry_line())
             self._refresh_status()
             self._streaming = False
+
+        def _apply_agent_resume(self, log: Any) -> None:
+            """Pre-load the latest agent checkpoint into ``self.history``
+            in-place. Used by ``/agent --resume``. Logs a one-line status
+            so the user knows what was restored (or that nothing was)."""
+            try:
+                target = self.fs_cfg.root / ".agent" / "agent_state.json"
+                loaded, source = agent_loop.load_latest_checkpoint(target)
+            except Exception as exc:  # noqa: BLE001
+                log.write(f"[yellow]⚠ resume failed: {exc}[/yellow]")
+                return
+            if not loaded or source is None:
+                log.write("[yellow]·[/yellow] /agent --resume: no checkpoint to load")
+                return
+            self.history.clear()
+            self.history.extend(loaded)
+            log.write(
+                f"[dim]· resumed {len(loaded)} messages from "
+                f"{source.name} before agent turn[/dim]"
+            )
 
         def _start_agent_turn(
             self,

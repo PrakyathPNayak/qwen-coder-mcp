@@ -2601,7 +2601,7 @@ class TestAgentMaxFlag:
         )
         assert text.startswith(tui._AGENT_SENTINEL)
         body = text[len(tui._AGENT_SENTINEL):]
-        task, n = tui._decode_agent_body(body)
+        task, n, _resume = tui._decode_agent_body(body)
         assert n == 12
         assert task == "think harder"
 
@@ -2612,7 +2612,7 @@ class TestAgentMaxFlag:
             fs_cfg=fs_tools.FsConfig(root=tmp_path),
         )
         body = text[len(tui._AGENT_SENTINEL):]
-        task, n = tui._decode_agent_body(body)
+        task, n, _resume = tui._decode_agent_body(body)
         assert n == 8 and task == "do it"
 
     def test_max_combined_with_write(self, tmp_path: Path) -> None:
@@ -2623,7 +2623,7 @@ class TestAgentMaxFlag:
         )
         assert text.startswith(tui._AGENT_WRITE_SENTINEL)
         body = text[len(tui._AGENT_WRITE_SENTINEL):]
-        task, n = tui._decode_agent_body(body)
+        task, n, _resume = tui._decode_agent_body(body)
         assert n == 20 and task == "refactor"
 
     def test_max_in_either_order(self, tmp_path: Path) -> None:
@@ -2661,7 +2661,7 @@ class TestAgentMaxFlag:
 
     def test_decode_no_max_returns_none(self) -> None:
         body = "just some task"
-        task, n = tui._decode_agent_body(body)
+        task, n, _resume = tui._decode_agent_body(body)
         assert n is None
         assert task == "just some task"
 
