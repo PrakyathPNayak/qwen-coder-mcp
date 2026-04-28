@@ -139,7 +139,9 @@ Slash commands:
   /retry               Re-send the last user message
   /sysinfo             Snapshot of backend health, model, root, history
   /export <path>       Export full chat as Markdown
-  /pin <path>          Attach file to system prompt for the rest of the session
+  /pin <path> [path...]
+                       Attach one or more files to the system prompt for the
+                       rest of the session
   /unpin               Clear all pinned files from the system prompt
   /pinned              List currently pinned files
   /open <path>         Launch $EDITOR on a file in the repo
@@ -887,8 +889,9 @@ def dispatch_slash(
         if history is None:
             return "no history available", False
         if not cmd.args:
-            return "usage: /pin <path>", False
-        return _render_pin(fs_cfg, history, cmd.args[0]), False
+            return "usage: /pin <path> [path...]", False
+        results = [_render_pin(fs_cfg, history, p) for p in cmd.args]
+        return "\n".join(results), False
     if name == "unpin":
         if history is None:
             return "no history available", False

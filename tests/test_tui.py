@@ -1845,3 +1845,50 @@ class TestGrepTypeFilter:
             fs_cfg=cfg,
         )
         assert text.startswith("usage:")
+
+
+# ----------------------------------------------------------- Loop 153
+class TestPinMultiFile:
+    def test_pin_three_files_one_call(self, tmp_path: Path) -> None:
+        for n, body in [("a.py", "alpha"), ("b.md", "beta"), ("c.txt", "gamma")]:
+            (tmp_path / n).write_text(body + "\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = [ChatMessage(role="system", content="base")]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/pin a.py b.md c.txt"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "pinned a.py" in text
+        assert "pinned b.md" in text
+        assert "pinned c.txt" in text
+        assert "alpha" in history[0].content
+        assert "beta" in history[0].content
+        assert "gamma" in history[0].content
+        assert history[0].content.count("--- pinned files ---") == 1
+
+    def test_pin_partial_failure(self, tmp_path: Path) -> None:
+        (tmp_path / "good.py").write_text("ok\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = [ChatMessage(role="system", content="base")]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/pin good.py ../../etc/passwd"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "pinned good.py" in text
+        assert "pin error" in text
+        assert "ok" in history[0].content
+
+    def test_pin_no_args_usage(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = [ChatMessage(role="system", content="base")]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/pin"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert text.startswith("usage:")

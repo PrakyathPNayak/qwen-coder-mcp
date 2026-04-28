@@ -2133,3 +2133,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P5.
 - ACT: _render_grep grew an optional suffix kwarg. _split_grep_flags pure helper. Dispatcher uses the helper to split args. Help text grew the dash dash ext form. Seven new tests cover split extracting suffix split no suffix split with only pattern grep filtering to py grep filtering to md no filter keeping both and a flag without a pattern returning usage error. Eight hundred fifty nine passed.
 
+
+## Loop 153 — multi-file pin in one slash call
+- DECIDE: /pin landed in loop 145 but only accepts a single path. claude code at-mention syntax accepts multiple paths in one breath. Generalise /pin to take many paths.
+- DEVIL:
+  - Correctness: per file _render_pin call so a single bad path emits its own pin error line and the others still pin successfully. The marker block helper is idempotent so the marker still appears exactly once after multiple calls. Joining with newline keeps output readable in the RichLog.
+  - Scope: keeps single arg behaviour identical because cmd.args of length one collapses the join to the same single line.
+  - Priority: P5.
+- ACT: dispatcher now iterates cmd.args calling _render_pin per path and joins with newline. Help text grew to slash pin path bracket path dot dot dot bracket. Three new tests cover three paths in one call partial failure where one good path and one escape path produce mixed output and an empty arg case still hitting the usage error. Eight hundred sixty two passed.
+
