@@ -423,6 +423,73 @@ def save_agent_checkpoint(path: Any, history: list[ChatMessage]) -> None:
     os.replace(tmp, p)
 
 
+def rotate_agent_checkpoints(
+    primary: Any,
+    history: list[ChatMessage],
+    *,
+    keep: int = 5,
+) -> "Path":
+    """Save ``history`` under a timestamped sibling of ``primary`` and
+    refresh ``primary`` itself, retaining the most recent ``keep``
+    timestamped snapshots.
+
+    Layout::
+
+        .agent/agent_state.json                       (primary, always latest)
+        .agent/checkpoints/agent_state-<ts>.json      (rotated history)
+
+    Where ``<ts>`` is ``YYYYmmddTHHMMSSffffff`` UTC so lexicographic
+    sort matches chronological order. Returns the path of the rotated
+    snapshot. ``keep <= 0`` keeps all snapshots forever.
+
+    Older snapshots beyond the cap are deleted; failures during prune
+    are swallowed so a single unwriteable file doesn't lose the new
+    checkpoint that already landed.
+    """
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    p = Path(primary)
+    save_agent_checkpoint(p, history)
+
+    rot_dir = p.parent / "checkpoints"
+    rot_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    snapshot = rot_dir / f"{p.stem}-{ts}{p.suffix}"
+    save_agent_checkpoint(snapshot, history)
+
+    if keep > 0:
+        existing = sorted(
+            rot_dir.glob(f"{p.stem}-*{p.suffix}"),
+            key=lambda q: q.name,
+        )
+        excess = existing[:-keep] if len(existing) > keep else []
+        for old in excess:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
+    return snapshot
+
+
+def list_agent_checkpoints(primary: Any) -> list["Path"]:
+    """Return the rotated snapshots for ``primary`` sorted oldest-first.
+
+    Returns an empty list when the rotation directory doesn't exist
+    yet. Never raises — used by ``/checkpoints``-style UIs."""
+    from pathlib import Path
+
+    p = Path(primary)
+    rot_dir = p.parent / "checkpoints"
+    if not rot_dir.is_dir():
+        return []
+    return sorted(
+        rot_dir.glob(f"{p.stem}-*{p.suffix}"),
+        key=lambda q: q.name,
+    )
+
+
 def load_agent_checkpoint(path: Any) -> list[ChatMessage]:
     """Load a checkpoint written by ``save_agent_checkpoint``. Returns
     an empty list if the file is missing or unparseable; never raises."""

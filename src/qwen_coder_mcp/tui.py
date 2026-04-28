@@ -1967,7 +1967,7 @@ def _build_app(
                 the run_agent contract — we just note them in the log."""
                 try:
                     target = self.fs_cfg.root / ".agent" / "agent_state.json"
-                    agent_loop.save_agent_checkpoint(target, hist)
+                    agent_loop.rotate_agent_checkpoints(target, hist, keep=5)
                 except Exception as exc:  # noqa: BLE001
                     self.call_from_thread(
                         self._agent_status,

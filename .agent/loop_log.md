@@ -2586,3 +2586,20 @@ read-only operation, no state changes.
 **Act.** New 5-line block in `run_agent`'s streaming branch: ttft sentinel + monotonic stamp + first-non-empty-chunk emit. Doc-list updated. TUI runner gets a `ttft` branch rendering via `format_tool_latency`. New `tests/test_agent_ttft.py` with 6 cases as above. Updated docstring's event-list ordering.
 
 **Verify.** `pytest -x -q` → ~1k passed, 1 skipped.
+
+## Loop 179 — rotating timestamped checkpoints (keep last N)
+
+**Observe.** Loops 173/174 added single-file `.agent/agent_state.json` checkpointing + `/resume`. Fragility: every save overwrites the only good copy. A buggy run that completes 4 tool calls successfully then commits a corrupt prompt to history just trashed the previous state — there's no way to roll back.
+
+**Orient.** Same pattern unix logrotate solved decades ago: keep the latest at a fixed path, push prior versions into a sibling directory with a sortable timestamp suffix, prune beyond a cap. Microsecond-precision UTC timestamps mean lexicographic sort = chronological sort, and ~1 microsecond resolution is plenty for an agent-step cadence.
+
+**Decide.** Add `rotate_agent_checkpoints(primary, history, *, keep=5)` — writes primary, writes a timestamped sibling under `checkpoints/`, prunes oldest beyond `keep`. Add `list_agent_checkpoints(primary)` for future `/checkpoints` UIs. Wire the TUI's `_agent_checkpoint` to use rotation with `keep=5`. `keep <= 0` retains everything.
+
+**Devil.**
+- *Correctness:* Same-millisecond rotations? UTC timestamp uses microsecond precision (`%f` in strftime). Tests sleep 1ms between writes to avoid filesystem-level overlap. ✅
+- *Scope:* Should we tag rotations by step number too? No — wall-clock is sufficient for "find the last good state" UX, and step numbers across runs collide. ✅
+- *Priority:* Higher impact than `/checkpoints` slash command? Yes — `/checkpoints` is the *consumer*; the rotation infrastructure is a prerequisite. Without rotation there's only ever one snapshot to list. ✅
+
+**Act.** Added `rotate_agent_checkpoints` and `list_agent_checkpoints` next to `save_agent_checkpoint`. Updated TUI's `_agent_checkpoint` closure to call `rotate_agent_checkpoints(target, hist, keep=5)`. New `tests/test_rotate_checkpoints.py` with 9 cases: writes primary+snapshot, primary tracks latest, keeps last N, `keep=0` retains all, prunes oldest first, lexicographic-sort matches chronological, missing-dir returns empty, primary-only returns empty, foreign-stem files filtered out.
+
+**Verify.** `pytest -x -q` → ~1k passed, 1 skipped.
