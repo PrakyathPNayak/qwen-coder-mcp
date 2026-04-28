@@ -958,3 +958,58 @@ class TestLogNeverRaises:
             L._log("test")  # must not raise
         finally:
             monkeypatch.setattr(Path, "open", orig_open)
+
+
+class TestObservabilityNeverRaises:
+    """Loop 68: `_append_state` and `_write_history` swallow all exceptions
+    so disk pressure never kills an iteration."""
+
+    def test_append_state_swallows_oserror(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setattr(L, "STATE_FILE", tmp_path / "STATE.md")
+        # Patch _rotate_state_if_needed to raise — should still not crash.
+        monkeypatch.setattr(L, "_rotate_state_if_needed", lambda: (_ for _ in ()).throw(OSError("disk full")))
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        L._append_state("entry\n")
+        assert any("_append_state failed" in l for l in log_lines)
+
+    def test_append_state_swallows_runtime_error(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setattr(L, "STATE_FILE", tmp_path / "STATE.md")
+        monkeypatch.setattr(L, "_rotate_state_if_needed", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        L._append_state("entry\n")  # must not raise
+
+    def test_write_history_swallows_oserror_returns_none(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        # Point HISTORY_DIR at a path where mkdir will fail (we'll make
+        # the parent a regular file).
+        bad_root = tmp_path / "blocker"
+        bad_root.write_text("not a dir")
+        monkeypatch.setattr(L, "HISTORY_DIR", bad_root / "history")
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        result = L._write_history("foo.md", "body")
+        assert result is None
+        assert any("_write_history failed" in l for l in log_lines)
+
+    def test_write_history_success_returns_path(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setattr(L, "HISTORY_DIR", tmp_path / "history")
+        result = L._write_history("foo.md", "body")
+        assert result is not None
+        assert result.read_text(encoding="utf-8") == "body"
+
+    def test_write_history_swallows_arbitrary_exception(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setattr(L, "HISTORY_DIR", tmp_path / "history")
+        # Patch _prune_history to raise after the write — write succeeds
+        # but prune blows up; the function still returns successfully
+        # because the exception is swallowed.
+        monkeypatch.setattr(L, "_prune_history", lambda n: (_ for _ in ()).throw(RuntimeError("prune boom")))
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        result = L._write_history("foo.md", "body")
+        # Note: prune raises BEFORE return path runs — so result is None.
+        # The contract is "swallow exceptions, log, return None".
+        assert result is None

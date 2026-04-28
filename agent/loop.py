@@ -1157,12 +1157,20 @@ def _prune_state_archive(max_files: int) -> int:
 
 
 def _append_state(entry: str) -> None:
-    _rotate_state_if_needed()
-    header = "# qwen-coder-mcp — Rolling State\n\n"
-    if not STATE_FILE.exists():
-        STATE_FILE.write_text(header, "utf-8")
-    with STATE_FILE.open("a", encoding="utf-8") as fh:
-        fh.write(entry)
+    """Append one entry to STATE.md. Observability — never raises.
+
+    State persistence failures (disk full, permission denied, etc.) are
+    logged but do not break the iteration; they are best-effort.
+    """
+    try:
+        _rotate_state_if_needed()
+        header = "# qwen-coder-mcp — Rolling State\n\n"
+        if not STATE_FILE.exists():
+            STATE_FILE.write_text(header, "utf-8")
+        with STATE_FILE.open("a", encoding="utf-8") as fh:
+            fh.write(entry)
+    except Exception as exc:  # observability must never break the loop
+        _log(f"_append_state failed: {exc}")
 
 
 _HISTORY_MAX_FILES_DEFAULT = 500
@@ -1183,12 +1191,22 @@ def _prune_history(max_files: int) -> int:
     return _prune_dir_oldest(HISTORY_DIR, max_files)
 
 
-def _write_history(name: str, body: str) -> Path:
-    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-    path = HISTORY_DIR / name
-    path.write_text(body, "utf-8")
-    _prune_history(_history_max_files())
-    return path
+def _write_history(name: str, body: str) -> Path | None:
+    """Write a history file under `.loop/history/`. Observability — never raises.
+
+    Returns the resulting path on success, or None on failure (logged).
+    Callers don't currently use the return value, but the contract is
+    explicit so future callers can branch on the failure case.
+    """
+    try:
+        HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        path = HISTORY_DIR / name
+        path.write_text(body, "utf-8")
+        _prune_history(_history_max_files())
+        return path
+    except Exception as exc:  # observability must never break the loop
+        _log(f"_write_history failed: {exc}")
+        return None
 
 
 # -------------------------------------------------------------------- core

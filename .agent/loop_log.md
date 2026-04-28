@@ -1305,3 +1305,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 5 — observability stability is loop-survival.
 - ACT: 3 tests covering OSError on open, UnicodeError on print, RuntimeError on write. 398 passed.
 - COMMIT: pending.
+
+## Loop 68 — `_append_state` & `_write_history` exception swallow
+- OBSERVE: After loop 67 hardened `_log`, the audit (next.md #5) called out two more observability sinks with NO exception handling: `_append_state` (writes STATE.md mid-iteration) and `_write_history` (writes `.loop/history/*.md`). Disk full / permission denied would propagate into `_iteration` and only get caught by `main`'s outer `except Exception`, which loses any state already accumulated for that loop.
+- ORIENT: Bucket 5 — symmetric fix to loop 67. Observability state-persistence failures should not destroy an iteration's outcome reporting.
+- DECIDE: Wrap both bodies in `try/except Exception: _log(...)`. `_write_history` return type narrowed to `Path | None`.
+- DEVIL:
+  - Correctness: callers don't use `_write_history`'s return value (verified by grep). Narrowing to `Optional` is contract-safe.
+  - Scope: cause-level — same audit covers the symmetric site.
+  - Priority: bucket 5, parallel to loop 67.
+- ACT: 5 tests covering OSError, RuntimeError, success, prune-failure-after-write. 403 passed.
+- COMMIT: pending.
