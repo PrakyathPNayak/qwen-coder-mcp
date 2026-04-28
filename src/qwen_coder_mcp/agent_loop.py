@@ -37,6 +37,37 @@ TOOL_CALL_FENCE_RE = re.compile(
     r"```tool_call\s*\n?(\{.*?\})\s*\n?```", re.DOTALL
 )
 
+# Models routinely guess synonyms instead of the exact tool name (e.g.
+# "run_command" / "bash" instead of "run_shell"). Rather than fail the
+# call with "unknown tool", we normalise common aliases so the dispatch
+# still works. Keep this conservative -- only obvious 1:1 synonyms.
+TOOL_NAME_ALIASES: dict[str, str] = {
+    "run_command": "run_shell",
+    "shell": "run_shell",
+    "bash": "run_shell",
+    "sh": "run_shell",
+    "exec": "run_shell",
+    "read_file": "fs_read",
+    "write_file": "fs_write",
+    "edit_file": "fs_edit",
+    "insert_file": "fs_insert",
+    "list_dir": "fs_list",
+    "ls": "fs_list",
+    "search": "grep",
+    "rg": "grep",
+    "glob": "find",
+}
+
+
+def _canonical_tool_name(name: str) -> str:
+    """Return the canonical tool name after applying alias normalisation
+    (case-insensitive). Unknown names pass through unchanged so the
+    dispatcher can still emit its "unknown tool" error.
+    """
+    if not isinstance(name, str):
+        return name
+    return TOOL_NAME_ALIASES.get(name.strip().lower(), name)
+
 
 @dataclass
 class ToolCall:
@@ -563,6 +594,7 @@ def parse_tool_calls(text: str) -> list[ToolCall]:
         name = obj.get("name")
         if not isinstance(name, str) or not name:
             continue
+        name = _canonical_tool_name(name)
         args = obj.get("args") or obj.get("arguments") or {}
         if not isinstance(args, dict):
             args = {}

@@ -4363,3 +4363,27 @@ logic), Priority (P2 -- diagnostic only, not behavioural). Suite
 - *Priority*: this is invisible to a passive observer of the test suite (everything was green before too), but actively visible to the operator the moment they ran `/loop tail`. Closes a real UX bug.
 
 **Suite**: 1900 passed, 7 skipped. Real `.loop/runtime.log` stays absent through a full test run.
+
+---
+
+## Loop 262 — TUI markup safety + tool-name aliases
+
+**Why**: two operator-reported breakages in one nudge.
+1. RichLog crashed mid-stream with `MarkupError: closing tag '[/▍]' at position 61 doesn't match any open tag`. The TUI was interpolating raw model output into a markup-templated string (`f"[green]qwen>[/green] {reply}"`), so any reply containing a literal bracketed sequence -- box-drawing progress chars like `[/▍]`, regex snippets like `[/x]`, or pseudo-tags -- ate the renderer.
+2. Operator noticed the model calling tools by analogy (`run_command` instead of `run_shell`, `read_file` instead of `fs_read`) and the parser silently rejected those calls with "unknown tool", which the model then treated as "the tool is missing" and either gave up or kept retrying the same wrong name.
+
+**Change**:
+- `src/qwen_coder_mcp/tui.py`: new `_safe_markup(text)` helper that lazy-imports `rich.markup.escape`. Applied at the four interpolation points where dynamic text becomes markup: user-input echo, retry echo, assistant-reply non-markdown branch, and the markdown-fallback branch when `rich.markdown` import fails. Markdown-rendered replies are unchanged because `Markdown(reply)` is an object, not a markup template, so escaping is unnecessary there.
+- `src/qwen_coder_mcp/agent_loop.py`: added a `TOOL_NAME_ALIASES` table (`run_command`/`bash`/`shell`/`sh`/`exec` -> `run_shell`; `read_file`/`write_file`/`edit_file`/`insert_file` -> `fs_*`; `list_dir`/`ls` -> `fs_list`; `search`/`rg` -> `grep`; `glob` -> `find`) and a `_canonical_tool_name()` helper. `parse_tool_calls()` normalises the name through it case-insensitively after JSON-decoding, so the dispatcher receives the canonical name and any logging/audit downstream sees the real tool that ran.
+
+**Tests** (24 new in tests/test_markup_safety_and_aliases.py):
+- `_safe_markup` escapes `[/x]` and `[bar]` patterns, passes plain text through, coerces non-strings.
+- The exact operator-reported payload (`qwen> [agent error: MarkupError: closing tag '[/▍]'...`) now parses cleanly through `rich.text.Text.from_markup`. Negative control: same payload WITHOUT the escape still raises `rich.errors.MarkupError`, guarding against future regressions if `_safe_markup` is ever silently no-opped.
+- `parse_tool_calls` resolves `run_command` and 12 other aliases to their canonical names. Case-insensitive (`RUN_COMMAND` works). Unknown names pass through unchanged so the dispatcher's "unknown tool" error path is preserved. End-to-end test dispatches a `run_command` call through `run_tool` against `WRITE_TOOLS` and asserts the shell executed (`echo loop262` output present, no error).
+
+**Devil step**:
+- *Could the alias table hijack a future tool?* Yes, if we ever add a tool literally named `ls` or `bash` it'd be intercepted. Mitigation deferred -- the namespace is ours and we'd notice immediately at registration time. Documented here so future-me sees it.
+- *Could `_safe_markup` over-escape?* It'd defeat any markup the model intentionally emitted. But the existing channel for model formatting is the Markdown branch (which is unaffected); the plain-text branch was never meant to honour Rich markup, so escaping matches the documented contract.
+- *Why not add a `[json` fence pattern to the parser too?* The operator complaint was about names, not formats. Adding ```json detection would risk eating accidental JSON in regular replies. Conservative now; revisit if telemetry shows the model preferring that fence.
+
+**Suite**: 1924 passed, 7 skipped (up from 1900 -> +24 new).

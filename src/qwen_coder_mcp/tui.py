@@ -43,6 +43,22 @@ from . import agent_loop, fs_tools, prompts, shell_tools, web_tools
 from .qwen_client import ChatMessage, QwenClient
 
 
+def _safe_markup(text: object) -> str:
+    """Escape dynamic content before interpolating it into a Rich markup
+    string. Without this, model output containing literal ``[/x]`` (e.g.
+    box-drawing progress characters like ``[/▍]`` or angle-bracketed
+    pseudo-tags) crashes the RichLog with ``MarkupError``. We import
+    ``rich.markup.escape`` lazily so headless/pure-API usages of this
+    module don't require Rich.
+    """
+    s = text if isinstance(text, str) else str(text)
+    try:
+        from rich.markup import escape
+    except ImportError:
+        return s
+    return escape(s)
+
+
 @dataclass
 class SlashCommand:
     name: str
@@ -3401,7 +3417,7 @@ def _build_app(
             entry = self.query_one("#entry", Input)
             entry.value = ""
             log = self.query_one("#log", RichLog)
-            log.write(f"[bold cyan]you›[/bold cyan] {line}")
+            log.write(f"[bold cyan]you›[/bold cyan] {_safe_markup(line)}")
             cmd = parse_slash(line)
             if cmd is not None:
                 text, quit_now = dispatch_slash(
@@ -3413,7 +3429,7 @@ def _build_app(
                 )
                 if isinstance(text, str) and text.startswith("__RETRY__"):
                     line = text[len("__RETRY__"):]
-                    log.write(f"[yellow](retrying)[/yellow] {line}")
+                    log.write(f"[yellow](retrying)[/yellow] {_safe_markup(line)}")
                 elif isinstance(text, str) and text.startswith(_AGENT_SENTINEL):
                     task = text[len(_AGENT_SENTINEL):]
                     task, max_steps, resume = _decode_agent_body(task)
@@ -3867,12 +3883,12 @@ def _build_app(
                 try:
                     from rich.markdown import Markdown
                 except ImportError:
-                    log.write(f"[green]qwen>[/green] {reply}")
+                    log.write(f"[green]qwen>[/green] {_safe_markup(reply)}")
                     return
                 log.write("[green]qwen>[/green]")
                 log.write(Markdown(reply))
             else:
-                log.write(f"[green]qwen>[/green] {reply}")
+                log.write(f"[green]qwen>[/green] {_safe_markup(reply)}")
 
 
         def _record_turn(self, prompt: str, reply: str, elapsed: float) -> None:
