@@ -1228,3 +1228,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 6 — same level as loop 59, complementary.
 - ACT: 6 tests including bidirectional source audit. 383 passed.
 - COMMIT: pending.
+
+## Loop 61 — timing.log category field
+- OBSERVE: `_write_timing` JSONL emitted `outcome` but not the structured category. Aggregating timing-by-category required reparsing the outcome string.
+- ORIENT: Bucket 5/6 — observability cliff. Single-line fix unlocks fast aggregation.
+- DECIDE: Add `category` field via `_outer_outcome_category(outcome)`. Keep `outcome` verbatim for forensics.
+- DEVIL:
+  - Correctness: `_outer_outcome_category` returns the literal leading token even if it's not in the frozenset — passes drift through rather than masking it. Verified by test.
+  - Scope: not a bandaid; this is the missing observability primitive.
+  - Priority: bucket 5 over the remaining bucket 6/7 work.
+- ACT: 3 tests covering known/no-colon/unknown outcomes. 386 passed.
+- COMMIT: pending.

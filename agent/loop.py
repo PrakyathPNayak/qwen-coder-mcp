@@ -1263,6 +1263,7 @@ def _write_timing(rel: Path, outcome: str, phases: dict[str, float]) -> None:
             "ts": _now(),
             "file": rel.as_posix(),
             "outcome": outcome,
+            "category": _outer_outcome_category(outcome),
             "phases": {k: round(v, 4) for k, v in phases.items()},
         }
         with TIMING_FILE.open("a", encoding="utf-8") as fh:

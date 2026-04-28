@@ -722,3 +722,39 @@ class TestOuterOutcomeCategories:
         src = Path(L.__file__).read_text(encoding="utf-8")
         for cat in L.OUTER_OUTCOME_CATEGORIES:
             assert cat in src, f"{cat!r} declared but never emitted"
+
+
+class TestTimingLogCategoryField:
+    """Loop 61: timing.log records include the structured category field."""
+
+    def test_record_includes_category_for_known_outcome(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        timing = tmp_path / "timing.log"
+        monkeypatch.setattr(L, "TIMING_FILE", timing)
+        L._write_timing(Path("foo/bar.py"), "applied:foo/bar.py", {"apply_diff": 1.5})
+        line = timing.read_text(encoding="utf-8").strip()
+        import json as _json
+        rec = _json.loads(line)
+        assert rec["category"] == "applied"
+        assert rec["outcome"] == "applied:foo/bar.py"
+        assert rec["phases"] == {"apply_diff": 1.5}
+
+    def test_category_for_no_colon_outcome(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        timing = tmp_path / "timing.log"
+        monkeypatch.setattr(L, "TIMING_FILE", timing)
+        L._write_timing(Path("x.py"), "no_candidate_files", {})
+        import json as _json
+        rec = _json.loads(timing.read_text(encoding="utf-8").strip())
+        assert rec["category"] == "no_candidate_files"
+
+    def test_category_for_unknown_outcome_passes_through(self, tmp_path, monkeypatch):
+        # _outer_outcome_category returns the leading token regardless;
+        # this guards against silent normalization that would obscure drift.
+        from agent import loop as L
+        timing = tmp_path / "timing.log"
+        monkeypatch.setattr(L, "TIMING_FILE", timing)
+        L._write_timing(Path("x.py"), "weird_unknown:detail", {})
+        import json as _json
+        rec = _json.loads(timing.read_text(encoding="utf-8").strip())
+        assert rec["category"] == "weird_unknown"
