@@ -268,3 +268,76 @@ def test_system_user_max_retries_forwarded():
     with pytest.raises(QwenError):
         c.system_user("sys", "usr", max_retries=1)
     assert calls["n"] == 1
+
+
+# --------------------------------------------------- empty-content handling
+def test_empty_string_content_raises_qwen_error_after_retries():
+    """`content=""` is a backend failure, not a clean empty answer. The
+    chat() retry loop then surfaces QwenError after exhausting retries."""
+    calls = {"n": 0}
+
+    def handler(_request):
+        calls["n"] += 1
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": ""}}]},
+        )
+
+    c = _client_with(handler)
+    with pytest.raises(QwenError):
+        c.chat([ChatMessage("user", "hi")])
+    # Default max_retries=3
+    assert calls["n"] == 3
+
+
+def test_none_content_raises_qwen_error():
+    calls = {"n": 0}
+
+    def handler(_request):
+        calls["n"] += 1
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": None}}]},
+        )
+
+    c = _client_with(handler)
+    with pytest.raises(QwenError):
+        c.chat([ChatMessage("user", "hi")], max_retries=2)
+    assert calls["n"] == 2
+
+
+def test_empty_blocks_list_raises_qwen_error():
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": []}}]},
+        )
+
+    c = _client_with(handler)
+    with pytest.raises(QwenError):
+        c.chat([ChatMessage("user", "hi")], max_retries=1)
+
+
+def test_blocks_list_with_empty_text_raises_qwen_error():
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant",
+                                              "content": [{"text": "  "}]}}]},
+        )
+
+    c = _client_with(handler)
+    with pytest.raises(QwenError):
+        c.chat([ChatMessage("user", "hi")], max_retries=1)
+
+
+def test_whitespace_only_content_raises_qwen_error():
+    def handler(_request):
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "   \n\t"}}]},
+        )
+
+    c = _client_with(handler)
+    with pytest.raises(QwenError):
+        c.chat([ChatMessage("user", "hi")], max_retries=1)

@@ -784,3 +784,32 @@ no-space, multiple-spaces, reject reason single-line truncation,
 ACCEPTANCE doesn't false-accept, REJECTED falls through.
 
 **Result**: 217/217 green.
+
+## Loop 27 — `_extract_text` silently dropped empty content
+**Bug**: `_extract_text` returned `""` for `content=None`,
+`content=[]`, `content="   "`, or a blocks list of empty texts. The
+chat() call then returned `""` to the agent loop. Downstream
+parsers misclassified empty as: `_parse_first_issue` → "no
+findings"; `_verdict_accepts` → "no_verdict" (conservative reject).
+Both classifications drop the iteration. The real failure (backend
+returned no text) was invisible to the retry path — chat() retries
+on QwenError, but `_extract_text` raised QwenError only on shape
+errors, never on empty content.
+
+**Devil**: (a) Correctness — could a legitimate empty assistant
+answer exist? In this agent's domain every prompt requires
+substantive output (diff / issue / verdict). Empty IS a failure.
+(b) Could whitespace-only be valid? After strip → empty, treated as
+failure. Acceptable (no legitimate diff is whitespace). (c) Scope —
+root cause is "extract was overly forgiving"; fix tightens the
+contract without changing the happy path. (d) Priority — directly
+costs loop iterations to silent failures.
+
+**Fix**: `_extract_text` now raises `QwenError` when the extracted
+text is empty after strip (regardless of None / [] / "" / blocks
+list / object). chat() retries 3× then surfaces.
+
+**Tests**: 5 new — empty string with retry-count check, None,
+empty list, blocks-with-empty-text, whitespace-only.
+
+**Result**: 222/222 green.

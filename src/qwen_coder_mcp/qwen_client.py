@@ -133,10 +133,21 @@ class QwenClient:
                     parts.append(str(block["text"]))
                 elif isinstance(block, str):
                     parts.append(block)
-            return "".join(parts).strip()
-        if isinstance(content, str):
-            return content.strip()
-        return str(content or "").strip()
+            text = "".join(parts).strip()
+        elif isinstance(content, str):
+            text = content.strip()
+        elif content is None:
+            text = ""
+        else:
+            text = str(content).strip()
+        if not text:
+            # Empty content is treated as a transient failure: in this
+            # agent's domain every prompt expects substantive output
+            # (diff / issue / verdict). Silent "" was misclassified
+            # downstream as "no findings" / "no_verdict", dropping
+            # iterations. Raising QwenError lets the retry loop kick in.
+            raise QwenError(f"empty assistant content: {data!r}")
+        return text
 
     def system_user(
         self,
