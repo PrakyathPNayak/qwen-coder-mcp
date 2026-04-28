@@ -673,3 +673,31 @@ fields and the last is `120000` / `160000`.
 short index line accepted, end-to-end `_apply_diff` rejection.
 
 **Result**: 197/197 green.
+
+## Loop 23 — `_strip_fence` could not salvage unclosed fences
+**Bug**: when the model emits an opening fence ``` ```diff ``` but
+forgets to emit the closing ``` ``` ```, `_INNER_FENCE_RE` (which
+requires `\n```` to terminate) doesn't match. `_strip_fence` then
+falls through to "return text" — leaving the literal `\`\`\`diff`
+opener prepended to the diff body. `_apply_diff` rejects it as
+`not_a_unified_diff`. A salvageable, common LLM failure was being
+turned into a dropped iteration.
+
+**Devil**: (a) Correctness — could the salvage fire when it
+shouldn't? It only fires when text *starts* with the open fence
+(after .strip() of outer whitespace), so prose-before-fence still
+falls through (tested). (b) Could the body legitimately contain a
+trailing ``` ``` ``` we shouldn't strip? In a unified diff, no line
+begins with three backticks; content lines start with `+`, `-`, or
+space. So the trailing-strip is safe. Tested. (c) Priority — common
+model failure, recoverable, low risk. Worth doing.
+
+**Fix**: added `_OPEN_FENCE_RE` / `_CLOSE_FENCE_RE`. When inner-fence
+regex doesn't match but text starts with an open fence, strip the
+opener and any straggling closer; return the salvaged body.
+
+**Tests**: 5 new in `tests/test_loop_parsers.py` —
+unclosed-with-lang, unclosed-bare, prose-before doesn't salvage,
+already-closed still works, dangling-close stripped.
+
+**Result**: 202/202 green.

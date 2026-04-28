@@ -159,6 +159,10 @@ _INNER_FENCE_RE = re.compile(
 )
 
 
+_OPEN_FENCE_RE = re.compile(r"^```[a-zA-Z0-9_+\-]*\s*\n", re.MULTILINE)
+_CLOSE_FENCE_RE = re.compile(r"\n```\s*$")
+
+
 def _strip_fence(text: str) -> str:
     """Extract the payload from a model response.
 
@@ -168,8 +172,12 @@ def _strip_fence(text: str) -> str:
     all three:
 
     1. Pure raw diff (starts with ``diff --git`` or ``--- ``) → return as-is.
-    2. Otherwise return the inner text of the *first* fenced block.
-    3. No fence at all → return the stripped original.
+    2. Otherwise return the inner text of the *first* properly-closed
+       fenced block.
+    3. Unclosed fence (model dropped the trailing ```): strip the
+       leading ```lang\\n and any trailing ```; the remainder is best-
+       effort payload (downstream `_apply_diff` validates).
+    4. No fence at all → return the stripped original.
 
     When the model emits multiple fences we return the first; the prompt
     is contractually one diff in one fence, so multiple fences indicate
@@ -184,6 +192,12 @@ def _strip_fence(text: str) -> str:
     m = _INNER_FENCE_RE.search(text)
     if m:
         return m.group(1).strip()
+    # Unclosed-fence salvage: model produced ```lang\n<body> with no closer.
+    om = _OPEN_FENCE_RE.match(text)
+    if om:
+        body = text[om.end():]
+        body = _CLOSE_FENCE_RE.sub("", body)
+        return body.strip()
     return text
 
 

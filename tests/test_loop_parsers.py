@@ -313,3 +313,29 @@ class TestPythonSyntaxOk:
         monkeypatch.setattr(L, "_REPO", tmp_path)
         ok, _ = L._python_syntax_ok([Path("bad.py")])
         assert ok is False
+
+
+# ----------------------------------------------------- unclosed-fence salvage
+class TestStripFenceUnclosedSalvage:
+    def test_unclosed_fence_with_lang_returns_body(self):
+        text = "```diff\n--- a/x\n+++ b/x\n@@\n-1\n+2"
+        assert L._strip_fence(text) == "--- a/x\n+++ b/x\n@@\n-1\n+2"
+
+    def test_unclosed_bare_fence_returns_body(self):
+        text = "```\nbody line one\nbody line two"
+        assert L._strip_fence(text) == "body line one\nbody line two"
+
+    def test_unclosed_fence_with_prose_before_does_not_salvage(self):
+        """Salvage only fires when text *starts* with ```; prose before
+        means the model didn't try a single block at all."""
+        text = "Here you go:\n```diff\n--- a/x\n+++ b/x"
+        # Falls through to return-as-is; downstream rejects as not_a_unified_diff
+        assert L._strip_fence(text).startswith("Here you go:")
+
+    def test_open_fence_with_trailing_close_still_salvageable(self):
+        text = "```diff\nbody\n```"  # already covered by inner regex, sanity
+        assert L._strip_fence(text) == "body"
+
+    def test_unclosed_fence_strips_dangling_close_at_end(self):
+        text = "```diff\nbody1\nbody2\n```"
+        assert L._strip_fence(text) == "body1\nbody2"
