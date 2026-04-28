@@ -34,6 +34,38 @@ class TestStripFence:
     def test_empty_string(self):
         assert L._strip_fence("") == ""
 
+    def test_prose_before_fence_extracts_inner(self):
+        text = "Here is the patch you asked for:\n\n```diff\nbody line\n```"
+        assert L._strip_fence(text) == "body line"
+
+    def test_prose_after_fence_extracts_inner(self):
+        text = "```diff\nbody line\n```\n\nHope this helps!"
+        assert L._strip_fence(text) == "body line"
+
+    def test_prose_both_sides(self):
+        text = "Sure thing.\n```\nbody\n```\nLet me know if you have questions."
+        assert L._strip_fence(text) == "body"
+
+    def test_multiple_fences_returns_first(self):
+        text = (
+            "```diff\nfirst body\n```\n\n"
+            "Also note this example:\n"
+            "```python\nsecond body\n```"
+        )
+        assert L._strip_fence(text) == "first body"
+
+    def test_raw_unified_diff_returned_as_is(self):
+        text = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@\n-1\n+2\n"
+        assert L._strip_fence(text).startswith("diff --git")
+
+    def test_raw_minus_minus_diff_returned_as_is(self):
+        text = "--- a/x\n+++ b/x\n@@\n-1\n+2\n"
+        assert L._strip_fence(text).startswith("--- a/x")
+
+    def test_no_fence_no_diff_returns_stripped_original(self):
+        text = "  just prose with no markers  "
+        assert L._strip_fence(text) == "just prose with no markers"
+
 
 # ------------------------------------------------------ _parse_first_issue
 class TestParseFirstIssue:

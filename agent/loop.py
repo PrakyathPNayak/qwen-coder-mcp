@@ -120,13 +120,37 @@ def _read_file(path: Path, max_bytes: int) -> str | None:
 
 
 # ------------------------------------------------------------- model output
-_FENCE_RE = re.compile(r"^```[a-zA-Z0-9_+\-]*\s*\n(.*?)\n```\s*$", re.DOTALL)
+_INNER_FENCE_RE = re.compile(
+    r"```[a-zA-Z0-9_+\-]*\s*\n(.*?)\n```", re.DOTALL
+)
 
 
 def _strip_fence(text: str) -> str:
+    """Extract the payload from a model response.
+
+    The model is prompted to emit a fenced block, but in practice it
+    sometimes wraps the fence in prose ("Here is the diff:\n```diff…```")
+    or omits the fence entirely and returns a raw unified diff. Handle
+    all three:
+
+    1. Pure raw diff (starts with ``diff --git`` or ``--- ``) → return as-is.
+    2. Otherwise return the inner text of the *first* fenced block.
+    3. No fence at all → return the stripped original.
+
+    When the model emits multiple fences we return the first; the prompt
+    is contractually one diff in one fence, so multiple fences indicate
+    a misformatted response which the downstream `_apply_diff` will
+    reject if the first fence isn't actually a diff.
+    """
     text = text.strip()
-    m = _FENCE_RE.match(text)
-    return m.group(1) if m else text
+    if not text:
+        return text
+    if text.startswith(("diff --git", "--- ")):
+        return text
+    m = _INNER_FENCE_RE.search(text)
+    if m:
+        return m.group(1).strip()
+    return text
 
 
 def _parse_first_issue(text: str) -> str | None:

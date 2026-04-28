@@ -150,6 +150,43 @@ the targeted scope`.
 **Revealed next**: `_strip_fence`'s anchored regex still requires
 whole-input match; prose-around-fence will fall through.
 
+---
+
+## Loop 5 — robust fence/diff extractor
+
+**OBSERVE**: `_FENCE_RE` was anchored with `^...$` and matched via
+`.match()`, so any prose around the fence ("Here is the diff:\n```…```")
+fell through to the raw text and `_apply_diff` rejected it. Also no
+support for raw unified diffs that omit the fence.
+
+**ORIENT**: `_strip_fence` runs on every iteration's coder + devil
+output. Robustness here is high-leverage.
+
+**DECIDE**: rewrite to (a) recognise raw `diff --git` / `--- ` outputs
+without modification, (b) extract the inner text of the *first*
+embedded fence via non-anchored search, (c) fall back to stripped
+original.
+
+**DEVIL**: (correctness) "first-fence" can pick wrong block when model
+emits multiples. Initial draft kept a whole-input fast path which made
+multi-fence inputs greedily match across fences. Caught by a multi-fence
+test that failed. Fixed by removing the fast path entirely; non-greedy
+embedded search picks the first fence deterministically. (scope) raw
+diffs vs fences — handle both, model-friendly. (priority) crash-prone
+`_load_cursor` deferred since `_strip_fence` runs on every iteration.
+
+**ACT**: 7 new tests (prose-before, prose-after, prose-both,
+multi-fence, raw `diff --git`, raw `--- `, no-fence-no-diff). 49/49
+green. Removed unused `_FENCE_RE`. compileall clean.
+
+**COMMIT**: pending — `fix(loop): tolerate prose around fences and raw
+diffs in model output`.
+
+**Revealed next**: `_load_cursor` has no error handling; malformed
+`.loop/cursor.json` would crash the iteration. Then: `STATE.md`
+unbounded growth.
+
+
 
 
 
