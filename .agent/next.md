@@ -1,7 +1,7 @@
 # Next Loop Candidates
 
-1. (`STATE_MAX_BYTES`) P5 hardcoded 256K; expose env override (`QWEN_STATE_MAX_BYTES`). 
-2. (P7) `_strip_fence` — handle nested triple-backticks within a fenced block.
-3. (P5) Audit `_commit_and_push` for empty-diff race.
-4. (P5) `_revert_changes` — fire-and-forget; no rc check.
-5. (P6) `_iteration_log_max_files` — count of history files in any prune-call helper now relies on `iterdir()`; for very large dirs (>10k) this is slow.
+1. (P5) `_revert_changes` callers ignore the bool return; if a revert truly fails the next iteration may corrupt — propagate to outer loop as a hard skip.
+2. (P5) `STATE_MAX_BYTES` — hardcoded 256K; expose env override.
+3. (P7) `_strip_fence` — handle nested triple-backticks within a fenced block.
+4. (P5) Audit `_commit_and_push` for empty-diff race.
+5. (P6) `_iteration` — when `_revert_changes` returns False, log a structured outcome category (`revert_failed:{rel}`).

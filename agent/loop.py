@@ -978,15 +978,41 @@ def _changed_paths() -> list[Path]:
     return out
 
 
-def _revert_changes() -> None:
+def _revert_changes() -> bool:
     """Discard every working-tree change *and* untracked files.
 
     `git checkout -- .` only restores tracked files; untracked additions
     (e.g. a brand-new file produced by a model diff) survive it. We
     follow up with `git clean -fd` so the tree is identical to HEAD.
+
+    On any failure, attempts a `git reset --hard HEAD` fallback — a
+    dirty tree carried into the next iteration would silently corrupt
+    subsequent commits, so leaving cleanup partial is unacceptable.
+
+    Returns ``True`` on success, ``False`` if any subprocess call
+    returned non-zero (failure is logged but never raised, so the
+    outer loop keeps running).
     """
-    _run_git("checkout", "--", ".", check=False)
-    _run_git("clean", "-fd", check=False)
+    ok = True
+    co = _run_git("checkout", "--", ".", check=False)
+    if co.returncode != 0:
+        ok = False
+        _log(f"_revert_changes: checkout failed rc={co.returncode}: {co.stderr.strip()[:200]}")
+    cl = _run_git("clean", "-fd", check=False)
+    if cl.returncode != 0:
+        ok = False
+        _log(f"_revert_changes: clean failed rc={cl.returncode}: {cl.stderr.strip()[:200]}")
+    if not ok:
+        rs = _run_git("reset", "--hard", "HEAD", check=False)
+        if rs.returncode == 0:
+            _log("_revert_changes: recovered via reset --hard")
+            ok = True
+        else:
+            _log(
+                "_revert_changes: reset --hard fallback FAILED rc="
+                f"{rs.returncode}: {rs.stderr.strip()[:200]}"
+            )
+    return ok
 
 
 # ------------------------------------------------------------------- state

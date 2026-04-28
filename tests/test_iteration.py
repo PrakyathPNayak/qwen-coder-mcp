@@ -551,3 +551,64 @@ class TestPruneDirOldest:
         (tmp_path / "a").write_text("a")
         L._prune_dir_oldest(tmp_path, 0)
         assert (tmp_path / "sub").exists()
+
+
+class TestRevertChanges:
+    """Loop 56: _revert_changes returns success and logs failures."""
+
+    def test_returns_true_on_success(self, monkeypatch):
+        from agent import loop as L
+
+        def fake_run(*a, **kw):
+            import subprocess
+            return subprocess.CompletedProcess(
+                args=["git", *a], returncode=0, stdout="", stderr="",
+            )
+        monkeypatch.setattr(L, "_run_git", fake_run)
+        assert L._revert_changes() is True
+
+    def test_returns_false_then_recovers_via_reset(self, monkeypatch):
+        from agent import loop as L
+        import subprocess
+        calls = []
+
+        def fake_run(*a, **kw):
+            calls.append(a)
+            # First two calls (checkout, clean) fail; reset succeeds
+            if a[0] in ("checkout", "clean"):
+                return subprocess.CompletedProcess(
+                    args=["git", *a], returncode=1, stdout="", stderr="busy",
+                )
+            return subprocess.CompletedProcess(
+                args=["git", *a], returncode=0, stdout="", stderr="",
+            )
+        monkeypatch.setattr(L, "_run_git", fake_run)
+        assert L._revert_changes() is True
+        # Verify reset was actually attempted
+        assert any(c[0] == "reset" for c in calls)
+
+    def test_returns_false_when_reset_also_fails(self, monkeypatch):
+        from agent import loop as L
+        import subprocess
+
+        def fake_run(*a, **kw):
+            return subprocess.CompletedProcess(
+                args=["git", *a], returncode=1, stdout="", stderr="locked",
+            )
+        monkeypatch.setattr(L, "_run_git", fake_run)
+        assert L._revert_changes() is False
+
+    def test_skips_reset_when_first_pass_succeeds(self, monkeypatch):
+        from agent import loop as L
+        import subprocess
+        calls = []
+
+        def fake_run(*a, **kw):
+            calls.append(a[0])
+            return subprocess.CompletedProcess(
+                args=["git", *a], returncode=0, stdout="", stderr="",
+            )
+        monkeypatch.setattr(L, "_run_git", fake_run)
+        L._revert_changes()
+        assert calls == ["checkout", "clean"]
+        assert "reset" not in calls

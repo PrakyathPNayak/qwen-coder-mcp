@@ -1171,3 +1171,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 8 but cheap.
 - ACT: 3 new tests on the canonical helper. 361 passed, 1 skipped.
 - COMMIT: pending.
+
+## Loop 56 — `_revert_changes` rc check + reset fallback
+- OBSERVE: `_revert_changes` was fire-and-forget. If checkout/clean failed (lock contention, EBUSY, weird mode bits), the next iteration could see a *dirty tree* and apply on top — silently committing stale + new changes together. Bucket 4 (logic bug → silent corruption).
+- ORIENT: Highest-impact fix in current candidates. Cause is the missing rc inspection.
+- DECIDE: inspect both subprocess rcs, log on failure, attempt `git reset --hard HEAD` as fallback when either failed; return bool to allow callers to react if needed (currently advisory).
+- DEVIL:
+  - Correctness: reset --hard is safe — it discards both staged and unstaged changes; same intent as the (failed) checkout+clean. Test verifies recovery path.
+  - Scope: kept signature compatible; existing callers ignore the return — no behavior change for green path. Verified — 361 pre-existing tests still pass.
+  - Priority: this is bucket 4 — exactly the priority-1 class. Right call.
+- ACT: 4 new tests covering success / partial-failure-recovery / total-failure / no-reset-on-success. 365 passed, 1 skipped.
+- COMMIT: pending.
