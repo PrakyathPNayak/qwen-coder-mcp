@@ -1471,7 +1471,7 @@ def main() -> None:
                 outcome = _iteration(
                     client, settings.loop_max_file_bytes, settings.loop_push
                 )
-                _log(f"iteration -> {outcome}")
+                _log(f"iteration [{_outer_outcome_category(outcome)}] -> {outcome}")
             except Exception:  # never break the loop
                 _log("iteration crashed:\n" + traceback.format_exc())
             time.sleep(max(1, settings.loop_interval_seconds))

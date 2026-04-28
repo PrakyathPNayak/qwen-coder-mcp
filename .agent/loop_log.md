@@ -1261,3 +1261,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 6, complementary to loop 62.
 - ACT: 4 new tests (add-fail, commit-fail, ok, source-audit). Updated 2 existing assertions. 391 passed.
 - COMMIT: pending.
+
+## Loop 64 — runtime.log category prefix
+- OBSERVE: `runtime.log`'s `iteration -> {outcome}` lines lacked the structured category. timing.log got it in loop 61; mirror it in runtime.log so `grep '\[applied\]' runtime.log` works.
+- ORIENT: Bucket 5/6 — observability symmetry between the two log surfaces.
+- DECIDE: Wrap category in brackets: `iteration [{category}] -> {outcome}`. Bracket form is unambiguous against outcome strings (which never contain `[`).
+- DEVIL:
+  - Correctness: `_outer_outcome_category` is pure; can't crash. `_log` already swallows on its own write path.
+  - Scope: this is the symmetric fix to loop 61, not a bandaid.
+  - Priority: bucket 5/6, parallel to loop 61.
+- ACT: 2 tests (source-format + format-for-known-categories). 393 passed.
+- COMMIT: pending.

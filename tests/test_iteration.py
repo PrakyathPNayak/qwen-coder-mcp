@@ -835,3 +835,25 @@ class TestCommitAndPushTriState:
         # And the tri-state branch exists.
         assert 'commit_status == "empty"' in src
         assert 'commit_status == "ok"' in src
+
+
+class TestRuntimeLogCategoryPrefix:
+    """Loop 64: runtime.log iteration line includes category bracket."""
+
+    def test_main_loop_log_format(self):
+        from agent import loop as L
+        src = Path(L.__file__).read_text(encoding="utf-8")
+        assert 'f"iteration [{_outer_outcome_category(outcome)}] -> {outcome}"' in src
+
+    def test_log_line_format_for_known_categories(self, monkeypatch):
+        # Direct format check: simulate the f-string with known outcomes.
+        from agent import loop as L
+        cases = {
+            "applied:foo.py": "iteration [applied] -> applied:foo.py",
+            "no_candidate_files": "iteration [no_candidate_files] -> no_candidate_files",
+            "revert_failed:x:after_validation": "iteration [revert_failed] -> revert_failed:x:after_validation",
+            "commit_skipped_empty:y": "iteration [commit_skipped_empty] -> commit_skipped_empty:y",
+        }
+        for outcome, expected in cases.items():
+            line = f"iteration [{L._outer_outcome_category(outcome)}] -> {outcome}"
+            assert line == expected
