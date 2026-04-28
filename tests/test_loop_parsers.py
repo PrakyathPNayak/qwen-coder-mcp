@@ -160,13 +160,68 @@ class TestApplyDiff:
         assert (repo_root / "hello.py").read_text() == "print('b')\n"
 
 
+# ------------------------------------------------------- _validate_changed_files
+class TestValidateChangedFiles:
+    def test_no_validatable_paths_is_ok(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, _ = L._validate_changed_files([Path("README.md")])
+        assert ok is True
+
+    def test_valid_py_passes(self, tmp_path, monkeypatch):
+        (tmp_path / "good.py").write_text("x = 1\n")
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, msg = L._validate_changed_files([Path("good.py")])
+        assert ok is True, msg
+
+    def test_python_syntax_error_fails(self, tmp_path, monkeypatch):
+        (tmp_path / "bad.py").write_text("def f(:\n  pass\n")
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, msg = L._validate_changed_files([Path("bad.py")])
+        assert ok is False
+        assert msg.startswith("py_invalid")
+
+    def test_json_invalid_fails(self, tmp_path, monkeypatch):
+        (tmp_path / "x.json").write_text("{ not json")
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, msg = L._validate_changed_files([Path("x.json")])
+        assert ok is False
+        assert "json_invalid" in msg
+
+    def test_json_valid_passes(self, tmp_path, monkeypatch):
+        (tmp_path / "x.json").write_text('{"a": 1}')
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, _ = L._validate_changed_files([Path("x.json")])
+        assert ok is True
+
+    def test_toml_invalid_fails(self, tmp_path, monkeypatch):
+        (tmp_path / "p.toml").write_text("name = 'unterminated\n[oops")
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, msg = L._validate_changed_files([Path("p.toml")])
+        assert ok is False
+        assert "toml_invalid" in msg
+
+    def test_toml_valid_passes(self, tmp_path, monkeypatch):
+        (tmp_path / "p.toml").write_text("[a]\nb = 1\n")
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, _ = L._validate_changed_files([Path("p.toml")])
+        assert ok is True
+
+    def test_missing_file_skipped(self, tmp_path, monkeypatch):
+        # a path can be in `git diff --name-only` because it was deleted —
+        # validation must not crash on a non-existent path.
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, _ = L._validate_changed_files([Path("gone.json")])
+        assert ok is True
+
+
 # ------------------------------------------------------- _python_syntax_ok
 class TestPythonSyntaxOk:
+    """Kept for backward compatibility — alias of _validate_changed_files."""
+
     def test_no_py_paths_is_ok(self, tmp_path, monkeypatch):
         monkeypatch.setattr(L, "_REPO", tmp_path)
-        ok, msg = L._python_syntax_ok([Path("README.md")])
+        ok, _ = L._python_syntax_ok([Path("README.md")])
         assert ok is True
-        assert msg == "no_py"
 
     def test_valid_py_passes(self, tmp_path, monkeypatch):
         (tmp_path / "good.py").write_text("x = 1\n")

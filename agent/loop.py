@@ -184,19 +184,55 @@ def _apply_diff(diff_text: str) -> tuple[bool, str]:
     return True, "applied"
 
 
-def _python_syntax_ok(paths: Iterable[Path]) -> tuple[bool, str]:
-    py = [str(_REPO / p) for p in paths if str(p).endswith(".py")]
-    if not py:
-        return True, "no_py"
-    proc = subprocess.run(
-        [sys.executable, "-m", "compileall", "-q", *py],
-        cwd=_REPO,
-        text=True,
-        capture_output=True,
-    )
-    if proc.returncode != 0:
-        return False, proc.stdout + proc.stderr
+def _validate_changed_files(paths: Iterable[Path]) -> tuple[bool, str]:
+    """Validate touched files by extension. Rejects diffs that produce
+    syntactically invalid Python, JSON, TOML, or YAML.
+
+    Returns (ok, message). Unknown extensions are skipped silently.
+    """
+    paths = [Path(p) for p in paths]
+    py = [str(_REPO / p) for p in paths if p.suffix == ".py"]
+    if py:
+        proc = subprocess.run(
+            [sys.executable, "-m", "compileall", "-q", *py],
+            cwd=_REPO,
+            text=True,
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            return False, f"py_invalid: {(proc.stdout + proc.stderr).strip()[:300]}"
+
+    for p in paths:
+        full = _REPO / p
+        if not full.is_file():
+            continue
+        suffix = p.suffix.lower()
+        try:
+            if suffix == ".json":
+                import json
+                json.loads(full.read_text(encoding="utf-8"))
+            elif suffix == ".toml":
+                try:
+                    import tomllib
+                except ModuleNotFoundError:
+                    import tomli as tomllib  # type: ignore[no-redef]
+                with full.open("rb") as fh:
+                    tomllib.load(fh)
+            elif suffix in {".yml", ".yaml"}:
+                try:
+                    import yaml  # type: ignore[import-not-found]
+                except ModuleNotFoundError:
+                    continue
+                yaml.safe_load(full.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001 — surface any parse error
+            return False, f"{suffix.lstrip('.')}_invalid:{p}: {str(exc)[:200]}"
+
     return True, "ok"
+
+
+def _python_syntax_ok(paths: Iterable[Path]) -> tuple[bool, str]:
+    """Backwards-compatible alias kept for any external callers / tests."""
+    return _validate_changed_files(paths)
 
 
 def _changed_paths() -> list[Path]:
@@ -321,15 +357,15 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
         return f"apply_failed:{rel}:{msg[:80]}"
 
     changed = _changed_paths()
-    syn_ok, syn_msg = _python_syntax_ok(changed)
+    syn_ok, syn_msg = _validate_changed_files(changed)
     if not syn_ok:
         _revert_changes()
         _write_history(
             f"{int(time.time())}-syntax-failed.md",
-            history_body + f"SYNTAX FAILED:\n```\n{syn_msg}\n```\n",
+            history_body + f"VALIDATION FAILED:\n```\n{syn_msg}\n```\n",
         )
-        _append_state(f"- {_now()} `{rel}` — reverted (syntax)\n")
-        return f"syntax_failed:{rel}"
+        _append_state(f"- {_now()} `{rel}` — reverted ({syn_msg[:60]})\n")
+        return f"validation_failed:{rel}"
 
     summary_line = issue.splitlines()[0][:72]
     commit_msg = f"fix({rel.as_posix()}): {summary_line}"
