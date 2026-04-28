@@ -1543,3 +1543,68 @@ class TestLooksLikeMarkdown:
 
     def test_empty(self) -> None:
         assert not tui.looks_like_markdown("")
+
+
+# ----------------------------------------------------------- Loop 147
+class TestPinnedSlash:
+    def test_lists_pinned_paths(self, tmp_path: Path) -> None:
+        (tmp_path / "a.md").write_text("alpha\n")
+        (tmp_path / "b.md").write_text("beta\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = [ChatMessage(role="system", content="base")]
+        tui.dispatch_slash(
+            tui.parse_slash("/pin a.md"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        tui.dispatch_slash(
+            tui.parse_slash("/pin b.md"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/pinned"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "a.md" in text
+        assert "b.md" in text
+        assert text.startswith("pinned files:")
+
+    def test_nothing_pinned(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = [ChatMessage(role="system", content="base")]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/pinned"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "nothing pinned" in text
+
+    def test_after_unpin_reports_nothing(self, tmp_path: Path) -> None:
+        (tmp_path / "a.md").write_text("alpha\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = [ChatMessage(role="system", content="base")]
+        tui.dispatch_slash(
+            tui.parse_slash("/pin a.md"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        tui.dispatch_slash(
+            tui.parse_slash("/unpin"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/pinned"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "nothing pinned" in text

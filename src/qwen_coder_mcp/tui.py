@@ -92,6 +92,7 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/export",
     "/pin",
     "/unpin",
+    "/pinned",
     "/quit",
 )
 
@@ -137,6 +138,7 @@ Slash commands:
   /export <path>       Export full chat as Markdown
   /pin <path>          Attach file to system prompt for the rest of the session
   /unpin               Clear all pinned files from the system prompt
+  /pinned              List currently pinned files
   /quit                Exit
 
 @<path> tokens in plain chat are expanded inline as file contents.
@@ -484,6 +486,28 @@ def _render_unpin(history: list[ChatMessage]) -> str:
     return "(pinned files cleared)"
 
 
+def _render_pinned(history: list[ChatMessage]) -> str:
+    """List file paths currently pinned in the system prompt.
+
+    The pin helper writes each file under a hash space heading so we can
+    parse the pinned block back into a path list without storing extra
+    state. Returns a friendly status string when nothing is pinned.
+    """
+    if not history or history[0].role != "system":
+        return "(no system prompt)"
+    content = history[0].content
+    if _PIN_MARKER not in content:
+        return "(nothing pinned)"
+    block = content.split(_PIN_MARKER, 1)[1]
+    paths: list[str] = []
+    for line in block.splitlines():
+        if line.startswith("# "):
+            paths.append(line[2:].strip())
+    if not paths:
+        return "(nothing pinned)"
+    return "pinned files:\n" + "\n".join(f"  - {p}" for p in paths)
+
+
 _GIT_ALLOWED = {"status", "log", "diff", "show", "branch", "remote", "rev-parse"}
 
 
@@ -752,6 +776,10 @@ def dispatch_slash(
         if history is None:
             return "no history available", False
         return _render_unpin(history), False
+    if name == "pinned":
+        if history is None:
+            return "no history available", False
+        return _render_pinned(history), False
     return f"unknown command: /{name}  (try /help)", False
 
 

@@ -2078,3 +2078,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P3 user requested parity with claude code copilot ml intern.
 - ACT: looks_like_markdown helper plus _MARKDOWN_HINTS tuple. App._post_assistant method called from both streaming success path and AttributeError fallback. Nine new heuristic tests cover fenced code heading bullet list numbered list blockquote bold plain short text plain paragraph and empty input. Eight hundred thirty six passed.
 
+
+## Loop 147 — /pinned listing pinned files
+- DECIDE: pin and unpin landed in loop one forty five but a user with several pins has no way to inspect what is currently attached. Add /pinned to list pinned file paths back from the system prompt.
+- DEVIL:
+  - Correctness: parses the same hash space heading the pin helper writes so the parse and write stay in sync. No separate state to drift. When the marker is missing or no headings follow it returns nothing pinned.
+  - Scope: not a full pin manifest but enough for the user to see which files are attached. P5 utility.
+  - Priority: low risk small surface area.
+- ACT: _render_pinned helper splits the system message on the marker collects lines starting with hash space and reports them. SLASH_COMMANDS gains pinned. Dispatcher branch added. Help text updated. Three tests cover listing two pins reporting nothing pinned and reporting nothing pinned after unpin. Eight hundred thirty nine passed.
+
