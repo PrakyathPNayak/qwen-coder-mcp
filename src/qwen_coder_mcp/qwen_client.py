@@ -1033,6 +1033,55 @@ class QwenClient:
                 )
             payload.update(extra)
 
+        # Loop 255: streaming auto-continue. Mirrors the chat() loop:
+        # if a stream completes with finish_reason="length" and
+        # auto-continue is enabled, we pause emission, append the
+        # captured partial as an assistant turn + a continuation-prompt
+        # user turn, and re-issue the stream. The TRUNCATION_MARKER is
+        # only ever yielded if the round-cap fires (or auto-continue is
+        # disabled).
+        running_messages: list[dict[str, Any]] = list(payload["messages"])
+        auto_continue = _auto_continue_enabled()
+        max_rounds = _auto_continue_max_rounds()
+        rounds_done = 0
+
+        while True:
+            payload["messages"] = running_messages
+            state: dict[str, Any] = {
+                "finish_reason": None,
+                "accumulated": "",
+            }
+            yield from self._stream_one(payload, state)
+            finish_reason = state["finish_reason"]
+            partial = state["accumulated"]
+            if not auto_continue or max_rounds <= 0:
+                if finish_reason == "length":
+                    yield f"\n\n{TRUNCATION_MARKER}"
+                return
+            if finish_reason != "length":
+                return
+            # Truncated. Stop if continuing would loop on empty output.
+            if not partial.strip():
+                yield f"\n\n{TRUNCATION_MARKER}"
+                return
+            rounds_done += 1
+            if rounds_done >= max_rounds:
+                yield f"\n\n{TRUNCATION_MARKER}"
+                return
+            running_messages = [
+                *running_messages,
+                {"role": "assistant", "content": partial},
+                {"role": "user", "content": _auto_continue_prompt()},
+            ]
+
+    def _stream_one(
+        self, payload: dict[str, Any], state: dict[str, Any]
+    ) -> Iterable[str]:
+        """Loop 255: single SSE stream pass. Yields text chunks and
+        records the final ``finish_reason`` + accumulated assistant
+        text into ``state`` (a mutable dict supplied by the caller) so
+        the auto-continue driver can decide whether to re-issue.
+        """
         with self._client.stream(
             "POST", "/chat/completions", json=payload
         ) as resp:
@@ -1043,6 +1092,7 @@ class QwenClient:
                 raise QwenFatalError(f"stream client error {resp.status_code}: {body}")
             think_filter = _StreamingThinkStripFilter()
             stream_finish_reason: str | None = None
+            accumulated: list[str] = []
             for line in resp.iter_lines():
                 if not line:
                     continue
@@ -1053,18 +1103,12 @@ class QwenClient:
                 data_str = line[len("data:"):].strip()
                 if not data_str or data_str == "[DONE]":
                     if data_str == "[DONE]":
-                        # Flush any held-back tail before ending the
-                        # stream so non-tag suffix tokens still reach
-                        # the consumer.
                         tail = think_filter.flush()
                         if tail:
+                            accumulated.append(tail)
                             yield tail
-                        # Loop 237: streaming-path parity with loop 236.
-                        # Surface max_tokens truncation by emitting the
-                        # marker after the tail flush so consumers see
-                        # the same signal the non-stream path produces.
-                        if stream_finish_reason == "length":
-                            yield f"\n\n{TRUNCATION_MARKER}"
+                        state["finish_reason"] = stream_finish_reason
+                        state["accumulated"] = "".join(accumulated)
                         return
                     continue
                 try:
@@ -1075,9 +1119,6 @@ class QwenClient:
                     choice0 = obj["choices"][0]
                 except (KeyError, IndexError):
                     continue
-                # Latch the finish_reason from any chunk that carries
-                # one (vLLM emits it on the final delta). null/missing
-                # values don't overwrite a previously-seen reason.
                 fr = choice0.get("finish_reason")
                 if isinstance(fr, str) and fr:
                     stream_finish_reason = fr
@@ -1086,6 +1127,7 @@ class QwenClient:
                 if isinstance(content, str) and content:
                     cleaned = think_filter.feed(content)
                     if cleaned:
+                        accumulated.append(cleaned)
                         yield cleaned
                 elif isinstance(content, list):
                     for block in content:
@@ -1094,14 +1136,14 @@ class QwenClient:
                             if t:
                                 cleaned = think_filter.feed(t)
                                 if cleaned:
+                                    accumulated.append(cleaned)
                                     yield cleaned
-            # Stream ended without an explicit [DONE] sentinel; still
-            # flush so a held tail isn't silently dropped.
             tail = think_filter.flush()
             if tail:
+                accumulated.append(tail)
                 yield tail
-            if stream_finish_reason == "length":
-                yield f"\n\n{TRUNCATION_MARKER}"
+            state["finish_reason"] = stream_finish_reason
+            state["accumulated"] = "".join(accumulated)
 
     @staticmethod
     def _extract_text_and_finish(data: dict[str, Any]) -> tuple[str, str | None]:
