@@ -32,6 +32,7 @@ def _client_with(handler) -> QwenClient:
         model="qwen3.6-27b",
         timeout=5,
         max_tokens=64,
+        server_max_len=2048,
         loop_interval_seconds=1,
         loop_max_file_bytes=1000,
         loop_push=False,
@@ -545,3 +546,108 @@ class TestHealthCheck:
         assert res["ok"] is False
         assert "http://test/v1" in res["error"]
         assert "ReadError" in res["error"]
+
+
+# ----------------------------------------------------- max_tokens clamping
+class TestResolveMaxTokens:
+    """vLLM raises VLLMValidationError when max_tokens > max_model_len.
+    The client clamps the requested completion budget against
+    settings.server_max_len so the request goes through with a smaller
+    completion instead of a 400 from upstream. See loop 158."""
+
+    def _client(self, server_max_len: int, max_tokens: int = 4096) -> QwenClient:
+        settings = Settings(
+            base_url="http://test/v1",
+            api_key="EMPTY",
+            model="qwen3.6-27b",
+            timeout=5,
+            max_tokens=max_tokens,
+            server_max_len=server_max_len,
+            loop_interval_seconds=1,
+            loop_max_file_bytes=1000,
+            loop_push=False,
+        )
+        c = QwenClient(settings=settings)
+        c._client = httpx.Client(
+            transport=httpx.MockTransport(lambda r: _ok_response("ok")),
+            base_url=settings.base_url,
+            timeout=settings.timeout,
+        )
+        return c
+
+    def test_clamps_against_server_max_len(self):
+        c = self._client(server_max_len=2048, max_tokens=4096)
+        out = c._resolve_max_tokens([ChatMessage(role="user", content="hi")], None)
+        assert out <= 2048
+        assert out > 0
+
+    def test_short_prompt_keeps_most_of_budget(self):
+        c = self._client(server_max_len=2048, max_tokens=1024)
+        # "hi" is one estimated token, headroom is 64, so the cap from the
+        # server side is 2048 - 1 - 64 ~= 1983. Requested budget is 1024.
+        # min(1024, 1983) == 1024.
+        out = c._resolve_max_tokens(
+            [ChatMessage(role="user", content="hi")], None
+        )
+        assert out == 1024
+
+    def test_long_prompt_eats_into_completion_budget(self):
+        c = self._client(server_max_len=2048, max_tokens=4096)
+        big = "x" * 8000  # ~2000 tokens, larger than the 2048 cap minus 64 headroom
+        out = c._resolve_max_tokens(
+            [ChatMessage(role="user", content=big)], None
+        )
+        # Must be at least 1 (we always send something) and well below 4096.
+        assert 1 <= out < 100
+
+    def test_explicit_request_still_clamped(self):
+        c = self._client(server_max_len=2048, max_tokens=1024)
+        out = c._resolve_max_tokens(
+            [ChatMessage(role="user", content="hi")], requested=4096
+        )
+        assert out <= 2048
+
+    def test_zero_server_max_len_disables_clamp(self):
+        c = self._client(server_max_len=0, max_tokens=4096)
+        out = c._resolve_max_tokens(
+            [ChatMessage(role="user", content="hi")], None
+        )
+        assert out == 4096
+
+    def test_dict_messages_estimate_tokens_too(self):
+        c = self._client(server_max_len=2048, max_tokens=4096)
+        out = c._resolve_max_tokens(
+            [{"role": "user", "content": "x" * 8000}], None
+        )
+        assert 1 <= out < 100
+
+    def test_chat_payload_sends_clamped_max_tokens(self):
+        seen: dict = {}
+
+        def handler(request):
+            import json as _j
+            seen.update(_j.loads(request.content))
+            return _ok_response("ok")
+
+        settings = Settings(
+            base_url="http://test/v1",
+            api_key="EMPTY",
+            model="qwen3.6-27b",
+            timeout=5,
+            max_tokens=4096,
+            server_max_len=2048,
+            loop_interval_seconds=1,
+            loop_max_file_bytes=1000,
+            loop_push=False,
+        )
+        c = QwenClient(settings=settings)
+        c._client = httpx.Client(
+            transport=httpx.MockTransport(handler),
+            base_url=settings.base_url,
+            timeout=settings.timeout,
+        )
+        c.chat([ChatMessage(role="user", content="hi")])
+        assert seen["max_tokens"] <= 2048, (
+            "client must clamp max_tokens before sending so vllm does "
+            "not raise VLLMValidationError"
+        )

@@ -85,6 +85,41 @@ class QwenClient:
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
+    def _resolve_max_tokens(
+        self,
+        messages: Sequence[ChatMessage | dict[str, str]],
+        requested: int | None,
+    ) -> int:
+        """Clamp the requested completion budget against the server cap.
+
+        vLLM raises ``VLLMValidationError`` when ``max_tokens`` exceeds
+        the server's ``--max-model-len`` (it counts prompt + completion
+        against the same budget). We mirror that constraint client-side
+        so the user gets a small completion instead of a 400 from the
+        upstream server when their config and the serve script drift
+        out of sync (e.g. ``QWEN_MAX_TOKENS=4096`` on the client but
+        ``QWEN_SERVE_MAX_LEN=2048`` on the server).
+
+        Returns at least 1, even on tiny budgets, so the request still
+        goes through and the server can produce a one-token error.
+        """
+        budget = requested or self.settings.max_tokens
+        cap = getattr(self.settings, "server_max_len", 0) or 0
+        if cap <= 0:
+            return max(1, budget)
+        prompt_tokens = 0
+        for m in messages:
+            content = m.content if isinstance(m, ChatMessage) else m.get("content", "")
+            if isinstance(content, str):
+                # Same crude estimator as tui.estimate_tokens (~4 chars/token)
+                prompt_tokens += max(1, len(content) // 4)
+        # Reserve 64 tokens of headroom for chat template overhead so we
+        # don't slam right against the server's wall.
+        room = cap - prompt_tokens - 64
+        if room <= 0:
+            return 1
+        return max(1, min(budget, room))
+
     def health_check(self, timeout: float = 2.0) -> dict[str, Any]:
         """Probe the backend with a short GET /models call.
 
@@ -161,7 +196,7 @@ class QwenClient:
             ],
             "temperature": temperature,
             "top_p": top_p,
-            "max_tokens": max_tokens or self.settings.max_tokens,
+            "max_tokens": self._resolve_max_tokens(messages, max_tokens),
             "stream": False,
         }
         if stop:
@@ -246,7 +281,7 @@ class QwenClient:
             ],
             "temperature": temperature,
             "top_p": top_p,
-            "max_tokens": max_tokens or self.settings.max_tokens,
+            "max_tokens": self._resolve_max_tokens(messages, max_tokens),
             "stream": True,
         }
         if stop:

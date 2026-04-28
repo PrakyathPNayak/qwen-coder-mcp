@@ -21,6 +21,7 @@ def _make_client(handler) -> QwenClient:
         model="qwen",
         timeout=10.0,
         max_tokens=128,
+        server_max_len=2048,
         loop_interval_seconds=60,
         loop_max_file_bytes=200_000,
         loop_push=False,

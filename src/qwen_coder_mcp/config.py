@@ -19,6 +19,7 @@ class Settings:
     model: str
     timeout: float
     max_tokens: int
+    server_max_len: int
     loop_interval_seconds: int
     loop_max_file_bytes: int
     loop_push: bool
@@ -40,7 +41,16 @@ def load_settings(env_file: str | os.PathLike[str] | None = None) -> Settings:
         api_key=_env("QWEN_API_KEY", "EMPTY"),
         model=_env("QWEN_MODEL", "qwen3.6-27b"),
         timeout=float(_env("QWEN_TIMEOUT", "120")),
-        max_tokens=int(_env("QWEN_MAX_TOKENS", "4096")),
+        # Default chosen so prompt+completion fits inside the serve
+        # script's default max-model-len of 2048. vLLM rejects requests
+        # where max_tokens > max_model_len with a VLLMValidationError,
+        # so 1024 leaves 1024 tokens of prompt room. Override with
+        # QWEN_MAX_TOKENS if you raised QWEN_SERVE_MAX_LEN on the server.
+        max_tokens=int(_env("QWEN_MAX_TOKENS", "1024")),
+        # Hard ceiling the client uses to clamp max_tokens before each
+        # request. Should match the vllm --max-model-len the server was
+        # started with. The default tracks scripts/serve_qwen.sh.
+        server_max_len=int(_env("QWEN_SERVER_MAX_LEN", _env("QWEN_SERVE_MAX_LEN", "2048"))),
         loop_interval_seconds=int(_env("LOOP_INTERVAL_SECONDS", "45")),
         loop_max_file_bytes=int(_env("LOOP_MAX_FILE_BYTES", "60000")),
         loop_push=_env("LOOP_PUSH", "1") not in {"0", "false", "False", "no"},

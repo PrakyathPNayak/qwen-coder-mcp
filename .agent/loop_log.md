@@ -2193,3 +2193,20 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P3, helps every misconfigured user immediately.
 - ACT: qwen_client.health_check now formats the three exception branches with `at {self.settings.base_url}` and the ConnectError hint additionally suggests `curl -fsS {base_url}/models`. Three new tests in TestHealthCheck assert the base_url appears in the error message for ConnectError ConnectTimeout and a generic ReadError plus that the curl probe in the hint references the same url. eight hundred ninety nine passed.
 
+
+## Loop 158 - fix the vllm validation error caused by the client/server max_tokens drift
+- OBSERVE: user's serve log now shows `vllm.exceptions.VLLMValidationError: max_tokens=4096 cannot be greater than max_model_len=max_total_tokens=2048` repeating per chat request. After loop 154 cut the server max-model-len to 2048 to fix the OOM, the client side default QWEN_MAX_TOKENS stayed at 4096, so every request was DOA. Tests did not catch this because nothing asserted that the client default fits inside the server default.
+- DECIDE: two fixes. First, lower the client default to 1024 so a fresh install works out of the box. Second, add a server_max_len field to Settings (env QWEN_SERVER_MAX_LEN, falling back to QWEN_SERVE_MAX_LEN) and clamp every chat request's max_tokens at submit time, accounting for the prompt token estimate plus 64 tokens of chat-template headroom. That way a stale .env or a serve-script bump still works.
+- DEVIL:
+  - Correctness: the clamp uses an estimator (4 chars per token) that mirrors tui.estimate_tokens. It is conservative for english and aggressive for code-heavy prompts; the 64-token headroom protects against off-by-template-overhead errors. Returns at least 1 so the request still goes through. The clamp test sends an 8000-char prompt and asserts the returned budget is below 100, demonstrating the clamp activates on long prompts.
+  - Scope: real symptom is 400-from-vllm; real cause is no client-side knowledge of the server cap. Fix at both the default level and the clamp level so neither alone has to be perfect.
+  - Priority: P1. This is the live error blocking the user from chatting. Goes ahead of every P3+ candidate.
+- ACT:
+  - config.py: Settings gains server_max_len. load_settings reads QWEN_SERVER_MAX_LEN with a QWEN_SERVE_MAX_LEN fallback so the server-side env knob doubles as the client cap. QWEN_MAX_TOKENS default dropped from 4096 to 1024.
+  - qwen_client.py: new _resolve_max_tokens method on QwenClient. Both chat() and chat_stream() now route max_tokens through it. system_user() unchanged because it forwards max_tokens to chat().
+  - tests/test_qwen_client.py: TestResolveMaxTokens with seven cases covering clamp against server cap, short-prompt budget retention, long-prompt eating most of the budget, explicit-request still clamped, server_max_len=0 disabling clamp, dict-message support, and end-to-end via chat() asserting the payload has the clamped value.
+  - tests/test_config_settings.py: new file. TestDefaultSettings asserts max_tokens default fits inside server_max_len default and locks the specific values 1024 and 2048. TestSettingsOverrides covers QWEN_SERVER_MAX_LEN, the QWEN_SERVE_MAX_LEN fallback, explicit-overrides-fallback, QWEN_MAX_TOKENS override, and the frozen-dataclass invariant. autouse fixture wipes QWEN_ and LOOP_ env vars per test.
+  - tests/test_tui.py, tests/test_chat_stream.py: every Settings(...) test fixture grew a `server_max_len=2048,` line so the constructor still accepts the old kwargs.
+  - .env.example: QWEN_MAX_TOKENS=1024 plus a new QWEN_SERVER_MAX_LEN=2048 with comments explaining the relationship.
+- VERIFY: nine hundred fourteen passed one skipped (was eight hundred ninety nine; +15 = seven clamp tests, eight config tests, plus mechanical Settings shim adjustments). Smoke: load_settings with no env shows max_tokens=1024 server_max_len=2048; _resolve_max_tokens on a short prompt returns 1024.
+
