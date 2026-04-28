@@ -2603,3 +2603,20 @@ read-only operation, no state changes.
 **Act.** Added `rotate_agent_checkpoints` and `list_agent_checkpoints` next to `save_agent_checkpoint`. Updated TUI's `_agent_checkpoint` closure to call `rotate_agent_checkpoints(target, hist, keep=5)`. New `tests/test_rotate_checkpoints.py` with 9 cases: writes primary+snapshot, primary tracks latest, keeps last N, `keep=0` retains all, prunes oldest first, lexicographic-sort matches chronological, missing-dir returns empty, primary-only returns empty, foreign-stem files filtered out.
 
 **Verify.** `pytest -x -q` → ~1k passed, 1 skipped.
+
+## Loop 180 — `/checkpoints` slash command (list / load / prune)
+
+**Observe.** Loop 179 added rotation infrastructure but no UI surface — `.agent/checkpoints/` quietly fills up and there's no way to inspect or roll back from inside the TUI without dropping to a shell. `/resume` only knows about the primary file.
+
+**Orient.** Three things a user needs from rotated state: see what's there, load any specific snapshot, and prune them down. A single command with subcommands matches the existing `/git`, `/agent_*` style.
+
+**Decide.** Add `/checkpoints` with three forms: bare = list (1-indexed, oldest-first, with mtime + size), `load N` = rehydrate snapshot N into history in-place, `prune K` = delete all but newest K. Pure renderer `_format_checkpoint_listing` so listing is unit-testable without booting the App.
+
+**Devil.**
+- *Correctness:* In-place mutation matters — TUI's App holds the same `history` reference. Test `test_load_replaces_history_in_place` pins `id(history)` before/after. ✅
+- *Scope:* Why 1-indexed-oldest-first? Matches `_format_checkpoint_listing`'s output users will read with their eyes; reversed indexing would force mental arithmetic. ✅
+- *Priority:* `/lat` (timing breakdown) is also queued but doesn't have the gravity of "I just need to roll back to the last good state". ✅
+
+**Act.** New `_format_checkpoint_listing(snapshots) -> str` next to `_role_counts`. Dispatch branch for `name == "checkpoints"` after `/resume`, handles bare/load/prune with explicit error rendering for missing args, non-integer indices, out-of-range, and unknown subcommands. `/checkpoints` registered in `SLASH_COMMANDS` and `HELP_TEXT`.
+
+**Verify.** `pytest -x -q` → ~1.1k passed, 1 skipped. New file `tests/test_checkpoints_slash.py` with 17 cases across 6 test classes.

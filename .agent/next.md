@@ -1,9 +1,9 @@
-# Loop 180 candidates
+# Loop 181 candidates
 
-1. **`/checkpoints` slash command** — list rotated snapshots with file mtimes; `/checkpoints load <n>` rehydrates a specific one.
-2. **`/lat` slash command** — print last-turn timing breakdown (TTFT + per-tool list + summary) in tabular form using the events emitted in loops 175-178.
-3. **Live vLLM smoke test of `<tool_call>` protocol** (opt-in, `pytest -m live`).
-4. **Per-loop devil's advocate prompt** — `--devil` flag on `run_agent` injecting a critic turn before the final answer.
-5. **Agent transcript pretty-print to stdout** — when running `/agent` outside the TUI (e.g. from the MCP server), produce a stable text rendering.
+1. **`/lat` slash command** — pretty-print last-turn timing (TTFT + per-tool list + summary) using events emitted by loops 175-178.
+2. **Auto-load latest checkpoint on TUI boot** — if `agent_state.json` is missing/corrupt, fall back to newest rotation in `checkpoints/`.
+3. **`/agent --resume`** — start a turn with the last checkpoint pre-loaded.
+4. **Configurable `keep` for rotation** — currently hardcoded to 5 in TUI; expose via env or config setting.
+5. **Live vLLM smoke test** of `<tool_call>` protocol (opt-in, `pytest -m live`).
 
-(1) is the obvious follow-up — the rotation infrastructure landed in this loop has no UI surface yet.
+(2) is the natural follow-up — the rotated fallback exists in helper form but isn't wired into the boot path, so a corrupt primary still leaves users dead in the water until they run `/checkpoints load`.

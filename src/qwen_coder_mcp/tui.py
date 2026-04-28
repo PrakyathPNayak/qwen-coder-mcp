@@ -82,6 +82,7 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/find",
     "/clear",
     "/resume",
+    "/checkpoints",
     "/save",
     "/git",
     "/tests",
@@ -140,6 +141,10 @@ Slash commands:
   /find <glob> [path]  Glob search through the repo
   /clear               Clear chat history
   /resume              Reload .agent/agent_state.json into chat history
+  /checkpoints [load N|prune K]
+                       List rotated agent-state snapshots; `load N` rehydrates
+                       snapshot N (1-based, oldest first) into history;
+                       `prune K` deletes all but the newest K snapshots
   /save <path>         Save the current chat transcript to a file
   /git <subcmd>        Read-only git status / log / diff / show / branch
   /tests [args]        Run pytest in the repo
@@ -268,6 +273,31 @@ def _last_assistant_reply(history: list[ChatMessage]) -> str | None:
         if msg.role == "assistant":
             return msg.content
     return None
+
+
+def _format_checkpoint_listing(snapshots: list[Path]) -> str:
+    """Render rotated agent-state snapshots as a one-per-line listing.
+
+    Lines are 1-indexed, oldest-first, and include the file's mtime in
+    UTC ISO-8601 plus its size in bytes. Pure so /checkpoints tests
+    don't need to spin up the App.
+    """
+    if not snapshots:
+        return "(no rotated checkpoints found)"
+    from datetime import datetime, timezone
+
+    rows: list[str] = []
+    for idx, snap in enumerate(snapshots, start=1):
+        try:
+            stat = snap.stat()
+            mtime = datetime.fromtimestamp(
+                stat.st_mtime, tz=timezone.utc
+            ).strftime("%Y-%m-%d %H:%M:%SZ")
+            size = stat.st_size
+            rows.append(f"{idx:>3}. {mtime}  {size:>7}B  {snap.name}")
+        except OSError as exc:
+            rows.append(f"{idx:>3}. <stat failed: {exc}>  {snap.name}")
+    return "\n".join(rows)
 
 
 def _role_counts(history: list[ChatMessage]) -> dict[str, int]:
@@ -1069,6 +1099,66 @@ def dispatch_slash(
             if snippet else
             f"resumed {len(loaded)} messages from {target.name} ({roles})"
         ), False
+    if name == "checkpoints":
+        target = fs_cfg.root / ".agent" / "agent_state.json"
+        snaps = agent_loop.list_agent_checkpoints(target)
+        if not cmd.args:
+            return _format_checkpoint_listing(snaps), False
+        sub = cmd.args[0].lower()
+        if sub == "load":
+            if history is None:
+                return "no history available", False
+            if len(cmd.args) < 2:
+                return "usage: /checkpoints load <N>", False
+            try:
+                idx = int(cmd.args[1])
+            except ValueError:
+                return f"invalid index: {cmd.args[1]!r}", False
+            if not snaps:
+                return "(no rotated checkpoints to load)", False
+            if idx < 1 or idx > len(snaps):
+                return (
+                    f"index {idx} out of range (have {len(snaps)} snapshots)",
+                    False,
+                )
+            chosen = snaps[idx - 1]
+            loaded = agent_loop.load_agent_checkpoint(chosen)
+            if not loaded:
+                return f"checkpoint at {chosen.name} is empty/corrupt", False
+            history.clear()
+            history.extend(loaded)
+            roles = ", ".join(
+                f"{r}={c}" for r, c in _role_counts(loaded).items()
+            )
+            return (
+                f"loaded {len(loaded)} messages from {chosen.name} ({roles})",
+                False,
+            )
+        if sub == "prune":
+            if len(cmd.args) < 2:
+                return "usage: /checkpoints prune <K>", False
+            try:
+                keep = int(cmd.args[1])
+            except ValueError:
+                return f"invalid count: {cmd.args[1]!r}", False
+            if keep < 0:
+                return "keep count must be >= 0", False
+            removed = 0
+            if keep == 0:
+                victims = list(snaps)
+            else:
+                victims = snaps[:-keep] if len(snaps) > keep else []
+            for v in victims:
+                try:
+                    v.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+            return (
+                f"pruned {removed} snapshot(s); {len(snaps) - removed} remain",
+                False,
+            )
+        return f"unknown subcommand: {sub!r} (expected load|prune)", False
     if name == "save":
         if history is None:
             return "no history available", False
