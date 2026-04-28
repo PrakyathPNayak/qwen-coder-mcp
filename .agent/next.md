@@ -1,27 +1,24 @@
 # Next loop seed
 
 ## Candidates ranked
-1. **(P3) `agent/loop.py` `_call_model` has no test coverage despite being the
-   one place that talks to the LLM.** Mock `QwenClient.chat` and assert the
-   prompt template is well-formed (system+user, includes the file path, the
-   guard rails about scope, and a fenced-diff example).
+1. **(P3) Atomic `_save_cursor`.** Currently a non-atomic `write_text`. If the
+   process is killed mid-write `cursor.json` ends up empty/corrupt. Today
+   `_load_cursor` returns 0 in that case, so the loop silently restarts at
+   index 0 (potentially re-scanning the same file forever in a small repo).
+   Write to a tempfile + `os.replace`.
 
-2. **(P5) `_apply_diff` shells out to `git apply` but discards stderr.** When
-   the model emits a diff that doesn't apply, the loop logs a generic
-   "apply failed" without surfacing the actual git error, so debugging the
-   model's output requires re-running by hand. Capture and log stderr.
+2. **(P3) `_call_model` / `client.system_user` round-trip has no test.** Mock
+   `QwenClient.chat` and assert prompt assembly: includes file path, includes
+   the "diff in scope" instruction, system+user split correct.
 
-3. **(P6) `server.py` builds a `QwenClient` at import time inside
-   `_build_server` (line 18).** Not a crash because httpx.Client is lazy, but
-   it means the env must be set even when the user just imports for tooling.
-   Defer to first tool call, OR add a smoke test that imports the module
-   without `.env` present and confirms no exception.
+3. **(P5) `_apply_diff` accepts `diff` blocks but does not require trailing
+   newline on every hunk** — sometimes git apply silently corrupts. Verify by
+   normalising line endings on the input. Lower priority, may be fine.
 
-4. **(P8) `STATE.md` unbounded growth.** Loop appends forever. Cap at 1MB and
-   rotate to `.loop/state-archive/STATE-<ts>.md`.
+4. **(P6) `server.py` builds `QwenClient` at `_build_server` import path.**
+   Add a smoke test importing the module without `.env`.
 
-5. **(P8) `.agent/loop_log.md` will hit the same problem this agent has.**
-   Same fix.
+5. **(P8) `STATE.md` and `.agent/loop_log.md` unbounded growth.** Rotation.
 
 ## Reminder
 - Verify vLLM (`tail .loop/serve.log`, `ps -p 1493`) every few loops.

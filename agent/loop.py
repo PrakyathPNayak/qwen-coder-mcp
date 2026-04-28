@@ -274,12 +274,56 @@ def _diff_in_scope(changed: Iterable[Path], target: Path) -> tuple[bool, str]:
 
 
 def _changed_paths() -> list[Path]:
-    proc = _run_git("diff", "--name-only", check=False)
-    return [Path(line) for line in proc.stdout.splitlines() if line.strip()]
+    """Return every path in the working tree that differs from HEAD.
+
+    Uses ``git status --porcelain=v1 -z -uall`` so the result includes
+    modified *and* untracked files (`git diff` alone misses untracked
+    additions, which would let an out-of-scope diff that creates a new
+    file slip past `_diff_in_scope`). NUL-separated output is parsed so
+    paths containing whitespace are handled correctly.
+    """
+    proc = _run_git(
+        "status", "--porcelain=v1", "-z", "-uall", check=False
+    )
+    out: list[Path] = []
+    raw = proc.stdout
+    i = 0
+    n = len(raw)
+    while i < n:
+        # Each record: 2 status chars + ' ' + path + '\0'
+        # Renames (R/C) look like 'R  newpath\0oldpath\0'.
+        if i + 3 > n:
+            break
+        code = raw[i : i + 2]
+        i += 3  # skip 'XY '
+        end = raw.find("\0", i)
+        if end < 0:
+            break
+        path = raw[i:end]
+        i = end + 1
+        if code[0] in ("R", "C"):
+            # Rename/copy: a second NUL-terminated path follows (the source).
+            end2 = raw.find("\0", i)
+            if end2 < 0:
+                break
+            src = raw[i:end2]
+            i = end2 + 1
+            if src:
+                out.append(Path(src))
+        if path:
+            out.append(Path(path))
+    return out
 
 
 def _revert_changes() -> None:
+    """Discard every working-tree change *and* untracked files.
+
+    `git checkout -- .` only restores tracked files; untracked additions
+    (e.g. a brand-new file produced by a model diff) survive it. We
+    follow up with `git clean -fd` so the tree is identical to HEAD.
+    """
     _run_git("checkout", "--", ".", check=False)
+    _run_git("clean", "-fd", check=False)
 
 
 # ------------------------------------------------------------------- state

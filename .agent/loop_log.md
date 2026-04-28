@@ -217,3 +217,30 @@ retry-and-succeed on 408/429, retry-and-give-up on 500, recovery after one
 503, malformed empty `choices`, and content-as-list-of-blocks extraction.
 
 **Result**: 60/60 green. Commit `<filled in by git>`.
+
+## Loop 7 — Scope guard now sees untracked files
+**Bug**: `_changed_paths` used `git diff --name-only`, which lists only
+modifications to tracked files. A model-produced diff that *creates* a new
+file was invisible to `_diff_in_scope`, so the loop-4 scope guard could be
+bypassed: a diff against `agent/loop.py` could secretly add `evil.py` at the
+repo root and the loop would commit & push it. Compounding bug:
+`_revert_changes` (`git checkout -- .`) cannot delete untracked files, so
+even if the guard had caught it the file would have stayed.
+
+**Devil**: parsing porcelain output is fragile around whitespace, renames,
+and quoted paths. Counter: use `--porcelain=v1 -z -uall` (NUL-separated,
+includes all untracked, stable format), and handle the rename/copy two-path
+record explicitly.
+
+**Fix**:
+- `_changed_paths` rewritten to parse `git status --porcelain=v1 -z -uall`,
+  yielding modified + added + deleted + renamed (both source and dest).
+- `_revert_changes` now also runs `git clean -fd` so untracked files and
+  empty dirs are wiped along with tracked-file restoration.
+
+**Tests**: `tests/test_changed_paths.py`, 9 cases on a real per-test git
+repo: modified, untracked, untracked-in-subdir, path-with-spaces, deleted,
+revert-removes-untracked, revert-restores-modified, revert-clears-mixed,
+end-to-end `_diff_in_scope` catches an untracked new file.
+
+**Result**: 69/69 green. Commit `<filled by git>`.
