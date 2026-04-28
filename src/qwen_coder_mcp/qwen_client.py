@@ -161,6 +161,88 @@ class QwenClient:
                 time.sleep(min(sleep, remaining))
         raise QwenError(f"chat failed after {max_retries} attempts: {last_err}")
 
+    def chat_stream(
+        self,
+        messages: Sequence[ChatMessage | dict[str, str]],
+        *,
+        temperature: float = 0.2,
+        top_p: float = 0.95,
+        max_tokens: int | None = None,
+        stop: Iterable[str] | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> Iterable[str]:
+        """Stream a chat completion. Yields incremental token strings.
+
+        Uses the OpenAI-compatible `stream=true` SSE protocol. Lines
+        of the form `data: {...}` are parsed; `data: [DONE]` ends the
+        stream. Empty lines and other server-sent fields are ignored.
+        Malformed chunks are skipped (best-effort streaming).
+
+        No retries: streaming is interactive and a partial result is
+        more useful than blocking for a retry. Callers wanting
+        retries should fall back to `chat()`.
+        """
+        payload: dict[str, Any] = {
+            "model": self.settings.model,
+            "messages": [
+                m.to_dict() if isinstance(m, ChatMessage) else dict(m)
+                for m in messages
+            ],
+            "temperature": temperature,
+            "top_p": top_p,
+            "max_tokens": max_tokens or self.settings.max_tokens,
+            "stream": True,
+        }
+        if stop:
+            payload["stop"] = list(stop)
+        if extra:
+            reserved = {"model", "messages", "stream"}
+            conflicts = reserved.intersection(extra.keys())
+            if conflicts:
+                raise QwenFatalError(
+                    "extra cannot override reserved keys: "
+                    f"{sorted(conflicts)}"
+                )
+            payload.update(extra)
+
+        with self._client.stream(
+            "POST", "/chat/completions", json=payload
+        ) as resp:
+            if resp.status_code >= 400:
+                body = resp.read().decode("utf-8", errors="replace")[:300]
+                if resp.status_code >= 500 or resp.status_code in _RETRIABLE_4XX:
+                    raise QwenError(f"stream {resp.status_code}: {body}")
+                raise QwenFatalError(f"stream client error {resp.status_code}: {body}")
+            for line in resp.iter_lines():
+                if not line:
+                    continue
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", errors="replace")
+                if not line.startswith("data:"):
+                    continue
+                data_str = line[len("data:"):].strip()
+                if not data_str or data_str == "[DONE]":
+                    if data_str == "[DONE]":
+                        return
+                    continue
+                try:
+                    obj = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+                try:
+                    delta = obj["choices"][0].get("delta") or {}
+                except (KeyError, IndexError):
+                    continue
+                content = delta.get("content")
+                if isinstance(content, str) and content:
+                    yield content
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and "text" in block:
+                            t = str(block["text"])
+                            if t:
+                                yield t
+
     @staticmethod
     def _extract_text(data: dict[str, Any]) -> str:
         try:

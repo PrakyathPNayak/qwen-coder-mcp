@@ -1944,3 +1944,11 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: dispatch_slash now takes optional history kwarg so existing call sites without history still work; only /apply and /history require it.
   - Priority: P3 user-requested feature (TUI parity for actually executing model output).
 - ACT: ~80 lines TUI code + 12 tests (incl one anyio Pilot test that types /help and checks RichLog content). 687 passed.
+
+## Loop 132 — chat_stream SSE in QwenClient + chat_turn_stream in TUI
+- DECIDE: chat() blocks the TUI. Add chat_stream() that yields incremental tokens via OpenAI-compatible SSE protocol. Wire chat_turn_stream() into the TUI App so plain-text turns render as chunks accumulate. Keep non-streaming chat() unchanged so MCP tools and tests still work.
+- DEVIL:
+  - Correctness: parser skips comments, malformed JSON, and non-data lines. [DONE] marker terminates cleanly. 5xx and 408/425/429 raise QwenError; other 4xx raise QwenFatalError to mirror chat() classification. extra={"model":...} still rejected.
+  - Scope: no retries -- streaming is interactive, partial output is more useful than blocking. chat_turn_stream rolls back on error (no half-committed assistant message in history).
+  - Priority: P3 user-requested (TUI live render).
+- ACT: chat_stream method (~80 lines) + chat_turn_stream helper + TUI App wiring + 12 new tests (9 client SSE + 3 TUI). 699 passed.

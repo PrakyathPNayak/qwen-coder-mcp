@@ -377,3 +377,48 @@ class TestPilotSmoke:
             log = app.query_one("#log", RichLog)
             rendered = "\n".join(str(line) for line in log.lines)
             assert "Slash commands" in rendered
+
+
+class _FakeStreamingClient:
+    def __init__(self, chunks: list[str], error: Exception | None = None) -> None:
+        self.chunks = chunks
+        self.error = error
+
+    def chat_stream(self, history, **kw):
+        if self.error is not None:
+            raise self.error
+        for c in self.chunks:
+            yield c
+
+    def chat(self, history, **kw):
+        return "".join(self.chunks)
+
+    def system_user(self, *a, **kw):
+        return "n/a"
+
+
+class TestChatTurnStream:
+    def test_yields_and_commits(self) -> None:
+        client = _FakeStreamingClient(["hel", "lo"])
+        history: list[ChatMessage] = []
+        chunks: list[tuple[str, str]] = []
+        for c, accum in tui.chat_turn_stream(history, "hi", client=client):
+            chunks.append((c, accum))
+        assert chunks == [("hel", "hel"), ("lo", "hello")]
+        assert history[-1].role == "assistant"
+        assert history[-1].content == "hello"
+
+    def test_error_yields_message_no_commit(self) -> None:
+        client = _FakeStreamingClient([], error=RuntimeError("boom"))
+        history: list[ChatMessage] = []
+        out = list(tui.chat_turn_stream(history, "hi", client=client))
+        assert len(out) == 1
+        assert "stream error" in out[0][0]
+        assert "boom" in out[0][0]
+        assert all(m.role != "assistant" for m in history)
+
+    def test_preserves_existing_system(self) -> None:
+        client = _FakeStreamingClient(["x"])
+        history = [ChatMessage(role="system", content="custom")]
+        list(tui.chat_turn_stream(history, "hi", client=client))
+        assert history[0].content == "custom"

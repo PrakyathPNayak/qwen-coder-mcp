@@ -287,6 +287,37 @@ def chat_turn(
     return reply
 
 
+def chat_turn_stream(
+    history: list[ChatMessage],
+    user_text: str,
+    *,
+    client: QwenClient,
+    system: str = prompts.CODER_SYSTEM,
+):
+    """Streaming counterpart of `chat_turn`. Yields `(chunk, accum)` tuples
+    where `accum` is the full reply assembled so far. On stream end the
+    final assistant reply is appended to `history`. On error a single
+    final chunk with the error message is yielded and history rolled back
+    (the trailing user message stays so the user can retry, but no
+    partial assistant message is committed).
+    """
+    if not history or history[0].role != "system":
+        history.insert(0, ChatMessage(role="system", content=system))
+    history.append(ChatMessage(role="user", content=user_text))
+    accum_parts: list[str] = []
+    try:
+        for chunk in client.chat_stream(history):
+            accum_parts.append(chunk)
+            yield chunk, "".join(accum_parts)
+    except Exception as exc:  # noqa: BLE001
+        err = f"\n[stream error: {type(exc).__name__}: {exc}]"
+        accum_parts.append(err)
+        yield err, "".join(accum_parts)
+        return
+    final = "".join(accum_parts)
+    history.append(ChatMessage(role="assistant", content=final))
+
+
 def _default_fs_cfg() -> fs_tools.FsConfig:
     root_str = os.environ.get("QWEN_MCP_FS_ROOT") or os.getcwd()
     return fs_tools.FsConfig(root=Path(root_str))
@@ -350,8 +381,18 @@ def _build_app(
                 if quit_now:
                     self.exit()
                 return
-            reply = chat_turn(self.history, line, client=self.client)
-            log.write(f"[green]qwen>[/green] {reply}")
+            reply_parts: list[str] = []
+            try:
+                for chunk, _accum in chat_turn_stream(
+                    self.history, line, client=self.client
+                ):
+                    reply_parts.append(chunk)
+            except AttributeError:
+                # Client may not implement chat_stream -- fall back.
+                reply = chat_turn(self.history, line, client=self.client)
+                log.write(f"[green]qwen>[/green] {reply}")
+                return
+            log.write(f"[green]qwen>[/green] {''.join(reply_parts)}")
 
     return QwenTUI
 
