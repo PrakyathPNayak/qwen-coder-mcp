@@ -520,3 +520,77 @@ class TestCategoryAndPhaseFilters:
         readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
         assert "--category" in readme
         assert "--phase" in readme
+
+
+class TestExitRecordsLoop229:
+    """Loop 229: timing_analyze surfaces the loop-226 synthetic
+    exit:<reason> records (shutdown breadcrumbs) so analytics can
+    join them to runtime.log via the iteration_count field."""
+
+    def test_analyze_collects_exit_records(self):
+        from agent.timing_analyze import analyze
+        recs = [
+            {"category": "applied", "outcome": "applied", "wall_s": 1.0, "phases": {}},
+            {
+                "ts": "2026-04-28T12:00:00Z",
+                "category": "exit",
+                "outcome": "exit:sigterm",
+                "phases": {},
+                "iteration_count": 42,
+            },
+            {
+                "ts": "2026-04-28T13:00:00Z",
+                "category": "exit",
+                "outcome": "exit:keyboard-interrupt",
+                "phases": {},
+                "iteration_count": 7,
+            },
+        ]
+        rep = analyze(recs)
+        assert rep["category_counts"].get("exit") == 2
+        exits = rep["exit_records"]
+        assert len(exits) == 2
+        assert exits[0]["reason"] == "sigterm"
+        assert exits[0]["iteration_count"] == 42
+        assert exits[1]["reason"] == "keyboard-interrupt"
+        assert exits[1]["iteration_count"] == 7
+
+    def test_analyze_handles_exit_record_without_iteration_count(self):
+        from agent.timing_analyze import analyze
+        recs = [{"category": "exit", "outcome": "exit:system-exit", "phases": {}}]
+        rep = analyze(recs)
+        exits = rep["exit_records"]
+        assert len(exits) == 1
+        assert exits[0]["reason"] == "system-exit"
+        assert exits[0]["iteration_count"] is None
+
+    def test_analyze_no_exit_records_returns_empty_list(self):
+        from agent.timing_analyze import analyze
+        recs = [{"category": "applied", "outcome": "applied", "wall_s": 1.0}]
+        rep = analyze(recs)
+        assert rep["exit_records"] == []
+
+    def test_format_report_includes_exit_breadcrumbs(self):
+        from agent.timing_analyze import analyze, format_report
+        recs = [
+            {
+                "ts": "2026-04-28T12:00:00Z",
+                "category": "exit",
+                "outcome": "exit:sigterm",
+                "phases": {},
+                "iteration_count": 99,
+            }
+        ]
+        rep = analyze(recs)
+        out = format_report(rep)
+        assert "shutdown records" in out
+        assert "sigterm" in out
+        assert "iter=99" in out
+        assert "2026-04-28T12:00:00Z" in out
+
+    def test_format_report_omits_section_when_no_exit_records(self):
+        from agent.timing_analyze import analyze, format_report
+        recs = [{"category": "applied", "outcome": "applied", "wall_s": 1.0, "phases": {}}]
+        rep = analyze(recs)
+        out = format_report(rep)
+        assert "shutdown records" not in out

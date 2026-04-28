@@ -71,12 +71,19 @@ def analyze(records: list[dict]) -> dict:
     Also collects `wall_s_delta_phases` across all records that emit
     it -- a high p95 here flags iterations where unaccounted-for time
     (work outside the named phases) is dominating, which signals
-    either filesystem-level slowness or a missing `_PhaseTimer`."""
+    either filesystem-level slowness or a missing `_PhaseTimer`.
+
+    Loop 229: also collects synthetic shutdown records (loop 226's
+    ``exit:<reason>`` outcome) into a separate ``exit_records`` list
+    so the formatter can surface the per-shutdown ``iteration_count``
+    breadcrumb. The records still count in ``category_counts`` under
+    the ``exit`` category."""
     by_cat: dict[str, list[float]] = {}
     by_phase: dict[str, list[float]] = {}
     by_cat_delta: dict[str, list[float]] = {}
     cat_counts: dict[str, int] = {}
     deltas: list[float] = []
+    exit_records: list[dict] = []
     for rec in records:
         cat = rec.get("category")
         if isinstance(cat, str):
@@ -84,6 +91,16 @@ def analyze(records: list[dict]) -> dict:
             wall = rec.get("wall_s")
             if isinstance(wall, (int, float)):
                 by_cat.setdefault(cat, []).append(float(wall))
+        if cat == "exit":
+            outcome = rec.get("outcome") if isinstance(rec.get("outcome"), str) else ""
+            reason = outcome.split(":", 1)[1] if ":" in outcome else outcome
+            iter_count = rec.get("iteration_count")
+            ts = rec.get("ts") if isinstance(rec.get("ts"), str) else ""
+            exit_records.append({
+                "ts": ts,
+                "reason": reason,
+                "iteration_count": iter_count if isinstance(iter_count, int) else None,
+            })
         phases = rec.get("phases")
         if isinstance(phases, dict):
             for name, val in phases.items():
@@ -103,6 +120,7 @@ def analyze(records: list[dict]) -> dict:
         "category_wall_s_delta_phases": {
             k: _summarize(v) for k, v in by_cat_delta.items()
         },
+        "exit_records": exit_records,
     }
 
 
@@ -157,6 +175,18 @@ def format_report(report: dict, top_n: int | None = None) -> str:
                 f"  {cat:30s} count={s['count']:4d}  "
                 f"mean={s['mean']:.3f} p50={s['p50']:.3f} p95={s['p95']:.3f}"
             )
+    exits = report.get("exit_records", [])
+    if exits:
+        lines.append("")
+        lines.append(
+            f"shutdown records (loop 226 exit breadcrumbs, {len(exits)} total):"
+        )
+        for ex in exits:
+            it = ex.get("iteration_count")
+            it_disp = "?" if it is None else str(it)
+            ts = ex.get("ts") or "-"
+            reason = ex.get("reason") or "?"
+            lines.append(f"  {ts}  reason={reason:20s} iter={it_disp}")
     return "\n".join(lines) + "\n"
 
 

@@ -1,23 +1,21 @@
-# Loop 229 candidates
+# Loop 230 candidates
 
 1. /sysinfo --probe --json: machine-readable form of the
-   loop-219 /health probe so analytics can ingest it.
+   loop-219 /health probe so analytics can ingest it. Pairs
+   with the loop-229 exit-record analyzer.
 
-2. timing.log analytics reader: a small CLI/helper that groups
-   exit/applied/skipped/crashed records by category over the
-   last N records. Uses the loop-226 'exit' record + the
-   iteration_count field.
+2. timing_analyze --json --include-exits: ensure the loop-229
+   exit_records list survives JSON serialization (probably
+   already does -- but no test pins the shape).
 
-3. _format_exit_line includes session id from runtime.log so
-   exit records can be joined to the runtime.log entry that
-   produced them (currently just iteration_count joins, but
-   two simultaneous loops in different repos would collide).
+3. _format_exit_line could include session id from runtime.log
+   so two simultaneous loops in different repos do not collide
+   on iteration_count alone.
 
 4. /checkpoints export N <path> --gzip (carried, low priority).
 
 5. TUI prefix-buffering for unwrapped streaming </think>
    (loop-218 deferred).
 
-Recommended next: (2) - the loop-226 exit records have no
-analytics consumer yet, and a thin reader proves the schema
-end-to-end.
+Recommended next: (2) - small, defensive, pins the loop-229
+schema for downstream consumers.

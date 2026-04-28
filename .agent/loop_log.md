@@ -3760,3 +3760,41 @@ the bulge code path consistently.
 
 Verify: full suite 1480 passed, 7 skipped (was 6 + the new
 gated test). Heavy test collection confirmed (5 in the file).
+
+## Loop 229 - timing_analyze surfaces the loop-226 exit breadcrumbs
+
+Loop 226 added synthetic exit:<reason> records to .loop/timing.log
+so analytics never undercount the final shutdown iteration.
+Without a consumer, those records were dead data: counted in
+category_counts under the generic 'exit' bucket but with the
+iteration_count breadcrumb invisible in the human report.
+
+Loop 229 plumbs the breadcrumb through. analyze() now collects
+exit records into a dedicated exit_records list of dicts (ts,
+reason, iteration_count). format_report() renders them as a
+final section listing each shutdown with its reason and
+iteration count, so an operator can read 'reason=sigterm
+iter=99' and join that to runtime.log's 'loop exit ... iter=99'
+line in seconds.
+
+Devil step. Why a separate top-level key instead of nesting under
+category_wall_s['exit']? Because category_wall_s is summarized
+(min/p50/p95/etc); exit records have no wall_s, the count is
+already in category_counts, and the only payload is per-record
+metadata. A list of dicts matches the data shape. Lifting it to
+a top-level key also keeps the JSON output consumable for
+downstream tooling (--json reports the field directly).
+
+Why not also expose 'reason' counts? Because in practice there
+are very few shutdowns per log file (one per process death) and
+the per-record listing is more useful than aggregate counts.
+Aggregation can be a follow-up if shutdown frequency demands it.
+
+Five new tests across the analyze() and format_report() pairs:
+  * exit records collected with reason + iteration_count split
+  * record without iteration_count tolerated (None placeholder)
+  * absence of exit records returns [] (not missing key)
+  * format_report includes 'shutdown records' section + iter=N
+  * absence of exit records omits the section entirely
+
+Verify: full suite 1485 passed, 7 skipped (was 1480 + 5).
