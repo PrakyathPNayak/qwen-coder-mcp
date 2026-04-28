@@ -877,11 +877,15 @@ class TestTimingLogCategoryField:
 
 
 class TestCommitAndPushEmptyTreeLog:
-    """Loop 62: empty staged tree path emits a log line for forensics."""
+    """Loop 62 (revised loop 91): empty staged tree path emits a
+    rate-limited swallow-logger line for forensics. Loop 91 routed
+    this through `_EMPTY_COMMIT_SWALLOW_LOG` so a persistent fault
+    no longer floods the log."""
 
     def test_empty_staged_tree_logs_message(self, tmp_path, monkeypatch):
         from agent import loop as L
 
+        L._EMPTY_COMMIT_SWALLOW_LOG.reset()
         # Stub _run_git: add succeeds, status returns empty.
         calls = []
         def fake_run_git(*args, check=True):
@@ -897,11 +901,15 @@ class TestCommitAndPushEmptyTreeLog:
         log_lines = []
         monkeypatch.setattr(L, "_log", lambda msg: log_lines.append(msg))
 
-        result = L._commit_and_push("test: msg", push=False)
-        assert result == "empty"
-        assert any("empty staged tree" in line for line in log_lines), log_lines
-        # Must not have attempted commit/pull/push
-        assert not any(c[0] in ("commit", "pull", "push") for c in calls)
+        try:
+            result = L._commit_and_push("test: msg", push=False)
+            assert result == "empty"
+            assert any("git_empty_commit failed" in line for line in log_lines), log_lines
+            assert any("apply produced no committable changes" in line for line in log_lines), log_lines
+            # Must not have attempted commit/pull/push
+            assert not any(c[0] in ("commit", "pull", "push") for c in calls)
+        finally:
+            L._EMPTY_COMMIT_SWALLOW_LOG.reset()
 
 
 class TestCommitAndPushTriState:
@@ -2505,3 +2513,49 @@ class TestWallSecondsInvariant:
         assert rec["wall_s"] >= phases_sum - 1e-9, (
             f"wall_s={rec['wall_s']} < sum(phases)={phases_sum}"
         )
+
+
+class TestEmptyCommitRateLimited:
+    """Loop 91: a persistent ".gitignore captures every diff target"
+    fault would otherwise emit one `git commit skipped: empty staged
+    tree` line per iteration. Route through `_EMPTY_COMMIT_SWALLOW_LOG`
+    so the rate limiter applies."""
+
+    def test_empty_staged_tree_uses_rate_limited_logger(self, monkeypatch):
+        from agent import loop as L
+        from types import SimpleNamespace
+        L._EMPTY_COMMIT_SWALLOW_LOG.reset()
+        log_lines: list[str] = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        monkeypatch.setattr(L._EMPTY_COMMIT_SWALLOW_LOG, "schedule", "linear")
+        monkeypatch.setattr(L._EMPTY_COMMIT_SWALLOW_LOG, "every", 5)
+
+        # Stub _run_git so add succeeds and status is empty (triggering
+        # the empty-tree branch).
+        def fake(*args, **kw):
+            sub = args[0] if args else ""
+            if sub == "status":
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(L, "_run_git", fake)
+        monkeypatch.setattr(L, "_abort_rebase_if_any", lambda: None)
+        try:
+            for _ in range(7):
+                assert L._commit_and_push("msg", push=False) == "empty"
+            empty_lines = [
+                l for l in log_lines if "git_empty_commit failed" in l
+            ]
+            # Linear every=5: count=1 logs, count=5 logs => 2 lines.
+            assert len(empty_lines) == 2
+            assert L._EMPTY_COMMIT_SWALLOW_LOG.count == 7
+        finally:
+            L._EMPTY_COMMIT_SWALLOW_LOG.reset()
+
+    def test_empty_commit_logger_in_swallow_registry(self):
+        from agent import loop as L
+        labels = {lg.label for lg in L._swallow_loggers()}
+        assert "git_empty_commit" in labels
+
+    def test_empty_commit_logger_documented_in_docstring(self):
+        from agent import loop as L
+        assert "git_empty_commit" in L.__doc__

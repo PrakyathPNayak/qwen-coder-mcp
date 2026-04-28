@@ -1565,3 +1565,16 @@ kwarg actually forwarded. Existing tests still pass.
   - Edge: empty phases dict test confirms wall_s alone is meaningful.
 - ACT: 3 new tests, no production code change. 490 passed.
 - COMMIT: pending.
+
+## Loop 91 — Empty-commit log path was unrate-limited
+- OBSERVE: `_log("git commit skipped: empty staged tree ...")` at L1434 is a fixed string emitted unconditionally. A persistent fault (e.g., `.gitignore` rule capturing every diff target, or external repo state where applies always produce empty staged trees) would emit one line per iteration.
+- ORIENT: This is exactly the pattern the swallow-logger registry was built for. 8 of 9 fault paths use rate limiting; this one slipped because it predates the registry.
+- DECIDE: Add `_EMPTY_COMMIT_SWALLOW_LOG`, route the existing log call through it via `.report(RuntimeError("apply produced no committable changes"))`. Update `_swallow_loggers()` 9-tuple → 10-tuple. Update module docstring (drift audit).
+- DEVIL:
+  - Correctness: `report()` returns True only when emitted, but the function doesn't branch on the return value. Behaviour preserved (one log on first hit, exponential backoff after).
+  - Scope: A normal session never hits this branch; it's specifically for the anomalous case. Rate-limiting it doesn't hide signal — the per-iteration aggregate-summary still surfaces accumulated count.
+  - Priority: Loop 62 added the log; loop 91 is the natural follow-up (rate-limit the registry's last unmanaged path). Higher-leverage than `_strip_fence` or README polish.
+- ACT: 
+  - `agent/loop.py`: new logger decl, swallow-loggers tuple updated, docstring updated, `_log(...)` → `_EMPTY_COMMIT_SWALLOW_LOG.report(...)`.
+  - `tests/test_iteration.py`: `TestEmptyCommitRateLimited` (3 tests). Loop 62's `TestCommitAndPushEmptyTreeLog` updated to assert the new message format.
+- 493 passed.

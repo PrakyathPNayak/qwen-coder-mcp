@@ -53,7 +53,8 @@ otherwise emit one log line per iteration. The instances cover:
 ``_write_timing``, ``_append_state``, ``_write_history``,
 ``_prune_dir_oldest``, ``_save_cursor``, ``_commit_and_push`` (split into
 ``git_local`` and ``git_remote``), ``_revert_changes``, and
-``_run_git_timeout``. Each one is
+``_run_git_timeout``, and the ``git_empty_commit`` sink for the
+anomalous "apply produced no committable changes" path. Each one is
 registered in ``_swallow_loggers()`` and gets a per-iteration summary
 emitted from ``_finish`` whenever its count has grown since the last
 summary. ``main()`` additionally emits an aggregate cumulative snapshot
@@ -1394,6 +1395,7 @@ _GIT_REMOTE_SWALLOW_LOG = _RateLimitedSwallowLogger("git_remote", schedule="expo
 _GIT_LOCAL_SWALLOW_LOG = _RateLimitedSwallowLogger("git_local", schedule="exponential")
 _REVERT_SWALLOW_LOG = _RateLimitedSwallowLogger("_revert_changes", schedule="exponential")
 _GIT_TIMEOUT_SWALLOW_LOG = _RateLimitedSwallowLogger("_run_git_timeout", schedule="exponential")
+_EMPTY_COMMIT_SWALLOW_LOG = _RateLimitedSwallowLogger("git_empty_commit", schedule="exponential")
 
 
 # -------------------------------------------------------------------- core
@@ -1431,7 +1433,12 @@ def _commit_and_push(message: str, push: bool) -> str:
         # and `_changed_paths()` was non-empty, so an empty staged tree
         # here means the changes were lost between apply and commit
         # (e.g., an external reset, or all changes were .gitignore'd).
-        _log("git commit skipped: empty staged tree (apply produced no committable changes)")
+        # Rate-limited because a persistent fault (e.g., a .gitignore
+        # rule that captures every diff target) would otherwise emit one
+        # line per iteration.
+        _EMPTY_COMMIT_SWALLOW_LOG.report(
+            RuntimeError("apply produced no committable changes")
+        )
         return "empty"
     commit = _run_git("commit", "-m", message, check=False)
     if commit.returncode != 0:
@@ -1496,6 +1503,7 @@ def _swallow_loggers() -> tuple["_RateLimitedSwallowLogger", ...]:
         _GIT_LOCAL_SWALLOW_LOG,
         _REVERT_SWALLOW_LOG,
         _GIT_TIMEOUT_SWALLOW_LOG,
+        _EMPTY_COMMIT_SWALLOW_LOG,
     )
 
 
