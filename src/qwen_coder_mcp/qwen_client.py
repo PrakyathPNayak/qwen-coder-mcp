@@ -26,6 +26,32 @@ _logger = logging.getLogger(__name__)
 TRUNCATION_MARKER = "[truncated: model hit max_tokens]"
 
 
+def _default_repetition_penalty() -> float:
+    """Loop 238: default repetition_penalty for every Qwen request.
+
+    User reported the model "repeats itself and does nothing but that"
+    after a while. Root cause: the codebase pinned ``temperature=0.2``
+    everywhere but never set any repetition control. Qwen3-Next's
+    own ``generation_config.json`` recommends ``temperature=1.0``,
+    ``top_k=20``, ``top_p=0.95`` precisely because the model degenerates
+    into n-gram loops at low temperature without a rep penalty. We keep
+    the low temperature for code-generation determinism and add a mild
+    ``repetition_penalty=1.05`` (vLLM extension; passed through OpenAI
+    chat completions) to break loops without distorting code output.
+
+    Override via ``QWEN_REPETITION_PENALTY`` env var. Set to ``1.0`` to
+    disable. Sane range: ``1.0`` (off) -- ``1.2`` (aggressive).
+    """
+    raw = os.environ.get("QWEN_REPETITION_PENALTY", "1.05")
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return 1.05
+    if v <= 0:
+        return 1.05
+    return v
+
+
 _THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.DOTALL | re.IGNORECASE)
 _DANGLING_OPEN_THINK_RE = re.compile(r".*?</think\s*>", re.DOTALL | re.IGNORECASE)
 
@@ -414,6 +440,7 @@ class QwenClient:
         stop: Iterable[str] | None = None,
         extra: dict[str, Any] | None = None,
         max_retries: int = 3,
+        repetition_penalty: float | None = None,
     ) -> str:
         """Send a chat completion request and return the assistant text."""
         payload: dict[str, Any] = {
@@ -426,6 +453,12 @@ class QwenClient:
             "top_p": top_p,
             "max_tokens": self._resolve_max_tokens(messages, max_tokens),
             "stream": False,
+            # Loop 238: prevent Qwen3-Next n-gram loops at low temperature.
+            "repetition_penalty": (
+                repetition_penalty
+                if repetition_penalty is not None
+                else _default_repetition_penalty()
+            ),
         }
         if stop:
             payload["stop"] = list(stop)
@@ -489,6 +522,7 @@ class QwenClient:
         max_tokens: int | None = None,
         stop: Iterable[str] | None = None,
         extra: dict[str, Any] | None = None,
+        repetition_penalty: float | None = None,
     ) -> Iterable[str]:
         """Stream a chat completion. Yields incremental token strings.
 
@@ -511,6 +545,12 @@ class QwenClient:
             "top_p": top_p,
             "max_tokens": self._resolve_max_tokens(messages, max_tokens),
             "stream": True,
+            # Loop 238: prevent Qwen3-Next n-gram loops at low temperature.
+            "repetition_penalty": (
+                repetition_penalty
+                if repetition_penalty is not None
+                else _default_repetition_penalty()
+            ),
         }
         if stop:
             payload["stop"] = list(stop)
@@ -666,6 +706,7 @@ class QwenClient:
         stop: Iterable[str] | None = None,
         extra: dict[str, Any] | None = None,
         max_retries: int = 3,
+        repetition_penalty: float | None = None,
     ) -> str:
         """One-shot system+user prompt, returns text.
 
@@ -680,4 +721,5 @@ class QwenClient:
             stop=stop,
             extra=extra,
             max_retries=max_retries,
+            repetition_penalty=repetition_penalty,
         )

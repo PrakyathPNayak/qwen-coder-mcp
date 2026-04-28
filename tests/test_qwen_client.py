@@ -890,3 +890,96 @@ class TestStreamTruncationLoop237:
         c = _client_with(handler)
         out = "".join(c.chat_stream([ChatMessage("user", "hi")]))
         assert TRUNCATION_MARKER in out
+
+
+# ============================================================ Loop 238
+# repetition_penalty defaults so Qwen3-Next doesn't degenerate into
+# n-gram loops at low temperature.
+class TestRepetitionPenaltyLoop238:
+    """Loop 238: user reported the model was repeating itself after a
+    while. Root cause: the codebase pinned temperature=0.2 everywhere
+    but never set any repetition control. Qwen3-Next's own
+    generation_config.json recommends temp=1.0 + top_k=20 + top_p=0.95
+    precisely because the model loops at low temperature without a rep
+    penalty. We add a default repetition_penalty=1.05 to every chat
+    request to break loops without distorting code-generation output."""
+
+    def test_chat_default_payload_includes_repetition_penalty(self):
+        seen: dict = {}
+
+        def handler(req):
+            seen.update(json.loads(req.content.decode("utf-8")))
+            return _ok_response("ok")
+
+        c = _client_with(handler)
+        c.chat([ChatMessage("user", "hi")])
+        assert "repetition_penalty" in seen
+        assert seen["repetition_penalty"] == pytest.approx(1.05)
+
+    def test_chat_stream_payload_includes_repetition_penalty(self):
+        seen: dict = {}
+
+        def handler(req):
+            seen.update(json.loads(req.content.decode("utf-8")))
+            return httpx.Response(
+                200,
+                text='data: {"choices":[{"delta":{"content":"x"},"finish_reason":"stop"}]}\ndata: [DONE]\n',
+                headers={"content-type": "text/event-stream"},
+            )
+
+        c = _client_with(handler)
+        list(c.chat_stream([ChatMessage("user", "hi")]))
+        assert seen.get("repetition_penalty") == pytest.approx(1.05)
+
+    def test_explicit_repetition_penalty_kwarg_overrides_default(self):
+        seen: dict = {}
+
+        def handler(req):
+            seen.update(json.loads(req.content.decode("utf-8")))
+            return _ok_response("ok")
+
+        c = _client_with(handler)
+        c.chat([ChatMessage("user", "hi")], repetition_penalty=1.15)
+        assert seen["repetition_penalty"] == pytest.approx(1.15)
+
+    def test_extra_can_override_repetition_penalty(self):
+        seen: dict = {}
+
+        def handler(req):
+            seen.update(json.loads(req.content.decode("utf-8")))
+            return _ok_response("ok")
+
+        c = _client_with(handler)
+        c.chat([ChatMessage("user", "hi")], extra={"repetition_penalty": 1.0})
+        assert seen["repetition_penalty"] == pytest.approx(1.0)
+
+    def test_env_var_overrides_default(self, monkeypatch):
+        from qwen_coder_mcp import qwen_client as qc
+
+        monkeypatch.setenv("QWEN_REPETITION_PENALTY", "1.10")
+        assert qc._default_repetition_penalty() == pytest.approx(1.10)
+
+    def test_env_var_invalid_falls_back_to_safe_default(self, monkeypatch):
+        from qwen_coder_mcp import qwen_client as qc
+
+        monkeypatch.setenv("QWEN_REPETITION_PENALTY", "not-a-number")
+        assert qc._default_repetition_penalty() == pytest.approx(1.05)
+
+    def test_env_var_zero_or_negative_falls_back(self, monkeypatch):
+        from qwen_coder_mcp import qwen_client as qc
+
+        monkeypatch.setenv("QWEN_REPETITION_PENALTY", "0")
+        assert qc._default_repetition_penalty() == pytest.approx(1.05)
+        monkeypatch.setenv("QWEN_REPETITION_PENALTY", "-1")
+        assert qc._default_repetition_penalty() == pytest.approx(1.05)
+
+    def test_system_user_forwards_repetition_penalty(self):
+        seen: dict = {}
+
+        def handler(req):
+            seen.update(json.loads(req.content.decode("utf-8")))
+            return _ok_response("ok")
+
+        c = _client_with(handler)
+        c.system_user("sys", "usr", repetition_penalty=1.20)
+        assert seen["repetition_penalty"] == pytest.approx(1.20)
