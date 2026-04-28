@@ -71,12 +71,15 @@ class TestServeScriptDefaults:
         # KV, 0.95 GPU util, single sequence, 16 GiB CPU offload.
         # Loop 205 migrated --swap-space to --kv-offloading-size when
         # vLLM 0.11 removed the legacy flag (see test_serve_qwen_help_validation.py).
+        # Loop 211 added --disable-hybrid-kv-cache-manager because the
+        # native OffloadingConnector is incompatible with vLLM's HMA.
         assert _flag_value(argv, "--max-model-len") == "65536"
         assert _flag_value(argv, "--max-num-seqs") == "1"
         assert _flag_value(argv, "--kv-cache-dtype") == "fp8"
         assert _flag_value(argv, "--gpu-memory-utilization") == "0.95"
         assert _flag_value(argv, "--kv-offloading-size") == "16"
         assert _flag_value(argv, "--kv-offloading-backend") == "native"
+        assert "--disable-hybrid-kv-cache-manager" in argv
 
     def test_default_enables_chunked_prefill(self) -> None:
         argv = _argv_after_marker(_run())
@@ -172,6 +175,21 @@ class TestServeScriptOverrides:
         argv = _argv_after_marker(_run({"QWEN_SERVE_KV_OFFLOAD_GIB": "0"}))
         assert "--kv-offloading-size" not in argv
         assert "--kv-offloading-backend" not in argv
+        # The HMA-disable flag is paired *with* offloading, so it should
+        # also disappear when offloading is off.
+        assert "--disable-hybrid-kv-cache-manager" not in argv
+
+    def test_kv_offload_pairs_with_disable_hybrid_kv_manager(self) -> None:
+        # Loop 211: the native OffloadingConnector raises at engine init
+        # if HMA is enabled. Whenever we emit --kv-offloading-size we
+        # must also emit --disable-hybrid-kv-cache-manager. Pin both
+        # the default and an override path.
+        argv = _argv_after_marker(_run())
+        assert "--kv-offloading-size" in argv
+        assert "--disable-hybrid-kv-cache-manager" in argv
+        argv2 = _argv_after_marker(_run({"QWEN_SERVE_KV_OFFLOAD_GIB": "32"}))
+        assert "--kv-offloading-size" in argv2
+        assert "--disable-hybrid-kv-cache-manager" in argv2
 
     def test_swap_space_alias_still_honoured(self) -> None:
         # Backwards compat for operators with QWEN_SERVE_SWAP_SPACE

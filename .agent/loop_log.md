@@ -3120,3 +3120,29 @@ Despite ~1.28k tests passing. Root cause: vLLM 0.11 removed `--swap-space` (repl
 **Act.** Dispatcher gains `--by-role` flag; rejects when `--json` or `--top` missing. Bucket-build is dict-of-lists; per-bucket sort identical to loop 207's `top` sort. Nine new tests in `test_tokens_json_by_role.py` covering basics, errors, mutual-exclusivity, backwards compat (plain `--top` and bare `--json` paths regression-pinned).
 
 **Verify.** 9 new + all 1335 prior tests green. Test count around 1.33k → 1.34k.
+
+## Loop 211 — OffloadingConnector incompatible with HMA; engine-init crashed
+
+**Observe.** User ran the launcher again. vLLM 0.11 engine-init bailed with:
+```
+ValueError: Connector OffloadingConnector does not support HMA but HMA is enabled.
+Please set `--disable-hybrid-kv-cache-manager`.
+```
+The loop-205 `--help=all` validator only checks flag *existence* — it cannot catch combination-incompatibilities that fire during engine bring-up. Loop 205's fix was correct for argparse but incomplete for engine init. The user is right: "the check was not proper this time too then."
+
+**Orient.** Two-front fix:
+1. Add `--disable-hybrid-kv-cache-manager` to the argv whenever `--kv-offloading-size` is emitted. vLLM's own error message names the fix.
+2. Add (a) a pure-argv invariant test that pins the pairing, (b) a flag-recognition test for the new flag, and (c) a heavy lights-on E2E test (gated behind `QWEN_SERVE_E2E_ENGINE=1`) that actually spins up vLLM with a tiny model and asserts no fatal markers in the serve log. The gate keeps it out of CI but gives operators a deliberate "would this argv actually boot?" check.
+
+**Devil.**
+- *Correctness:* Should `--disable-hybrid-kv-cache-manager` always be on, or only when offloading is enabled? Only when offloading. HMA is a perf win on the hot path; disabling it has measurable cost. `KV_OFFLOAD_GIB=0` path drops both flags together. Pinned by an updated `test_kv_offload_zero_drops_flag` and a new `test_kv_offload_pairs_with_disable_hybrid_kv_manager`. ✅
+- *Scope:* Are there OTHER known engine-init incompatibilities lurking? vLLM 0.11 has at least: `--quantization=fp8` + certain attention backends, `--enable-prefix-caching` + some kv-cache-dtypes. We don't enable those. The pure-argv invariant test class can absorb future pairings as we discover them. The lights-on E2E catches them organically. ✅
+- *Priority:* P0 — same launcher bug, second incarnation. Drops everything else. ✅
+
+**Act.**
+- `scripts/serve_qwen.sh`: `KV_OFFLOAD_ARG` now includes `--disable-hybrid-kv-cache-manager` whenever offloading is enabled. Header comment quotes the vLLM error verbatim so the *next* maintainer sees why both flags pair.
+- `tests/test_serve_qwen_sh.py`: `test_default_oom_safe_kv_settings` now asserts the HMA-disable flag; `test_kv_offload_zero_drops_flag` asserts it disappears with offloading; new `test_kv_offload_pairs_with_disable_hybrid_kv_manager` pins the invariant across default + override.
+- `tests/test_serve_qwen_help_validation.py`: new `test_disable_hybrid_kv_cache_manager_recognised` (vLLM still has the flag) and `test_offloading_paired_with_disable_hybrid_in_argv` (pure-argv pairing invariant; would have caught this bug pre-merge).
+- `tests/test_serve_qwen_engine_init.py` (new, gated): runs the real launcher with `facebook/opt-125m`, polls `/v1/models`, scans the serve log for known fatal markers (`does not support HMA`, `Engine core initialization failed`, `RuntimeError: Engine`, etc.), tears down via SIGTERM. Skipped unless `QWEN_SERVE_E2E_ENGINE=1`. This is the lights-on smoke test the user asked for; it catches *combinatorial* failures that the help-validator structurally cannot.
+
+**Verify.** All 1344 prior + 3 new pure-argv tests green. Engine-init E2E test skips cleanly when the gate is off (1 skip → 2 skips). Test count around 1.34k → 1.35k. Manually verified `vllm serve <new-argv> --help` parses without error.

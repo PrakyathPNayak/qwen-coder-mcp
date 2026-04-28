@@ -127,6 +127,34 @@ class TestServeArgvAcceptedByVllm:
         assert "--kv-offloading-size" in help_flags
         assert "--kv-offloading-backend" in help_flags
 
+    def test_disable_hybrid_kv_cache_manager_recognised(
+        self, help_flags: set[str]
+    ) -> None:
+        # Loop 211: the native OffloadingConnector is incompatible with
+        # the Hybrid KV Cache Manager (HMA), which is enabled by
+        # default. vLLM raises at engine-init time:
+        #   ValueError: Connector OffloadingConnector does not support
+        #   HMA but HMA is enabled. Please set
+        #   `--disable-hybrid-kv-cache-manager`.
+        # If a future vLLM ever renames or removes this flag, this
+        # assertion fires before the launcher crashes in production.
+        assert "--disable-hybrid-kv-cache-manager" in help_flags
+
+    def test_offloading_paired_with_disable_hybrid_in_argv(
+        self, help_flags: set[str]
+    ) -> None:
+        # Pure-argv invariant (no vLLM dependency): when the dry-run
+        # argv contains --kv-offloading-size, it must also contain
+        # --disable-hybrid-kv-cache-manager. This is the exact engine-
+        # init failure the user hit; pinning the pairing here catches
+        # a future split that drops only one of the two flags.
+        argv = _dry_run_argv()
+        if "--kv-offloading-size" in argv:
+            assert "--disable-hybrid-kv-cache-manager" in argv, (
+                "--kv-offloading-size requires --disable-hybrid-kv-cache-manager; "
+                "engine init will raise OffloadingConnector-vs-HMA at startup."
+            )
+
     def test_chunked_prefill_flag_recognised(self, help_flags: set[str]) -> None:
         assert "--enable-chunked-prefill" in help_flags
         assert "--max-num-batched-tokens" in help_flags

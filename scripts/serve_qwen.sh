@@ -138,7 +138,14 @@ KV_OFFLOAD_ARG=()
 if [ "$KV_OFFLOAD_GIB" != "0" ]; then
   # vLLM 0.11+ flag pair. backend=native uses the in-tree CPU
   # offloader (the lmcache backend has extra runtime deps).
-  KV_OFFLOAD_ARG=(--kv-offloading-size "$KV_OFFLOAD_GIB" --kv-offloading-backend native)
+  #
+  # The native OffloadingConnector does NOT support the Hybrid KV
+  # Cache Manager (HMA), which vLLM enables by default. Without
+  # --disable-hybrid-kv-cache-manager, engine init blows up with:
+  #   ValueError: Connector OffloadingConnector does not support HMA
+  #   but HMA is enabled. Please set `--disable-hybrid-kv-cache-manager`.
+  # So whenever we offload, we also disable HMA.
+  KV_OFFLOAD_ARG=(--kv-offloading-size "$KV_OFFLOAD_GIB" --kv-offloading-backend native --disable-hybrid-kv-cache-manager)
 fi
 
 CMD=(vllm serve "$MODEL"
