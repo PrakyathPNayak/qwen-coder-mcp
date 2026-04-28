@@ -16,6 +16,7 @@ import datetime as _dt
 import json
 import os
 import re
+import stat as _stat
 import subprocess
 import sys
 import time
@@ -124,7 +125,16 @@ def _candidate_files() -> list[Path]:
             if p.suffix.lower() not in TEXT_SUFFIXES:
                 continue
             try:
-                if p.stat().st_size == 0:
+                # `lstat` so symlinks are detected as themselves rather
+                # than their target. Symlinks are skipped: in-repo links
+                # are redundant (the target is also a candidate) and
+                # out-of-repo links are blocked by `_read_file` anyway,
+                # so picking one wastes an iteration slot on a
+                # guaranteed "unreadable_or_too_large".
+                st = p.lstat()
+                if _stat.S_ISLNK(st.st_mode):
+                    continue
+                if st.st_size == 0:
                     continue
             except OSError:
                 continue

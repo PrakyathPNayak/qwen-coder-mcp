@@ -952,3 +952,14 @@ kwarg actually forwarded. Existing tests still pass.
 - COMMIT: pending.
 
 (Note: candidate `runtime.log iteration outcome` was already implemented at line 950 — `_log(f"iteration -> {outcome}")` — so loop pivoted to the symlink fix.)
+
+## Loop 35 — `_candidate_files` skip symlinks
+- OBSERVE: After loop 34's `_read_file` symlink-escape guard, `_candidate_files` still enumerates symlinks. Each iteration that picks one wastes a cursor slot on a guaranteed `skip:<file>(unreadable_or_too_large)` for out-of-repo links, or duplicates work on in-repo aliases.
+- ORIENT: Cleanup with measurable iteration efficiency benefit. Higher leverage than rotation/cosmetic candidates.
+- DECIDE: Use `lstat()` (not stat) so we see the symlink itself, then skip via `_stat.S_ISLNK`. Hoist `import stat` to module top.
+- DEVIL:
+  - Correctness: lstat raises on dangling links → caught by existing OSError handler. Tested.
+  - Scope: cause-level fix.
+  - Priority: P5/P6 — defense-in-depth + perf.
+- ACT: switched stat→lstat, added S_ISLNK guard. New `tests/test_candidate_files.py` with 4 cases (outside-symlink, intra-repo-symlink, dangling, empty). 253/253 green.
+- COMMIT: pending.
