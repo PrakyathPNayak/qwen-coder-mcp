@@ -13,9 +13,10 @@ from .qwen_client import ChatMessage, QwenClient
 from . import prompts
 
 
-def _build_server() -> tuple[Server, QwenClient]:
+def _build_server(client: QwenClient | None = None) -> tuple[Server, QwenClient]:
     server: Server = Server("qwen-coder-mcp")
-    client = QwenClient()
+    if client is None:
+        client = QwenClient()
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:  # type: ignore[override]

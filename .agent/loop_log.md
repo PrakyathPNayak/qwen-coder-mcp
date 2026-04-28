@@ -454,3 +454,36 @@ hunks. Verified by `test_apply_diff_accepts_well_formed_diff_with_dev_null`.
 **Tests**: 4 new in `tests/test_apply_diff_paths.py`.
 
 **Result**: 144/144 green.
+
+## Loop 16 — `_build_server` accepts injected client; smoke tests for server
+**Bug** (latent): `_build_server` always constructed a fresh
+`QwenClient`, so any future test of the MCP-server surface (tool
+registration, dispatch routing, temperature bindings) would either need
+to mock httpx globally or accept a real-client side-effect. There was
+also no test guarding the import path.
+
+**Devil**: (a) Resource-leak risk if the caller passes a client they
+own and `_run` later closes it? Not in the current call chain — only
+`_run` calls `_build_server` in production, with no client arg.
+Injection is purely a test seam. (b) Should we make `_build_server`
+*always* accept an injected client (no auto-construct)? No — that
+breaks `main()`. Keep optional. (c) Did this fix ship a side-effect?
+No: 144 → 164 tests, 100% green; no production code path changed.
+
+**Fix**: `_build_server(client: QwenClient | None = None)` —
+auto-constructs only when `client is None`.
+
+**Tests**: 20 in `tests/test_server.py`:
+- import without I/O,
+- `_build_server` accepts injected stub,
+- default path makes a real `QwenClient`,
+- 9 dispatch routes (one per tool),
+- unknown-tool ValueError,
+- propose_fix temperature=0.1,
+- devils_advocate temperature=0.0,
+- chat default temperature=0.2 + caller-override,
+- find_bugs uses REVIEWER_SYSTEM,
+- devils_advocate uses DEVILS_ADVOCATE_SYSTEM,
+- handlers registered ≥2 (list_tools + call_tool).
+
+**Result**: 164/164 green.
