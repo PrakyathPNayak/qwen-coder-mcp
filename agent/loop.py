@@ -1234,6 +1234,12 @@ class _PhaseTimer:
 
 
 def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
+    # Belt-and-suspenders: if the previous iteration left the tree dirty
+    # (revert failed, crash, etc), reset before reading any file so the
+    # current iteration cannot read a stale modification as if it were
+    # the canonical source.
+    _abort_rebase_if_any()
+
     files = _candidate_files()
     if not files:
         return "no_candidate_files"
@@ -1331,23 +1337,27 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
     changed = _changed_paths()
     scope_ok, scope_msg = _diff_in_scope(changed, rel)
     if not scope_ok:
-        _revert_changes()
+        rev_ok = _revert_changes()
         _write_history(
             f"{int(time.time())}-out-of-scope.md",
             history_body + f"OUT OF SCOPE ({scope_msg})\n",
         )
         _append_state(f"- {_now()} `{rel}` — reverted ({scope_msg[:60]})\n")
+        if not rev_ok:
+            return _finish(f"revert_failed:{rel}:after_out_of_scope")
         return _finish(f"out_of_scope:{rel}:{scope_msg[:80]}")
 
     with _PhaseTimer(phases, "validate"):
         syn_ok, syn_msg = _validate_changed_files(changed)
     if not syn_ok:
-        _revert_changes()
+        rev_ok = _revert_changes()
         _write_history(
             f"{int(time.time())}-syntax-failed.md",
             history_body + f"VALIDATION FAILED:\n```\n{syn_msg}\n```\n",
         )
         _append_state(f"- {_now()} `{rel}` — reverted ({syn_msg[:60]})\n")
+        if not rev_ok:
+            return _finish(f"revert_failed:{rel}:after_validation")
         return _finish(f"validation_failed:{rel}")
 
     summary_line = issue.splitlines()[0][:72]
@@ -1362,8 +1372,10 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
         _append_state(f"- {_now()} `{rel}` — applied: {summary_line}\n")
         return _finish(f"applied:{rel}")
 
-    _revert_changes()
+    rev_ok = _revert_changes()
     _append_state(f"- {_now()} `{rel}` — commit/push failed, reverted\n")
+    if not rev_ok:
+        return _finish(f"revert_failed:{rel}:after_commit_push")
     return _finish(f"commit_failed:{rel}")
 
 

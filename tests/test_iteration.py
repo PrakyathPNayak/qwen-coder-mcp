@@ -612,3 +612,17 @@ class TestRevertChanges:
         L._revert_changes()
         assert calls == ["checkout", "clean"]
         assert "reset" not in calls
+
+
+class TestRevertFailedPropagation:
+    """Loop 57: failed revert surfaces as a distinct outcome category."""
+
+    def test_outcome_strings_use_revert_failed_prefix(self):
+        # The strings appear as literal in the source; ensure the contract
+        # is documented and won't drift silently.
+        from agent import loop as L
+        src = (Path(L.__file__)).read_text(encoding="utf-8")
+        assert "revert_failed:" in src
+        assert "after_out_of_scope" in src
+        assert "after_validation" in src
+        assert "after_commit_push" in src

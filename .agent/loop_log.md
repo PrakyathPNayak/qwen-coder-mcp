@@ -1182,3 +1182,16 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: this is bucket 4 — exactly the priority-1 class. Right call.
 - ACT: 4 new tests covering success / partial-failure-recovery / total-failure / no-reset-on-success. 365 passed, 1 skipped.
 - COMMIT: pending.
+
+## Loop 57 — propagate `_revert_changes` failure + dirty-tree pre-check
+- OBSERVE: Loop 56 added the rc check & return value, but no caller used it. A failed revert silently let the *next* iteration read a dirty-tree file, possibly committing stale + new content together. Bucket 4.
+- ORIENT: Two angles fix this together: (a) callers must surface revert failure as a distinct outcome; (b) the next iteration must not trust the working tree. Both, not either.
+- DECIDE:
+  - Wire `rev_ok` from `_revert_changes()` into all 3 callers (out-of-scope, validation, commit-push fail). On failure, return `revert_failed:{rel}:after_<phase>`.
+  - Insert `_abort_rebase_if_any()` at the *start* of `_iteration` so even if a revert truly silently failed, the tree is reset before the next read.
+- DEVIL:
+  - Correctness: `_abort_rebase_if_any` does a hard-reset only when tree is dirty (`status --porcelain`). On a clean tree, it's effectively a status check. Not a no-op but cheap.
+  - Scope: now we hard-reset at start of every iteration, which discards any user-introduced manual change to the tree. But the loop is the sole writer in production; manual edits would already conflict with `_commit_and_push`. Acceptable.
+  - Priority: bucket 4. Right call.
+- ACT: 1 contract test (string-presence in source). 366 passed, 1 skipped.
+- COMMIT: pending.

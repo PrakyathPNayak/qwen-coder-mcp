@@ -1,7 +1,7 @@
 # Next Loop Candidates
 
-1. (P5) `_revert_changes` callers ignore the bool return; if a revert truly fails the next iteration may corrupt — propagate to outer loop as a hard skip.
-2. (P5) `STATE_MAX_BYTES` — hardcoded 256K; expose env override.
-3. (P7) `_strip_fence` — handle nested triple-backticks within a fenced block.
-4. (P5) Audit `_commit_and_push` for empty-diff race.
-5. (P6) `_iteration` — when `_revert_changes` returns False, log a structured outcome category (`revert_failed:{rel}`).
+1. (P5) `STATE_MAX_BYTES` — hardcoded 256K; expose env override.
+2. (P7) `_strip_fence` — handle nested triple-backticks within a fenced block.
+3. (P5) Audit `_commit_and_push` for empty-diff race — `status --porcelain` is checked, but verify race with concurrent test fixture.
+4. (P6) Add `revert_failed` to a stable outcome-category constant set, mirroring `APPLY_ERROR_CATEGORIES`.
+5. (P6) `_abort_rebase_if_any` does a hard reset on any dirty tree at iteration start; document this in module docstring as the canonical recovery contract.
