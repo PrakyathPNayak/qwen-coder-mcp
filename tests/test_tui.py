@@ -716,3 +716,111 @@ class TestClearAndSave:
             history=[],
         )
         assert "no chat" in text
+
+
+# ----------------------------------------------------------- Loop 136
+class TestGitSlash:
+    def test_git_status(self, tmp_path: Path) -> None:
+        # init a repo so git status doesn't error out.
+        import subprocess
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "config", "user.name", "t"], cwd=tmp_path, check=True)
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/git status"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "exit=0" in text
+
+    def test_git_rejects_unknown(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/git push"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "not allowed" in text
+
+    def test_git_usage(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/git"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "usage" in text
+
+
+class TestTestsSlash:
+    def test_tests_runs_pytest(self, tmp_path: Path) -> None:
+        # tiny passing test so pytest exits 0 with -q
+        (tmp_path / "test_x.py").write_text(
+            "def test_ok():\n    assert 1 == 1\n"
+        )
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/tests"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "exit=0" in text
+
+
+class TestAtMentionExpansion:
+    def test_expands_single_file(self, tmp_path: Path) -> None:
+        (tmp_path / "src.py").write_text("def f(): pass\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = tui.expand_at_mentions(cfg, "look at @src.py please")
+        assert "attached files" in out
+        assert "def f()" in out
+
+    def test_no_at_returns_unchanged(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        assert tui.expand_at_mentions(cfg, "no mentions") == "no mentions"
+
+    def test_missing_file_silent(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = tui.expand_at_mentions(cfg, "look at @does_not_exist.py")
+        # Original token preserved, no attachment block.
+        assert "@does_not_exist.py" in out
+        assert "attached files" not in out
+
+    def test_dedups(self, tmp_path: Path) -> None:
+        (tmp_path / "a.py").write_text("alpha")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = tui.expand_at_mentions(cfg, "see @a.py and again @a.py")
+        assert out.count("# a.py") == 1
+
+    def test_truncation(self, tmp_path: Path) -> None:
+        (tmp_path / "big.txt").write_text("x" * 50000)
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = tui.expand_at_mentions(cfg, "@big.txt", max_bytes_each=100)
+        assert "[truncated]" in out
+
+    def test_path_escape_silent(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = tui.expand_at_mentions(cfg, "see @../etc/passwd")
+        # No attachment, original mention preserved.
+        assert "attached files" not in out
+
+    def test_chat_turn_uses_expansion(self, tmp_path: Path) -> None:
+        (tmp_path / "x.py").write_text("hello content\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+
+        captured: list[list] = []
+        class C:
+            def chat(self, history, **kw):
+                captured.append([m.content for m in history if m.role == "user"])
+                return "ack"
+
+        history: list[ChatMessage] = []
+        tui.chat_turn(history, "review @x.py", client=C(), fs_cfg=cfg)
+        # The user message stored in history should contain expanded body.
+        user_msg = [m.content for m in history if m.role == "user"][-1]
+        assert "hello content" in user_msg

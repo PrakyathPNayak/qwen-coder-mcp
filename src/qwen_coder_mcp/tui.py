@@ -81,8 +81,11 @@ Slash commands:
   /find <glob> [path]  Glob search through the repo
   /clear               Clear chat history
   /save <path>         Save the current chat transcript to a file
+  /git <subcmd>        Read-only git status / log / diff / show / branch
+  /tests [args]        Run pytest in the repo
   /quit                Exit
 
+@<path> tokens in plain chat are expanded inline as file contents.
 Anything not starting with `/` is sent to Qwen as a chat message.
 """
 
@@ -282,6 +285,97 @@ def _render_save(
     return f"saved {len(pairs)} turns to {path}"
 
 
+_GIT_ALLOWED = {"status", "log", "diff", "show", "branch", "remote", "rev-parse"}
+
+
+def _render_git(cfg: fs_tools.FsConfig, args: list[str]) -> str:
+    """Run a read-only git subcommand inside the repo root.
+
+    Allowed subcommands: status / log / diff / show / branch / remote /
+    rev-parse. Anything else is rejected so /git cannot mutate the
+    working tree from the chat box. Trailing arguments are passed
+    through after the same deny list scan run_shell applies, so a
+    /git log followed by an embedded shell metachar is still bounded.
+    """
+    if not args:
+        return "usage: /git <status|log|diff|show|branch|remote|rev-parse> [args]"
+    sub = args[0]
+    if sub not in _GIT_ALLOWED:
+        return (
+            f"git error: subcommand '{sub}' not allowed. "
+            f"allowed: {sorted(_GIT_ALLOWED)}"
+        )
+    # Bound log/diff to a small page by default so they fit in the TUI.
+    extra = list(args[1:])
+    if sub == "log" and not any(a.startswith("-n") or a == "--max-count" for a in extra):
+        extra = ["-n", "20", "--oneline"] + extra
+    cmd = "git --no-pager " + " ".join([sub] + extra)
+    try:
+        res = shell_tools.run_shell(cfg, cmd, timeout=15.0)
+    except shell_tools.ShellError as exc:
+        return f"git error: {exc}"
+    return shell_tools.format_run_result(res)
+
+
+def _render_tests(cfg: fs_tools.FsConfig, args: list[str]) -> str:
+    """Run pytest in the repo. Optional args are appended verbatim."""
+    extra = " ".join(args) if args else "-q"
+    try:
+        res = shell_tools.run_shell(
+            cfg, f"python -m pytest {extra}", timeout=120.0
+        )
+    except shell_tools.ShellError as exc:
+        return f"tests error: {exc}"
+    return shell_tools.format_run_result(res)
+
+
+# ----------------------------------------------------------- @file expansion
+_AT_FILE_RE = __import__("re").compile(r"@([\w./\-]+)")
+
+
+def expand_at_mentions(
+    cfg: fs_tools.FsConfig,
+    text: str,
+    *,
+    max_files: int = 5,
+    max_bytes_each: int = 8000,
+) -> str:
+    """Replace `@path` mentions in `text` with inline file contents.
+
+    Recognises tokens of the form `@<path>` where path is a sequence of
+    word characters, dots, slashes, and hyphens. Each resolved file is
+    appended below the original text under a `# <path>` heading,
+    truncated to `max_bytes_each` characters. Up to `max_files`
+    expansions per call. Files that cannot be read (sandbox escape,
+    binary, missing, oversize) are silently skipped so a typo does not
+    block the user's actual prompt -- the original `@token` stays as
+    a literal in the prompt and the model can ask about it.
+    """
+    if "@" not in text:
+        return text
+    seen: list[str] = []
+    for m in _AT_FILE_RE.finditer(text):
+        token = m.group(1)
+        if token in seen:
+            continue
+        seen.append(token)
+        if len(seen) >= max_files:
+            break
+    appended: list[str] = []
+    for token in seen:
+        try:
+            res = fs_tools.read_file(cfg, token)
+        except fs_tools.FsError:
+            continue
+        body = str(res.get("text", ""))
+        if len(body) > max_bytes_each:
+            body = body[:max_bytes_each] + "\n... [truncated]"
+        appended.append(f"\n# {token}\n```\n{body}\n```")
+    if not appended:
+        return text
+    return text + "\n\n--- attached files ---" + "".join(appended)
+
+
 def dispatch_slash(
     cmd: SlashCommand,
     *,
@@ -368,6 +462,10 @@ def dispatch_slash(
         if not cmd.args:
             return "usage: /save <path>", False
         return _render_save(fs_cfg, history, cmd.args[0]), False
+    if name == "git":
+        return _render_git(fs_cfg, cmd.args), False
+    if name == "tests":
+        return _render_tests(fs_cfg, cmd.args), False
     return f"unknown command: /{name}  (try /help)", False
 
 
@@ -377,15 +475,22 @@ def chat_turn(
     *,
     client: QwenClient,
     system: str = prompts.CODER_SYSTEM,
+    fs_cfg: fs_tools.FsConfig | None = None,
 ) -> str:
     """Append `user_text` to history and return the assistant reply.
 
     `history` is mutated in place: user message added, then assistant
-    reply appended on success.
+    reply appended on success. If `fs_cfg` is provided, `@path` tokens
+    in `user_text` are expanded inline before sending to the model.
     """
     if not history or history[0].role != "system":
         history.insert(0, ChatMessage(role="system", content=system))
-    history.append(ChatMessage(role="user", content=user_text))
+    expanded = (
+        expand_at_mentions(fs_cfg, user_text)
+        if fs_cfg is not None
+        else user_text
+    )
+    history.append(ChatMessage(role="user", content=expanded))
     try:
         reply = client.chat(history)
     except Exception as exc:  # noqa: BLE001
@@ -431,17 +536,24 @@ def chat_turn_stream(
     *,
     client: QwenClient,
     system: str = prompts.CODER_SYSTEM,
+    fs_cfg: fs_tools.FsConfig | None = None,
 ):
     """Streaming counterpart of `chat_turn`. Yields `(chunk, accum)` tuples
     where `accum` is the full reply assembled so far. On stream end the
     final assistant reply is appended to `history`. On error a single
     final chunk with the error message is yielded and history rolled back
     (the trailing user message stays so the user can retry, but no
-    partial assistant message is committed).
+    partial assistant message is committed). When `fs_cfg` is provided,
+    `@path` tokens in `user_text` are expanded inline before sending.
     """
     if not history or history[0].role != "system":
         history.insert(0, ChatMessage(role="system", content=system))
-    history.append(ChatMessage(role="user", content=user_text))
+    expanded = (
+        expand_at_mentions(fs_cfg, user_text)
+        if fs_cfg is not None
+        else user_text
+    )
+    history.append(ChatMessage(role="user", content=expanded))
     accum_parts: list[str] = []
     try:
         for chunk in client.chat_stream(history):
@@ -549,12 +661,14 @@ def _build_app(
             reply_parts: list[str] = []
             try:
                 for chunk, _accum in chat_turn_stream(
-                    self.history, line, client=self.client
+                    self.history, line, client=self.client, fs_cfg=self.fs_cfg
                 ):
                     reply_parts.append(chunk)
             except AttributeError:
                 # Client may not implement chat_stream -- fall back.
-                reply = chat_turn(self.history, line, client=self.client)
+                reply = chat_turn(
+                    self.history, line, client=self.client, fs_cfg=self.fs_cfg
+                )
                 log.write(f"[green]qwen>[/green] {reply}")
                 return
             log.write(f"[green]qwen>[/green] {''.join(reply_parts)}")

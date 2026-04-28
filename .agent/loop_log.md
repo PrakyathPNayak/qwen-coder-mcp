@@ -1979,3 +1979,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P2 user-requested (claude code parity).
 - ACT: shell_tools.py (~250 lines) + 36 shell_tools tests + 16 TUI dispatch tests. Five new slash commands. README will be updated next loop. 765 passed.
 
+
+## Loop 136 — /git read-only + /tests + @file mention expansion
+- DECIDE: copilot and claude code both expand @file mentions inline and let the user run git status / pytest from the chat box. Add expand_at_mentions plus /git plus /tests.
+- DEVIL:
+  - Correctness: /git allow list is status log diff show branch remote rev-parse only. log auto bounds to last twenty oneline if user did not pass -n. /tests defaults to -q. expand at mentions silently skips unreadable paths so a typo or sandbox escape leaves the literal token in the prompt rather than blocking the user.
+  - Scope: the at expansion only triggers when fs_cfg is provided to chat_turn or chat_turn_stream so unit tests that pass no fs_cfg keep their previous behaviour.
+  - Priority: P3 user-requested parity.
+- ACT: git allow list dispatcher; tests slash; expand_at_mentions helper that scans for at word path tokens and appends file bodies under fenced blocks. Fifteen new tests covering git status git not allowed git usage tests run pytest and seven at expansion cases plus chat_turn integration. 776 passed.
+
