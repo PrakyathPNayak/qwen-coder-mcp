@@ -94,6 +94,7 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/unpin",
     "/pinned",
     "/open",
+    "/cd",
     "/quit",
 )
 
@@ -141,6 +142,7 @@ Slash commands:
   /unpin               Clear all pinned files from the system prompt
   /pinned              List currently pinned files
   /open <path>         Launch $EDITOR on a file in the repo
+  /cd [path]           Show or change the fs sandbox root for the session
   /quit                Exit
 
 @<path> tokens in plain chat are expanded inline as file contents.
@@ -355,6 +357,33 @@ def _render_open(cfg: fs_tools.FsConfig, path: str) -> str:
     if proc.returncode == 0:
         return f"(opened {path} in {parts[0]})"
     return f"(editor {parts[0]} exited with {proc.returncode})"
+
+
+_CD_SENTINEL = "__CD__"
+
+
+def _render_cd(cfg: fs_tools.FsConfig, path: str) -> str:
+    """Validate ``path`` resolves to an existing directory and return a
+    sentinel string the App layer recognises to swap its FsConfig root.
+
+    Both absolute paths and paths relative to the current sandbox root are
+    accepted. Symlinks are followed and the final destination must exist
+    and be a directory. The dispatcher returns the sentinel as ``text`` so
+    the App's ``on_input_submitted`` can intercept and re-bind ``self.fs_cfg``
+    to a new FsConfig with the same byte / entry limits but a new root.
+    Tests that call ``dispatch_slash`` directly can assert on the sentinel
+    prefix without needing a live App.
+    """
+    raw = Path(path).expanduser()
+    if raw.is_absolute():
+        target = raw.resolve()
+    else:
+        target = (cfg.root / raw).resolve()
+    if not target.exists():
+        return f"cd error: no such directory: {path}"
+    if not target.is_dir():
+        return f"cd error: not a directory: {path}"
+    return f"{_CD_SENTINEL}{target}"
 
 
 def _render_sysinfo(    client: QwenClient,
@@ -1175,6 +1204,16 @@ def _build_app(
                     # user typed it again.
                     line = text[len("__RETRY__"):]
                     log.write(f"[yellow](retrying)[/yellow] {line}")
+                elif isinstance(text, str) and text.startswith(_CD_SENTINEL):
+                    new_root = text[len(_CD_SENTINEL):]
+                    self.fs_cfg = fs_tools.FsConfig(
+                        root=Path(new_root),
+                        max_read_bytes=self.fs_cfg.max_read_bytes,
+                        max_write_bytes=self.fs_cfg.max_write_bytes,
+                        max_list_entries=self.fs_cfg.max_list_entries,
+                    )
+                    log.write(f"(cwd) {new_root}")
+                    return
                 else:
                     log.write(text)
                     if quit_now:

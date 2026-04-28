@@ -2115,3 +2115,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P1 user reported. The whole chat path is unusable while the engine cannot warm up.
 - ACT: rewrote scripts/serve_qwen.sh defaults max_len 4096 gpu_util 0.80 max_seqs 4 kv_dtype fp8 eager 1. Added PYTORCH_CUDA_ALLOC_CONF expandable_segments True export. Added QWEN_SERVE_MAX_SEQS QWEN_SERVE_KV_DTYPE QWEN_SERVE_EAGER env knobs and updated header comments. Wired new flags max num seqs kv cache dtype enforce eager into the vllm serve invocation. Updated docs LOCAL_SERVE.md troubleshooting entry to reflect the new defaults and document the further dropdown order. bash dash n syntax check passes. Eight hundred forty seven passed.
 
+
+## Loop 151 — /cd switches fs sandbox root for the session
+- DECIDE: claude code lets the user retarget the workspace mid session. ml intern has a /cwd. Add /cd via a sentinel string the App intercepts to swap self.fs_cfg.
+- DEVIL:
+  - Correctness: the dispatcher returns a __CD__ prefixed string and the App detects and swaps. Mirrors the existing __RETRY__ sentinel pattern so there is one mechanism for tests to assert against without a live App. New FsConfig copies the same byte and entry limits so the per session quotas survive the swap. expanduser handles tilde paths and resolve follows symlinks. exists and is_dir checks fail loudly with a friendly message before the sentinel is emitted.
+  - Scope: does not persist the new root across restarts. A user who quits and relaunches gets back the original root. That is the correct call because the launch path passes a root via cli args and a persisted cd would silently override it.
+  - Priority: P5.
+- ACT: _CD_SENTINEL constant. _render_cd helper. Dispatcher branch with an empty arg case that just shows the current root. App.on_input_submitted handles the new sentinel by rebuilding FsConfig with the same byte and entry limits and writing a cwd status line to the RichLog. SLASH_COMMANDS gains cd. Help text updated. Five tests cover empty arg showing cwd relative subdir returning sentinel absolute path returning sentinel missing path erroring and a file path erroring with not a directory. Eight hundred fifty two passed.
+

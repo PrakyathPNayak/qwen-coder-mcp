@@ -1736,3 +1736,49 @@ class TestOpenSlash:
             fs_cfg=cfg,
         )
         assert "editor not found" in text
+
+
+# ----------------------------------------------------------- Loop 151
+class TestCdSlash:
+    def test_no_arg_shows_cwd(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/cd"), client=_FakeClient(), fs_cfg=cfg,
+        )
+        assert "(cwd)" in text
+        assert str(tmp_path) in text
+
+    def test_relative_subdir_returns_sentinel(self, tmp_path: Path) -> None:
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/cd sub"), client=_FakeClient(), fs_cfg=cfg,
+        )
+        assert text.startswith(tui._CD_SENTINEL)
+        assert str(sub.resolve()) in text
+
+    def test_absolute_path_returns_sentinel(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash(f"/cd {tmp_path}"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+        )
+        assert text.startswith(tui._CD_SENTINEL)
+
+    def test_missing_path_errors(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/cd nope"), client=_FakeClient(), fs_cfg=cfg,
+        )
+        assert "no such directory" in text
+
+    def test_path_to_file_errors(self, tmp_path: Path) -> None:
+        f = tmp_path / "a.txt"
+        f.write_text("hi\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/cd a.txt"), client=_FakeClient(), fs_cfg=cfg,
+        )
+        assert "not a directory" in text
