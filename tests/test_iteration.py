@@ -764,6 +764,7 @@ class TestOuterOutcomeCategories:
             "qwen_error_devils_advocate",
             "budget_exceeded",
             "no_candidate_files",
+            "crashed",
         }
         assert expected.issubset(L.OUTER_OUTCOME_CATEGORIES)
 
@@ -832,31 +833,34 @@ class TestOuterOutcomeCategories:
     def test_no_extras_beyond_emitted(self):
         """Inverse audit: every category in the frozenset is actually
         emitted somewhere as the leading token of a string literal that
-        is the first arg of `_finish` or `_finish_no_file`. Tightened
-        from a substring scan (which gave false positives if the token
-        appeared in a comment, docstring, or a different string literal
-        context) to an AST literal scan -- so a stale category that
-        only survives in a comment will fail the audit."""
+        is the first arg of `_finish`/`_finish_no_file` OR the second
+        arg (outcome) of a direct `_write_timing` call (loop 105 added
+        the synthetic `crashed` outcome via `_write_timing` from the
+        main loop's crash branch). Tightened from a substring scan
+        which gave false positives on comment/docstring mentions."""
         from agent import loop as L
         import ast
         src = Path(L.__file__).read_text(encoding="utf-8")
         tree = ast.parse(src)
         emitted: set[str] = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            f = node.func
-            if not (isinstance(f, ast.Name) and f.id in {"_finish", "_finish_no_file"}):
-                continue
-            if not node.args:
-                continue
-            arg = node.args[0]
+
+        def _record_literal_arg(arg: ast.AST) -> None:
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                 emitted.add(arg.value.split(":", 1)[0])
             elif isinstance(arg, ast.JoinedStr) and arg.values:
                 first = arg.values[0]
                 if isinstance(first, ast.Constant) and isinstance(first.value, str):
                     emitted.add(first.value.split(":", 1)[0])
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            f = node.func
+            if isinstance(f, ast.Name):
+                if f.id in {"_finish", "_finish_no_file"} and node.args:
+                    _record_literal_arg(node.args[0])
+                elif f.id == "_write_timing" and len(node.args) >= 2:
+                    _record_literal_arg(node.args[1])
         unused = L.OUTER_OUTCOME_CATEGORIES - emitted
         assert not unused, (
             f"OUTER_OUTCOME_CATEGORIES has stale tokens never emitted: {sorted(unused)}"
@@ -3106,4 +3110,51 @@ class TestMainLoopCrashFlushesSwallowSummaries:
         new_lines = [l for l in second if l not in first]
         assert not new_lines, (
             f"second _log_swallow_summaries call emitted duplicate lines: {new_lines}"
+        )
+
+
+class TestCrashedOutcomeTimingRecord:
+    """Loop 105: when `_iteration` raises, main()'s crash branch
+    writes a synthetic timing.log record with outcome="crashed" so
+    analytics counting outcomes per category have a signal for crash
+    rate. Without this, runtime.log holds the traceback but timing.log
+    silently undercounts iterations."""
+
+    def test_crashed_in_outer_categories(self):
+        from agent import loop as L
+        assert "crashed" in L.OUTER_OUTCOME_CATEGORIES
+
+    def test_crashed_outer_category_extraction(self):
+        from agent import loop as L
+        assert L._outer_outcome_category("crashed") == "crashed"
+
+    def test_main_crash_branch_calls_write_timing(self):
+        """AST audit: the main()-while-except-Exception block must
+        contain a `_write_timing(..., "crashed", ...)` call."""
+        from agent import loop as L
+        import ast
+        src = Path(L.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        found = False
+        for func in ast.walk(tree):
+            if not (isinstance(func, ast.FunctionDef) and func.name == "main"):
+                continue
+            for node in ast.walk(func):
+                if not isinstance(node, ast.ExceptHandler):
+                    continue
+                for call in ast.walk(node):
+                    if (
+                        isinstance(call, ast.Call)
+                        and isinstance(call.func, ast.Name)
+                        and call.func.id == "_write_timing"
+                    ):
+                        if len(call.args) >= 2:
+                            arg = call.args[1]
+                            if (
+                                isinstance(arg, ast.Constant)
+                                and arg.value == "crashed"
+                            ):
+                                found = True
+        assert found, (
+            "main()'s crash branch must call _write_timing with outcome='crashed'"
         )

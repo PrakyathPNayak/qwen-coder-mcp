@@ -942,6 +942,7 @@ OUTER_OUTCOME_CATEGORIES: frozenset[str] = frozenset({
     "qwen_error_devils_advocate",
     "budget_exceeded",
     "no_candidate_files",
+    "crashed",
 })
 
 
@@ -1953,6 +1954,7 @@ def main() -> None:
     )
     try:
         while True:
+            iter_monotonic_outer = time.monotonic()
             try:
                 outcome = _iteration(
                     client, settings.loop_max_file_bytes, settings.loop_push
@@ -1970,6 +1972,22 @@ def main() -> None:
                 # best-effort fallback. `_log_swallow_summaries` is
                 # itself try/except-wrapped so it cannot re-raise.
                 _log_swallow_summaries()
+                # Loop 105: emit a synthetic timing.log record so the
+                # crash is visible to analytics counting outcomes per
+                # category. Without this, runtime.log has the
+                # traceback but timing.log undercounts iterations and
+                # crash-rate dashboards have no signal. `_write_timing`
+                # is itself rate-limited via `_TIMING_SWALLOW_LOG` so
+                # this best-effort write cannot raise.
+                try:
+                    _write_timing(
+                        Path("."),
+                        "crashed",
+                        {},
+                        iter_monotonic=iter_monotonic_outer,
+                    )
+                except Exception:  # observability: never break the loop
+                    pass
             iteration_count += 1
             global _CURRENT_ITERATION
             _CURRENT_ITERATION = iteration_count
