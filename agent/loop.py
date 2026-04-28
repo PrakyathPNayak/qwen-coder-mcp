@@ -174,9 +174,39 @@ def _strip_fence(text: str) -> str:
     return text
 
 
+# Phrases that signal "no real findings" when they form the entire reply.
+# Matched only when the response has no bullet or numbered-list markers,
+# so a longer reply that happens to *contain* "no issues" inside one of
+# its bullets is still parsed for that bullet.
+_NO_ISSUE_RE = re.compile(
+    r"""^\s*(?:
+        no\s+(?:issues?|bugs?|problems?|errors?|findings?|defects?|concerns?)
+            (?:\s+found)?
+            (?:\s+(?:in|with)\s+(?:this|the)\s+(?:file|code))?\s*[.!]?
+        |
+        (?:(?:everything|this(?:\s+code)?|the\s+code)\s+)?
+            looks?\s+(?:good|fine|clean|ok|okay|correct)
+            (?:\s+to\s+me)?\s*[.!]?
+        |
+        lgtm\s*[.!]?
+        |
+        nothing\s+(?:to\s+(?:fix|change|do|report)|wrong|broken)\s*[.!]?
+        |
+        clean\s*[.!]?
+        |
+        all\s+good\s*[.!]?
+    )\s*$""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
 def _parse_first_issue(text: str) -> str | None:
     text = text.strip()
     if not text or text.upper().startswith("NO_ISSUES"):
+        return None
+    # If the model returned a single benign "no findings" sentence with
+    # no list markers, treat it as clean.
+    if "\n" not in text and _NO_ISSUE_RE.match(text):
         return None
     # numbered list: "1. ...". Capture first item.
     m = re.search(r"(?ms)^\s*1[.)]\s+(.+?)(?=^\s*2[.)]\s+|\Z)", text)
@@ -186,7 +216,11 @@ def _parse_first_issue(text: str) -> str | None:
     m = re.search(r"(?ms)^\s*[-*]\s+(.+?)(?=^\s*[-*]\s+|\Z)", text)
     if m:
         return m.group(1).strip()
-    return text.splitlines()[0].strip() or None
+    # Last-chance fallback: first line, but reject benign one-liners.
+    first = text.splitlines()[0].strip()
+    if not first or _NO_ISSUE_RE.match(first):
+        return None
+    return first
 
 
 def _verdict_accepts(text: str) -> tuple[bool, str]:

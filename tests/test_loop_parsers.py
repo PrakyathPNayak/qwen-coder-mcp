@@ -105,6 +105,53 @@ class TestParseFirstIssue:
         text = "There is a race condition in foo()."
         assert L._parse_first_issue(text) == "There is a race condition in foo()."
 
+    # ---- benign no-issue replies must not become spurious "issues" ----
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "No issues found.",
+            "No issues.",
+            "No bugs found in this file.",
+            "No bugs.",
+            "No problems with the code.",
+            "No findings.",
+            "No defects found.",
+            "Looks good.",
+            "Looks good to me.",
+            "Looks fine.",
+            "looks ok",
+            "Everything looks good.",
+            "This code looks correct.",
+            "The code looks clean.",
+            "LGTM",
+            "lgtm.",
+            "Nothing to fix.",
+            "Nothing to change.",
+            "Nothing wrong.",
+            "Clean.",
+            "All good.",
+            "  No issues found.   ",  # leading/trailing whitespace
+        ],
+    )
+    def test_benign_no_issue_replies_return_none(self, reply):
+        assert L._parse_first_issue(reply) is None, (
+            f"benign reply was misread as an issue: {reply!r}"
+        )
+
+    def test_real_issue_containing_word_no_is_still_parsed(self):
+        """A bullet that mentions 'no' must not be swallowed by the
+        no-issue short-circuit."""
+        text = "- There is no bound check on the index variable."
+        out = L._parse_first_issue(text)
+        assert out == "There is no bound check on the index variable."
+
+    def test_multiline_with_bullet_after_benign_intro_uses_bullet(self):
+        """Defensive: model says 'looks good but...' then lists. The
+        bullet must win over the benign-intro short-circuit because the
+        text contains list markers."""
+        text = "Looks fine, but here are some issues:\n- Off-by-one in foo()\n"
+        assert L._parse_first_issue(text) == "Off-by-one in foo()"
+
 
 # ---------------------------------------------------------- _verdict_accepts
 class TestVerdictAccepts:

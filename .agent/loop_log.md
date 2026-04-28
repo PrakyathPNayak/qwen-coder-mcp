@@ -348,3 +348,32 @@ artefacts.
   iteration. Pre-fix this would have failed with out_of_scope.
 
 **Result**: 93/93 green. Commit `<filled by git>`.
+
+## Loop 12 — `_parse_first_issue` no-issue allow-list
+**Bug**: "No issues found." was returned as the first "issue", causing
+the loop to send a wasted `propose_fix_user` + `devils_advocate_user`
+round-trip on every clean file. With a 27B model that's ~30s of GPU time
++ token cost burned per clean scan, multiplied by every loop.
+
+**Devil**: false negatives — what if a real issue happens to mention
+"no issues"? Counter: short-circuit only fires when (a) the entire reply
+is one line, (b) it has no list markers, and (c) it matches a strict
+allow-list regex of "no findings"/"looks good"/"lgtm"/"nothing to fix"
+phrases. A bullet that contains "no issues" (e.g. "- There is no bound
+check…") is parsed as a real issue. Verified by
+`test_real_issue_containing_word_no_is_still_parsed` and
+`test_multiline_with_bullet_after_benign_intro_uses_bullet`.
+
+**Fix**: added `_NO_ISSUE_RE` (verbose regex covering: no
+{issues|bugs|problems|errors|findings|defects|concerns} [found] [in/with
+{this|the} {file|code}]; [everything|this [code]|the code] looks
+{good|fine|clean|ok|okay|correct} [to me]; lgtm; nothing to {fix|change|
+do|report}/wrong/broken; clean; all good). Short-circuit applied at the
+top of `_parse_first_issue` (when no list markers in the text) AND at
+the prose fallback (last-line rejection).
+
+**Tests**: 25 new cases in `tests/test_loop_parsers.py` —
+parametrized over 22 benign replies (all return None), plus two
+adversarial cases ensuring real bullets containing "no" still parse.
+
+**Result**: 117/117 green. Commit `<filled by git>`.

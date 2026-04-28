@@ -1,18 +1,19 @@
 # Next loop seed
 
 ## Candidates ranked
-1. **(P3) `_parse_first_issue` false-positive on benign no-issue replies.**
-   "No issues found." → returns "No issues found." as if it were an issue,
-   wasting a coder + devil round-trip. Add a regex/allow-list of no-issue
-   phrases ("no issues", "looks good", "clean", "lgtm", "nothing to fix",
-   "no bugs", etc.) returning None when the entire response matches. Test
-   with realistic Qwen-style "no findings" replies.
+1. **(P3) `prompts.py` builders are uncovered.** A regression dropping the
+   "respond ONLY with a unified diff inside ```diff fences" sentence from
+   the coder prompt makes every fix `not_a_unified_diff`. Contract tests:
+   `propose_fix_user` contains the diff-fence instruction, `devils_advocate_user`
+   contains the VERDICT: ACCEPT/REJECT contract, `find_bugs_user` contains
+   the "list each bug as a numbered/bulleted item" instruction.
 
-2. **(P3) `prompts.py` builders are uncovered.** Contract tests on each
-   builder asserting the critical sentences are present.
+2. **(P5) `_apply_diff` should reject diffs whose target paths contain
+   `..` traversal segments before invoking git apply.**
 
-3. **(P5) `_apply_diff` should reject diffs whose target path contains
-   `..` traversal segments before invoking git apply.
+3. **(P5) `_apply_diff` accepts diffs with no `+++ b/` line.** A diff that
+   has only `--- a/file` may be a deletion-only patch, but malformed
+   single-sided diffs should not crash. Sanity-check structure.
 
 4. **(P6) `server.py` builds `QwenClient` at `_build_server`.** Defer +
    smoke import test.
