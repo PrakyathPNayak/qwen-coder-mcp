@@ -801,10 +801,10 @@ class TestOuterOutcomeCategories:
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            if not (isinstance(func, ast.Name) and func.id == "_finish"):
+            if not (isinstance(func, ast.Name) and func.id in {"_finish", "_finish_no_file"}):
                 continue
             if not node.args:
-                unrecognised_shapes.append(f"_finish() with no args at line {node.lineno}")
+                unrecognised_shapes.append(f"{func.id}() with no args at line {node.lineno}")
                 continue
             arg = node.args[0]
             tok: str | None
@@ -814,16 +814,16 @@ class TestOuterOutcomeCategories:
                 tok = _leading_token_from_joinedstr(arg)
             else:
                 unrecognised_shapes.append(
-                    f"_finish(<{type(arg).__name__}>) at line {node.lineno}"
+                    f"{func.id}(<{type(arg).__name__}>) at line {node.lineno}"
                 )
                 continue
             if tok is None:
-                unrecognised_shapes.append(f"_finish empty-string at line {node.lineno}")
+                unrecognised_shapes.append(f"{func.id} empty-string at line {node.lineno}")
                 continue
             tokens.add(tok)
 
         assert not unrecognised_shapes, (
-            f"_finish call shapes the audit doesn't recognise: {unrecognised_shapes}"
+            f"_finish/_finish_no_file call shapes the audit doesn't recognise: {unrecognised_shapes}"
         )
         unknown = tokens - L.OUTER_OUTCOME_CATEGORIES
         assert not unknown, (
@@ -2942,3 +2942,50 @@ class TestIterationEarlyExitTimingAndSummaries:
         L._iteration(client=None, max_bytes=1000, push=False)
         # Delta cache must now know about the seeded count.
         assert L._LAST_SWALLOW_SUMMARY_COUNTS.get("_append_state", 0) >= 1
+
+
+class TestFinishNoFileAuditCoverage:
+    """Loop 100: explicitly verify the AST audit catches drift in
+    `_finish_no_file` calls (added in loop 99). If a future change
+    introduces a `_finish_no_file("not_a_real_category")` outcome, the
+    `test_every_finish_call_in_source_uses_known_category` test must
+    fail. Demonstrate by surfacing the actual tokens audited so the
+    set is locked in."""
+
+    def test_finish_no_file_tokens_in_frozenset(self):
+        """The two outcomes loop 99 added (`no_candidate_files`, `skip`)
+        are already in the frozenset; verify the AST audit sees the
+        `_finish_no_file` calls and the leading tokens are recognised."""
+        from agent import loop as L
+        import ast
+        src = Path(L.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        finish_no_file_tokens: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            f = node.func
+            if not (isinstance(f, ast.Name) and f.id == "_finish_no_file"):
+                continue
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                finish_no_file_tokens.add(arg.value.split(":", 1)[0])
+            elif isinstance(arg, ast.JoinedStr) and arg.values:
+                first = arg.values[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    finish_no_file_tokens.add(first.value.split(":", 1)[0])
+        assert finish_no_file_tokens, "no _finish_no_file calls found in agent/loop.py"
+        assert finish_no_file_tokens.issubset(L.OUTER_OUTCOME_CATEGORIES), (
+            f"_finish_no_file emits unknown categories: "
+            f"{finish_no_file_tokens - L.OUTER_OUTCOME_CATEGORIES}"
+        )
+
+    def test_finish_no_file_audit_actually_runs(self):
+        """Sanity: `_finish_no_file` exists as a usage point so the
+        audit's expanded scope from {_finish} -> {_finish, _finish_no_file}
+        actually has work to do. Without this, the expansion is dead
+        code and we're auditing nothing extra."""
+        from agent import loop as L
+        src = Path(L.__file__).read_text(encoding="utf-8")
+        # At least one _finish_no_file( call site
+        assert "_finish_no_file(" in src

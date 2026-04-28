@@ -1656,3 +1656,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: Could also hoist `iter_monotonic` capture earlier so a crash in `_abort_rebase_if_any` is timed -- but that helper is best-effort and never raises (already audited). Skipping.
   - Risk: Now timing.log rows for `category=no_candidate_files` are common when the candidate-files cache is being rebuilt; downstream analytics querying outcome counts may surprise. But that's the correct behaviour: visibility of no-op iterations was the goal.
 - ACT: ~12-line refactor adding `_finish_no_file`; 3 new tests covering both early-exit paths and the summary side-effect. 516 passed.
+
+## Loop 100 — Categories drift audit didn't see _finish_no_file
+- OBSERVE: Loop 99 added `_finish_no_file(...)` for the early-exit paths but the AST audit `test_every_finish_call_in_source_uses_known_category` only walks `_finish` calls. A future drift like `_finish_no_file("not_a_real_category")` would slip past the audit.
+- ORIENT: This is a near-miss from loop 99. Caught it now before it becomes a real bug.
+- DECIDE: Expand the AST audit's func-name match from `{"_finish"}` to `{"_finish", "_finish_no_file"}`. Add a paired test that explicitly extracts `_finish_no_file` tokens and asserts they're a subset of `OUTER_OUTCOME_CATEGORIES`.
+- DEVIL:
+  - Correctness: Both outcomes ("no_candidate_files", "skip") are already in the frozenset (verified via the existing `_outer_outcome_category` tests). The audit expansion just makes that constraint enforceable going forward.
+  - Test redundancy: Two new tests overlap with the existing audit. Kept anyway because (a) `test_finish_no_file_tokens_in_frozenset` explicitly fails if `_finish_no_file` is renamed without updating the audit, and (b) `test_finish_no_file_audit_actually_runs` confirms the expansion isn't dead code.
+- ACT: 4-line audit expansion + 2 new tests. 518 passed.
