@@ -91,6 +91,7 @@ Copy `.env.example` to `.env` and adjust if needed:
 | `QWEN_AUTO_COMPRESS` | `1` | Loop 240: drop oldest non-protected messages when prompt + completion would overflow `QWEN_SERVER_MAX_LEN`. System messages and the last user message are always preserved. Set `0` to disable (request goes straight through to vLLM, which will 400 on overflow). |
 | `QWEN_CONTEXT_RESERVE` | `256` | Loop 240: tokens kept free of prompt + completion as headroom for chat-template overhead (per-message role tags, eot markers). Raise if you see vLLM still 400'ing on edge-case overflows. |
 | `QWEN_CHARS_PER_TOKEN` | `3.0` | Loop 240: estimator ratio used for client-side token counting. Code/markdown is ~3 chars/token on Qwen3-Next; English prose is closer to 4. Lower → tighter clamping, more aggressive compression. |
+| `QWEN_PER_MESSAGE_TOKENS` | `6` | Loop 241: ChatML wrapper overhead added per message during estimation. Qwen3-Next wraps every message with `<\|im_start\|>role\n...<\|im_end\|>\n` (~4-7 tokens). On 50-turn histories the un-accounted overhead added up to 300+ tokens. Set `0` to disable. |
 | `QWEN_DISABLE_THINK_STRIP` | unset | Set `1` to disable stripping of `<think>...</think>` reasoning blocks from assistant content. |
 | `LOOP_INTERVAL_SECONDS` | `45` | Sleep between iterations |
 | `LOOP_MAX_FILE_BYTES` | `60000` | Skip files larger than this |

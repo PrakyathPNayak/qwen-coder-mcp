@@ -1035,6 +1035,10 @@ class TestReadmeKnobsLoop239:
         text = self._readme()
         assert "`QWEN_CHARS_PER_TOKEN`" in text
 
+    def test_readme_documents_per_message_tokens_knob(self):
+        text = self._readme()
+        assert "`QWEN_PER_MESSAGE_TOKENS`" in text
+
 
 # ============================================================ Loop 240
 # Context compression: drop oldest non-protected messages so prompt +
@@ -1153,7 +1157,7 @@ class TestContextCompressionLoop240:
         assert mt == 100
 
     def test_drops_oldest_non_protected_when_overflow(self, monkeypatch):
-        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
         # cap=200 tokens, target completion=50, reserve=0.
         # Each message content "x"*150 -> 50 tokens at 3 cpt.
         c = self._client(
@@ -1181,7 +1185,7 @@ class TestContextCompressionLoop240:
         assert len(out) < len(msgs)
 
     def test_preserves_all_system_messages(self, monkeypatch):
-        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
         c = self._client(
             lambda r: _ok_response("ok"),
             self._settings_with_cap(cap=300, max_tokens=50),
@@ -1200,7 +1204,7 @@ class TestContextCompressionLoop240:
         assert roles.count("system") == 2
 
     def test_preserves_last_user_even_if_oldest_was_user(self, monkeypatch):
-        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
         c = self._client(
             lambda r: _ok_response("ok"),
             self._settings_with_cap(cap=200, max_tokens=20),
@@ -1221,7 +1225,7 @@ class TestContextCompressionLoop240:
         assert last_content == "tail"
 
     def test_clamps_max_tokens_when_protected_msgs_alone_overflow(self, monkeypatch):
-        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
         c = self._client(
             lambda r: _ok_response("ok"),
             self._settings_with_cap(cap=100, max_tokens=80),
@@ -1238,7 +1242,7 @@ class TestContextCompressionLoop240:
         assert mt == 10
 
     def test_returns_one_when_protected_msgs_alone_exceed_cap(self, monkeypatch):
-        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
         c = self._client(
             lambda r: _ok_response("ok"),
             self._settings_with_cap(cap=50, max_tokens=80),
@@ -1268,7 +1272,7 @@ class TestContextCompressionLoop240:
         assert len(out) == len(msgs)
 
     def test_caller_messages_list_not_mutated(self, monkeypatch):
-        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
         c = self._client(
             lambda r: _ok_response("ok"),
             self._settings_with_cap(cap=200, max_tokens=20),
@@ -1285,7 +1289,7 @@ class TestContextCompressionLoop240:
 
     # ---------------------------------------------------- Wired into chat
     def test_chat_sends_compressed_messages_to_server(self, monkeypatch):
-        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
         seen: dict = {}
 
         def handler(req):
@@ -1307,7 +1311,7 @@ class TestContextCompressionLoop240:
         assert sent_roles[-1] == "user"
 
     def test_chat_stream_also_compresses(self, monkeypatch):
-        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
         seen: dict = {}
 
         def handler(req):
@@ -1359,3 +1363,90 @@ class TestContextCompressionLoop240:
         # 65536 - sent_prompt - sent_max must be >= reserve(256)
         # to satisfy the server's cap.
         assert sent_prompt_tokens + sent_max + 256 <= 65536
+
+
+# ============================================================ Loop 241
+# Per-message ChatML wrapper overhead in token estimation.
+class TestPerMessageOverheadLoop241:
+    """Loop 241: Qwen3-Next chat template wraps each message with
+    ``<|im_start|>role\\n...<|im_end|>\\n`` -- roughly 4-7 tokens per
+    message of pure overhead the content estimator doesn't see. With a
+    50-turn history that's 300+ tokens of silent under-counting, enough
+    to flip a "barely fits" request into a server-side 400. Loop 241
+    accounts for it via ``QWEN_PER_MESSAGE_TOKENS`` (default 6)."""
+
+    def test_default_per_message_overhead_is_six(self):
+        from qwen_coder_mcp.qwen_client import _per_message_overhead_tokens
+
+        assert _per_message_overhead_tokens() == 6
+
+    def test_env_override(self, monkeypatch):
+        from qwen_coder_mcp.qwen_client import _per_message_overhead_tokens
+
+        monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "10")
+        assert _per_message_overhead_tokens() == 10
+
+    def test_invalid_or_negative_falls_back(self, monkeypatch):
+        from qwen_coder_mcp.qwen_client import _per_message_overhead_tokens
+
+        monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "not-a-num")
+        assert _per_message_overhead_tokens() == 6
+        monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "-3")
+        assert _per_message_overhead_tokens() == 6
+
+    def test_prompt_tokens_includes_per_message_overhead(self):
+        from qwen_coder_mcp.qwen_client import _estimate_tokens
+
+        c = TestContextCompressionLoop240._client(
+            lambda r: _ok_response("ok"),
+            TestContextCompressionLoop240._settings_with_cap(cap=10000),
+        )
+        msgs = [
+            ChatMessage("system", "x" * 30),  # 10 content tok
+            ChatMessage("user", "x" * 30),    # 10 content tok
+            ChatMessage("assistant", "x" * 30),  # 10 content tok
+        ]
+        # 3 msgs * (10 content + 6 overhead) = 48 tok.
+        assert c._prompt_tokens(msgs) == 48
+        # Sanity: pure content estimate is 30.
+        content_only = sum(_estimate_tokens(m.content) for m in msgs)
+        assert content_only == 30
+
+    def test_overhead_disabled_via_env(self, monkeypatch):
+        monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        c = TestContextCompressionLoop240._client(
+            lambda r: _ok_response("ok"),
+            TestContextCompressionLoop240._settings_with_cap(cap=10000),
+        )
+        msgs = [
+            ChatMessage("system", "x" * 30),
+            ChatMessage("user", "x" * 30),
+        ]
+        # Overhead off -> only content tokens count.
+        assert c._prompt_tokens(msgs) == 20
+
+    def test_overhead_makes_compression_fire_earlier(self, monkeypatch):
+        """Without overhead the request would just barely fit. With
+        the loop-241 overhead added, compression must fire."""
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "20")  # exaggerate
+        c = TestContextCompressionLoop240._client(
+            lambda r: _ok_response("ok"),
+            TestContextCompressionLoop240._settings_with_cap(cap=200, max_tokens=20),
+        )
+        # Each msg: 10 content + 20 overhead = 30 tok.
+        msgs = [
+            ChatMessage("system", "x" * 30),       # 30 tok protected
+            ChatMessage("user", "x" * 30),         # 30 tok droppable
+            ChatMessage("assistant", "x" * 30),    # 30 tok droppable
+            ChatMessage("user", "x" * 30),         # 30 tok droppable (NOT last)
+            ChatMessage("assistant", "x" * 30),    # 30 tok droppable
+            ChatMessage("user", "tail"),           # ~21 tok protected
+        ]
+        # Sum: 30+30+30+30+30+21 = 171 + 20 max_tokens = 191. Just fits.
+        # But note our 'tail' content is ~1 tok + 20 overhead = 21.
+        # So actually 30*5 + 21 = 171; 171 + 20 = 191 < 200. Fits!
+        # Let's force overflow with bigger history.
+        msgs.insert(1, ChatMessage("assistant", "x" * 30))  # +30 tok
+        out, _mt = c._compress_messages_to_fit(msgs, requested_max_tokens=20)
+        assert len(out) < len(msgs), "compression should have fired with overhead accounted"

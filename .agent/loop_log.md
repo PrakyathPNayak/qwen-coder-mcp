@@ -4087,3 +4087,26 @@ oldest-first FIFO not pair-aware but assistant-orphan is allowed by
 chat templates), Scope (compression only -- streaming filter, retry
 logic, server config untouched), Priority (P0; was the active user-
 reported regression). Suite ~1.5k green.
+
+## Loop 241 — per-message ChatML wrapper overhead in token estimation
+Loop-240 estimator only counted content tokens. Qwen3-Next's chat
+template wraps every message with `<|im_start|>role\n...<|im_end|>\n`
+which tokenizes to ~4-7 tokens per message of pure overhead. On a
+50-turn agent history that's 300+ tokens of silent under-counting --
+enough to flip a "barely fits" request into a vLLM 400 even after
+loop-240 compression.
+Fix: new _per_message_overhead_tokens() helper (default 6, env
+QWEN_PER_MESSAGE_TOKENS, set 0 to disable). _prompt_tokens() now adds
+overhead*N to the content estimate so compression fires earlier on
+long histories. README env table documented. +6 unit tests (default,
+env override, invalid fallback, prompt_tokens math, disable knob,
+overhead-makes-compression-fire-earlier behavioural test) +1 README
+drift test. Older loop-240 tests now monkeypatch QWEN_PER_MESSAGE_TOKENS=0
+to keep their exact-token math intact (they predate this knob).
+Devil step: Correctness (default 6 is mid-range, not aggressive --
+won't shrink prompt budgets unreasonably; off-by-one on system role
+which tokenizes slightly shorter is acceptable noise vs prior 0
+under-count), Scope (additive only -- _resolve_max_tokens, chat,
+chat_stream all picked up automatically through _prompt_tokens),
+Priority (P1 -- compounds loop-240's correctness; without it a 50-msg
+history could still slip past compression and 400). Suite ~1.5k green.

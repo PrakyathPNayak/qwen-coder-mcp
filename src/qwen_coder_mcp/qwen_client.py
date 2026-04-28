@@ -74,6 +74,30 @@ def _chars_per_token() -> float:
     return v
 
 
+def _per_message_overhead_tokens() -> int:
+    """Loop 241: ChatML wrapper tokens per message.
+
+    Qwen3-Next's chat template wraps every message with
+    ``<|im_start|>role\\n...<|im_end|>\\n``. Tokenized that's roughly
+    4-7 tokens per message of pure overhead that the content-based
+    ``_estimate_tokens()`` doesn't see. With a 50-turn history that's
+    300+ missing tokens -- enough to flip a "barely fits" request into
+    a vLLM 400.
+
+    Default 6 (mid-range; tokenizes accurately for 'user'/'assistant';
+    'system' is slightly less). Override via ``QWEN_PER_MESSAGE_TOKENS``.
+    Set to ``0`` to disable (legacy loop-240 behaviour).
+    """
+    raw = os.environ.get("QWEN_PER_MESSAGE_TOKENS", "6")
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return 6
+    if v < 0:
+        return 6
+    return v
+
+
 def _estimate_tokens(text: str) -> int:
     """Loop 240: char-based token estimate, conservative (rounds up)."""
     if not text:
@@ -326,7 +350,13 @@ class QwenClient:
         return ""
 
     def _prompt_tokens(self, messages: Sequence[Any]) -> int:
-        return sum(_estimate_tokens(self._msg_content(m)) for m in messages)
+        # Loop 241: per-message ChatML wrapper overhead is added on top
+        # of content tokens so the estimate isn't optimistic by
+        # 6*N tokens on long histories.
+        overhead = _per_message_overhead_tokens()
+        return sum(
+            _estimate_tokens(self._msg_content(m)) + overhead for m in messages
+        )
 
     def _compress_messages_to_fit(
         self,
