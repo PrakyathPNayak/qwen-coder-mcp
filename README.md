@@ -32,6 +32,14 @@ quantizations, and the llama.cpp fallback.
   - `summarize_repo` — high-level repo summary
   - `web_search` — DuckDuckGo HTML web search (no API key)
   - `fetch_url` — fetch a URL's text body (binary content refused, byte-capped)
+  - `read_file` — read a file from the configured repo root
+  - `list_dir` — list a directory inside the repo root
+  - `write_file` — write a file inside the repo root (utf-8)
+  - `apply_patch` — apply a unified diff via `git apply` (supports `check_only`)
+
+The filesystem tools are sandboxed to the directory pointed to by
+`$QWEN_MCP_FS_ROOT` (default: server's cwd). Paths that escape via
+`..` or symlinks are rejected.
 - **Backend-agnostic** Qwen client speaking the OpenAI Chat Completions
   protocol — works with vLLM, SGLang, Ollama (OAI shim), DashScope,
   OpenRouter, Together, etc.

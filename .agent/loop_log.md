@@ -1920,3 +1920,11 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: no caching, no robots.txt parsing -- defer; single-call use case dominates.
   - Priority: P3 user-requested feature gap. claude-code style web access.
 - ACT: 200-line module, 21 tests, README features list expanded. 627 passed.
+
+## Loop 129 — filesystem MCP tools (read_file, list_dir, write_file, apply_patch)
+- DECIDE: claude-code parity needs filesystem access. Pure module fs_tools.py with FsConfig (root, byte caps, entry caps), 4 helpers + 2 formatters, all sandboxed via realpath relative_to check.
+- DEVIL:
+  - Correctness: symlink escape covered by realpath resolution before relative_to. Binary detection via UTF-8 decode error. apply_patch shells `git apply` with timeout=30 and a tempfile so a malformed diff cannot stall the server.
+  - Scope: write_file refuses missing parent unless create_parents=True -- prevents accidental directory typos. apply_patch has check_only mode for TUI preview.
+  - Priority: P3 user-requested (claude-code parity). Lays groundwork for TUI agent loop.
+- ACT: 200-line module + 27 tests + 4 server tool entries with closure dispatch through fs_cfg. README updated. 654 passed.

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+from pathlib import Path
 from typing import Any
 
 from mcp.server import Server
@@ -12,12 +14,19 @@ from mcp.types import TextContent, Tool
 from .qwen_client import ChatMessage, QwenClient
 from . import prompts
 from . import web_tools
+from . import fs_tools
 
 
-def _build_server(client: QwenClient | None = None) -> tuple[Server, QwenClient]:
+def _default_fs_config() -> fs_tools.FsConfig:
+    root_str = os.environ.get("QWEN_MCP_FS_ROOT") or os.getcwd()
+    return fs_tools.FsConfig(root=Path(root_str))
+
+
+def _build_server(client: QwenClient | None = None, fs_config: fs_tools.FsConfig | None = None) -> tuple[Server, QwenClient]:
     server: Server = Server("qwen-coder-mcp")
     if client is None:
         client = QwenClient()
+    fs_cfg = fs_config or _default_fs_config()
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:  # type: ignore[override]
@@ -140,17 +149,62 @@ def _build_server(client: QwenClient | None = None) -> tuple[Server, QwenClient]
                     "required": ["url"],
                 },
             ),
+            Tool(
+                name="read_file",
+                description="Read a file from the configured repo root (utf-8, byte-capped).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"path": s},
+                    "required": ["path"],
+                },
+            ),
+            Tool(
+                name="list_dir",
+                description="List a directory inside the configured repo root.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"path": s},
+                },
+            ),
+            Tool(
+                name="write_file",
+                description="Write a file inside the configured repo root (utf-8).",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "path": s,
+                        "content": s,
+                        "create_parents": {"type": "boolean"},
+                    },
+                    "required": ["path", "content"],
+                },
+            ),
+            Tool(
+                name="apply_patch",
+                description=(
+                    "Apply a unified diff via `git apply`. Set check_only=true "
+                    "to test applicability without mutating the tree."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "diff": s,
+                        "check_only": {"type": "boolean"},
+                    },
+                    "required": ["diff"],
+                },
+            ),
         ]
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:  # type: ignore[override]
-        text = await asyncio.to_thread(_dispatch, client, name, arguments)
+        text = await asyncio.to_thread(_dispatch, client, name, arguments, fs_cfg)
         return [TextContent(type="text", text=text)]
 
     return server, client
 
 
-def _dispatch(client: QwenClient, name: str, args: dict[str, Any]) -> str:
+def _dispatch(client: QwenClient, name: str, args: dict[str, Any], fs_cfg: fs_tools.FsConfig | None = None) -> str:
     if name == "chat":
         sys_msg = args.get("system") or prompts.CODER_SYSTEM
         return client.system_user(
@@ -233,6 +287,35 @@ def _dispatch(client: QwenClient, name: str, args: dict[str, Any]) -> str:
         if res.get("truncated"):
             prefix += "# truncated\n"
         return prefix + str(res.get("text", ""))
+    if name in {"read_file", "list_dir", "write_file", "apply_patch"}:
+        cfg = fs_cfg or _default_fs_config()
+        try:
+            if name == "read_file":
+                res = fs_tools.read_file(cfg, str(args["path"]))
+                return fs_tools.format_read(res)
+            if name == "list_dir":
+                res = fs_tools.list_dir(cfg, str(args.get("path") or "."))
+                return fs_tools.format_list(res)
+            if name == "write_file":
+                res = fs_tools.write_file(
+                    cfg,
+                    str(args["path"]),
+                    str(args["content"]),
+                    create_parents=bool(args.get("create_parents", False)),
+                )
+                return f"wrote {res['path']} ({res['size']} bytes)"
+            if name == "apply_patch":
+                res = fs_tools.apply_patch(
+                    cfg,
+                    str(args["diff"]),
+                    check_only=bool(args.get("check_only", False)),
+                )
+                tag = "ok" if res["ok"] else "failed"
+                msg = res.get("message") or ""
+                kind = "check" if res["check_only"] else "apply"
+                return f"{kind}: {tag}\n{msg}"
+        except (fs_tools.FsError, Exception) as exc:  # noqa: BLE001
+            return f"{name} error: {type(exc).__name__}: {exc}"
     raise ValueError(f"unknown tool: {name}")
 
 
