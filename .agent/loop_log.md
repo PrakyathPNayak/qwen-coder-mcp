@@ -1665,3 +1665,13 @@ kwarg actually forwarded. Existing tests still pass.
   - Correctness: Both outcomes ("no_candidate_files", "skip") are already in the frozenset (verified via the existing `_outer_outcome_category` tests). The audit expansion just makes that constraint enforceable going forward.
   - Test redundancy: Two new tests overlap with the existing audit. Kept anyway because (a) `test_finish_no_file_tokens_in_frozenset` explicitly fails if `_finish_no_file` is renamed without updating the audit, and (b) `test_finish_no_file_audit_actually_runs` confirms the expansion isn't dead code.
 - ACT: 4-line audit expansion + 2 new tests. 518 passed.
+
+## Loop 101 — Removed 38 redundant in-test swallow-state resets
+- OBSERVE: Loops 94-95 added a conftest autouse fixture that resets every swallow logger and clears `_LAST_SWALLOW_SUMMARY_COUNTS` BEFORE AND AFTER every test. In-test calls to `L._FOO_SWALLOW_LOG.reset()` (head and tail of test) are now dead code -- they fire after the autouse pre-reset and before the autouse post-reset, accomplishing nothing. 38 such calls existed across the test file.
+- ORIENT: P5 cleanup, but the cost-of-staleness is real: a reader sees `L._TIMING_SWALLOW_LOG.reset()` at the top of a test and assumes the test cares about that state in a way that the fixture doesn't already cover. The redundancy is actively misleading.
+- DECIDE: Remove all 38 calls, with one wrinkle: a few were the only statement in a `try:` or `finally:` block, so deleting them leaves a syntactically empty block. Replace those with `pass`. Add an AST audit test that walks the test file and fails if any future test reintroduces the pattern.
+- DEVIL:
+  - Correctness: the autouse fixture runs `before AND after` each test. Mid-test resets (between two operations within one test) WOULD be load-bearing -- but a manual scan showed every removed call is a head-of-test or tail-of-test reset. None mid-test.
+  - Scope: the audit test catches future drift but doesn't catch the inverse: someone adding a state mutation that DOES need a reset. That's correctly out of scope -- the autouse fixture covers the general case.
+  - Risk: blindly running sed left a `finally:` block empty and broke pytest collection. Hand-audited the structural-context pass.
+- ACT: Custom Python script preserves block-only resets via `pass` substitution. 38 calls removed. New `TestNoRedundantSwallowResetsInTests` audits via AST. 519 passed.

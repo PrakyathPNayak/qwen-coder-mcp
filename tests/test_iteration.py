@@ -647,7 +647,6 @@ class TestRevertChanges:
         from agent import loop as L
         import subprocess
 
-        L._REVERT_SWALLOW_LOG.reset()
         monkeypatch.setattr(L._REVERT_SWALLOW_LOG, "schedule", "linear")
         monkeypatch.setattr(L._REVERT_SWALLOW_LOG, "every", 1)
 
@@ -663,7 +662,6 @@ class TestRevertChanges:
         # Both fallback failure logs must appear (loop 78: now via _REVERT_SWALLOW_LOG).
         assert any("reset --hard HEAD" in l for l in log_lines)
         assert any("reset --hard origin/main" in l for l in log_lines)
-        L._REVERT_SWALLOW_LOG.reset()
 
     def test_origin_main_fallback_skipped_when_head_reset_succeeds(self, monkeypatch):
         """Loop 73: don't try origin/main if HEAD reset already worked."""
@@ -885,7 +883,6 @@ class TestCommitAndPushEmptyTreeLog:
     def test_empty_staged_tree_logs_message(self, tmp_path, monkeypatch):
         from agent import loop as L
 
-        L._EMPTY_COMMIT_SWALLOW_LOG.reset()
         # Stub _run_git: add succeeds, status returns empty.
         calls = []
         def fake_run_git(*args, check=True):
@@ -909,7 +906,7 @@ class TestCommitAndPushEmptyTreeLog:
             # Must not have attempted commit/pull/push
             assert not any(c[0] in ("commit", "pull", "push") for c in calls)
         finally:
-            L._EMPTY_COMMIT_SWALLOW_LOG.reset()
+            pass
 
 
 class TestCommitAndPushTriState:
@@ -1104,7 +1101,6 @@ class TestWriteTimingFailureCounter:
     def test_first_failure_is_logged_with_count_1(self, tmp_path, monkeypatch):
         from agent import loop as L
         from pathlib import Path
-        L._TIMING_SWALLOW_LOG.reset()
         monkeypatch.setattr(L, "TIMING_FILE", tmp_path / "x" / "timing.log")
         # Force failure: rotate raises.
         monkeypatch.setattr(L, "_rotate_timing_if_oversized", lambda: (_ for _ in ()).throw(OSError("disk full")))
@@ -1113,12 +1109,10 @@ class TestWriteTimingFailureCounter:
         L._write_timing(Path("a.py"), "applied:a.py", {})
         assert any("_write_timing failed" in l and "count=1" in l for l in log_lines)
         assert L._TIMING_SWALLOW_LOG.count == 1
-        L._TIMING_SWALLOW_LOG.reset()
 
     def test_repeated_failures_are_rate_limited(self, tmp_path, monkeypatch):
         from agent import loop as L
         from pathlib import Path
-        L._TIMING_SWALLOW_LOG.reset()
         # Module logger uses exponential schedule. With every=100 default,
         # 50 failures fire at counts: 1, 2, 4, 8, 16, 32 = 6 logs.
         monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "every", 100)
@@ -1131,12 +1125,10 @@ class TestWriteTimingFailureCounter:
             L._write_timing(Path("a.py"), "applied:a.py", {})
         assert len(log_lines) == 6  # 1, 2, 4, 8, 16, 32
         assert L._TIMING_SWALLOW_LOG.count == 50
-        L._TIMING_SWALLOW_LOG.reset()
 
     def test_logs_every_nth_failure(self, tmp_path, monkeypatch):
         from agent import loop as L
         from pathlib import Path
-        L._TIMING_SWALLOW_LOG.reset()
         # Force linear schedule for predictable cadence verification.
         monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "every", 5)
         monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "schedule", "linear")
@@ -1152,12 +1144,10 @@ class TestWriteTimingFailureCounter:
         assert "count=5" in log_lines[1]
         assert "count=10" in log_lines[2]
         assert "count=15" in log_lines[3]
-        L._TIMING_SWALLOW_LOG.reset()
 
     def test_success_does_not_increment_counter(self, tmp_path, monkeypatch):
         from agent import loop as L
         from pathlib import Path
-        L._TIMING_SWALLOW_LOG.reset()
         monkeypatch.setattr(L, "TIMING_FILE", tmp_path / "timing.log")
         L._write_timing(Path("a.py"), "applied:a.py", {"phase1": 0.5})
         assert L._TIMING_SWALLOW_LOG.count == 0
@@ -1197,7 +1187,6 @@ class TestRateLimitedSwallowLogger:
 
     def test_state_logger_used_by_append_state(self, tmp_path, monkeypatch):
         from agent import loop as L
-        L._STATE_SWALLOW_LOG.reset()
         monkeypatch.setattr(L._STATE_SWALLOW_LOG, "schedule", "linear")
         monkeypatch.setattr(L._STATE_SWALLOW_LOG, "every", 100)
         monkeypatch.setattr(L, "_rotate_state_if_needed", lambda: (_ for _ in ()).throw(OSError("disk full")))
@@ -1209,11 +1198,9 @@ class TestRateLimitedSwallowLogger:
         # Linear with every=100: only count=1 fires.
         assert len(log_lines) == 1
         assert "_append_state failed" in log_lines[0]
-        L._STATE_SWALLOW_LOG.reset()
 
     def test_history_logger_used_by_write_history(self, tmp_path, monkeypatch):
         from agent import loop as L
-        L._HISTORY_SWALLOW_LOG.reset()
         monkeypatch.setattr(L._HISTORY_SWALLOW_LOG, "schedule", "linear")
         monkeypatch.setattr(L._HISTORY_SWALLOW_LOG, "every", 100)
         bad_root = tmp_path / "blocker"
@@ -1226,7 +1213,6 @@ class TestRateLimitedSwallowLogger:
         assert L._HISTORY_SWALLOW_LOG.count == 3
         assert len(log_lines) == 1
         assert "_write_history failed" in log_lines[0]
-        L._HISTORY_SWALLOW_LOG.reset()
 
     def test_exponential_schedule_logs_powers_of_two(self, monkeypatch):
         from agent import loop as L
@@ -1398,7 +1384,6 @@ class TestSwallowSummaries:
         # Reset global state
         for lg in L._swallow_loggers():
             lg.reset()
-        L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
         log_lines = []
         monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
         L._log_swallow_summaries()
@@ -1408,7 +1393,6 @@ class TestSwallowSummaries:
         from agent import loop as L
         for lg in L._swallow_loggers():
             lg.reset()
-        L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
         log_lines = []
         monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
         # Use linear schedule so we know exactly when logger logs vs suppresses.
@@ -1428,7 +1412,6 @@ class TestSwallowSummaries:
         from agent import loop as L
         for lg in L._swallow_loggers():
             lg.reset()
-        L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
         monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "schedule", "linear")
         monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "every", 1000)
         monkeypatch.setattr(L, "_log", lambda m: None)  # silent during driving
@@ -1447,7 +1430,6 @@ class TestSwallowSummaries:
         from agent import loop as L
         for lg in L._swallow_loggers():
             lg.reset()
-        L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
         monkeypatch.setattr(L._STATE_SWALLOW_LOG, "schedule", "linear")
         monkeypatch.setattr(L._STATE_SWALLOW_LOG, "every", 1000)
         monkeypatch.setattr(L, "_log", lambda m: None)
@@ -1468,7 +1450,6 @@ class TestSwallowSummaries:
         from agent import loop as L
         for lg in L._swallow_loggers():
             lg.reset()
-        L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
         # Make _swallow_loggers return a broken object whose .summary() raises.
         class _Bad:
             def summary(self):
@@ -1480,7 +1461,6 @@ class TestSwallowSummaries:
         from agent import loop as L
         for lg in L._swallow_loggers():
             lg.reset()
-        L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
         # Drive a real suppression then run an iteration to its end.
         monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "schedule", "linear")
         monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "every", 1000)
@@ -1501,7 +1481,6 @@ class TestPruneAndCursorRateLimited:
 
     def test_prune_failure_uses_rate_limited_logger(self, monkeypatch, tmp_path):
         from agent import loop as L
-        L._PRUNE_SWALLOW_LOG.reset()
         log_lines = []
         monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
         monkeypatch.setattr(L._PRUNE_SWALLOW_LOG, "schedule", "linear")
@@ -1523,7 +1502,6 @@ class TestPruneAndCursorRateLimited:
     def test_cursor_save_failure_uses_rate_limited_logger(self, monkeypatch, tmp_path):
         import os
         from agent import loop as L
-        L._CURSOR_SWALLOW_LOG.reset()
         monkeypatch.setattr(L, "CURSOR_FILE", tmp_path / ".loop" / "cursor.json")
         log_lines = []
         monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
@@ -1593,7 +1571,6 @@ class TestGitFailureRateLimited:
 
     def test_git_push_failure_rate_limited(self, monkeypatch):
         from agent import loop as L
-        L._GIT_REMOTE_SWALLOW_LOG.reset()
         log_lines = []
         monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
         monkeypatch.setattr(L._GIT_REMOTE_SWALLOW_LOG, "schedule", "linear")
@@ -1608,7 +1585,6 @@ class TestGitFailureRateLimited:
 
     def test_git_pull_failure_rate_limited(self, monkeypatch):
         from agent import loop as L
-        L._GIT_REMOTE_SWALLOW_LOG.reset()
         log_lines = []
         monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
         monkeypatch.setattr(L._GIT_REMOTE_SWALLOW_LOG, "schedule", "linear")
@@ -1621,7 +1597,6 @@ class TestGitFailureRateLimited:
 
     def test_git_add_failure_rate_limited(self, monkeypatch):
         from agent import loop as L
-        L._GIT_LOCAL_SWALLOW_LOG.reset()
         log_lines = []
         monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
         monkeypatch.setattr(L._GIT_LOCAL_SWALLOW_LOG, "schedule", "linear")
@@ -1635,7 +1610,6 @@ class TestGitFailureRateLimited:
 
     def test_git_commit_failure_rate_limited(self, monkeypatch):
         from agent import loop as L
-        L._GIT_LOCAL_SWALLOW_LOG.reset()
         log_lines = []
         monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
         monkeypatch.setattr(L._GIT_LOCAL_SWALLOW_LOG, "schedule", "linear")
@@ -1666,7 +1640,6 @@ class TestRevertChangesRateLimited:
     def test_repeated_failures_rate_limited(self, monkeypatch):
         from agent import loop as L
         import subprocess
-        L._REVERT_SWALLOW_LOG.reset()
         monkeypatch.setattr(L._REVERT_SWALLOW_LOG, "schedule", "linear")
         monkeypatch.setattr(L._REVERT_SWALLOW_LOG, "every", 100)
         log_lines = []
@@ -1684,14 +1657,12 @@ class TestRevertChangesRateLimited:
         first_pass_lines = [l for l in log_lines if "_revert_changes failed" in l]
         assert len(first_pass_lines) == 1
         assert L._REVERT_SWALLOW_LOG.count == 4
-        L._REVERT_SWALLOW_LOG.reset()
 
     def test_success_recovery_log_not_rate_limited(self, monkeypatch):
         """The 'recovered via' info logs are still bare _log calls so
         operators always see successful recoveries."""
         from agent import loop as L
         import subprocess
-        L._REVERT_SWALLOW_LOG.reset()
         log_lines = []
         monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
         # checkout fails, clean fails, reset HEAD succeeds.
@@ -1705,7 +1676,6 @@ class TestRevertChangesRateLimited:
         monkeypatch.setattr(L, "_run_git", fake_run)
         assert L._revert_changes() is True
         assert any("recovered via reset --hard" in l for l in log_lines)
-        L._REVERT_SWALLOW_LOG.reset()
 
 
 class TestModuleDocstringRecoveryContract:
@@ -1738,7 +1708,6 @@ class TestRunGitTimeoutRateLimited:
     def test_repeated_timeouts_rate_limited(self, monkeypatch):
         from agent import loop as L
         import subprocess
-        L._GIT_TIMEOUT_SWALLOW_LOG.reset()
         monkeypatch.setattr(L._GIT_TIMEOUT_SWALLOW_LOG, "schedule", "linear")
         monkeypatch.setattr(L._GIT_TIMEOUT_SWALLOW_LOG, "every", 5)
         log_lines = []
@@ -1758,12 +1727,10 @@ class TestRunGitTimeoutRateLimited:
         assert L._GIT_TIMEOUT_SWALLOW_LOG.count == 7
         # Context (the git args) appears in the line.
         assert any("git status --porcelain" in l for l in timeout_lines)
-        L._GIT_TIMEOUT_SWALLOW_LOG.reset()
 
     def test_timeout_with_check_true_still_raises(self, monkeypatch):
         from agent import loop as L
         import subprocess
-        L._GIT_TIMEOUT_SWALLOW_LOG.reset()
         monkeypatch.setattr(L, "_log", lambda m: None)
 
         def hung_run(*a, **kw):
@@ -2046,7 +2013,6 @@ class TestDumpLoggerState:
         log_path = tmp_path / "loop.log"
         monkeypatch.setattr(L, "LOG_FILE", log_path)
         # Trigger one report so at least one logger has a non-None message.
-        L._STATE_SWALLOW_LOG.reset()
         try:
             monkeypatch.setattr(L._STATE_SWALLOW_LOG, "every", 1)
             L._STATE_SWALLOW_LOG.report(RuntimeError("seeded"))
@@ -2055,7 +2021,7 @@ class TestDumpLoggerState:
             assert "last_log_message" in text
             assert "seeded" in text
         finally:
-            L._STATE_SWALLOW_LOG.reset()
+            pass
 
     def test_dump_logger_state_swallows_internal_errors(
         self, tmp_path, monkeypatch
@@ -2524,7 +2490,6 @@ class TestEmptyCommitRateLimited:
     def test_empty_staged_tree_uses_rate_limited_logger(self, monkeypatch):
         from agent import loop as L
         from types import SimpleNamespace
-        L._EMPTY_COMMIT_SWALLOW_LOG.reset()
         log_lines: list[str] = []
         monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
         monkeypatch.setattr(L._EMPTY_COMMIT_SWALLOW_LOG, "schedule", "linear")
@@ -2549,7 +2514,7 @@ class TestEmptyCommitRateLimited:
             assert len(empty_lines) == 2
             assert L._EMPTY_COMMIT_SWALLOW_LOG.count == 7
         finally:
-            L._EMPTY_COMMIT_SWALLOW_LOG.reset()
+            pass
 
     def test_empty_commit_logger_in_swallow_registry(self):
         from agent import loop as L
@@ -2989,3 +2954,38 @@ class TestFinishNoFileAuditCoverage:
         src = Path(L.__file__).read_text(encoding="utf-8")
         # At least one _finish_no_file( call site
         assert "_finish_no_file(" in src
+
+
+class TestNoRedundantSwallowResetsInTests:
+    """Loop 101: with the conftest autouse fixture (loops 94-95) handling
+    both `_*_SWALLOW_LOG.reset()` and `_LAST_SWALLOW_SUMMARY_COUNTS.clear()`
+    before AND after each test, in-test calls to those methods are dead
+    code at best and confusing at worst (a reader thinks the test cares
+    about that state when it's already guaranteed). Audit the test file
+    so the cleanup doesn't regress."""
+
+    def test_no_swallow_log_reset_calls_in_tests(self):
+        from pathlib import Path as _P
+        src = _P(__file__).read_text(encoding="utf-8")
+        # Allow this audit test itself to mention the pattern in strings.
+        # Strip docstrings and string literals via a simple AST walk.
+        import ast
+        tree = ast.parse(src)
+        offenders: list[int] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                f = node.func
+                # Match L._FOO_SWALLOW_LOG.reset() or L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
+                if isinstance(f, ast.Attribute):
+                    parent = f.value
+                    if isinstance(parent, ast.Attribute):
+                        name = parent.attr
+                        if (
+                            (name.endswith("_SWALLOW_LOG") and f.attr == "reset")
+                            or (name == "_LAST_SWALLOW_SUMMARY_COUNTS" and f.attr == "clear")
+                        ):
+                            offenders.append(node.lineno)
+        assert not offenders, (
+            f"redundant in-test swallow-state resets at lines {offenders}; "
+            f"the conftest autouse fixture already handles this"
+        )
