@@ -534,6 +534,36 @@ def _has_unsafe_mode(diff: str) -> str | None:
     return None
 
 
+def _has_dir_path_conflict(diff: str) -> str | None:
+    """Reject diffs whose `+++ b/<path>` target is an existing directory
+    in the working tree. `git apply --check` does NOT catch this — it
+    succeeds, then `git apply` fails late with a generic
+    "Directory not empty" error. Catching it up front gives a clear
+    diagnostic and avoids partial applies.
+
+    Only the destination side (`+++` / `b/`-side rename/copy targets)
+    is checked. The source side is allowed to overlap with directories
+    only via deletes, which we detect via `--- a/<path>` paired with
+    `+++ /dev/null`; for now we conservatively check every destination
+    path emitted by `_diff_paths`.
+    """
+    for raw in _diff_paths(diff):
+        path = raw.split("\t", 1)[0]
+        if not path:
+            continue
+        # `_diff_paths` returns repo-relative; absolute/traversal paths
+        # were already rejected by `_has_unsafe_path` in the apply
+        # pipeline before this helper runs.
+        target = (_REPO / path)
+        try:
+            if target.is_dir() and not target.is_symlink():
+                return f"dir_path_conflict:{path}"
+        except OSError:
+            # Permission or filesystem issue — let `git apply` surface it.
+            continue
+    return None
+
+
 def _has_structural_defect(diff: str) -> str | None:
     """Return an error if the diff is malformed, else None.
 
@@ -641,6 +671,9 @@ def _apply_diff(diff_text: str) -> tuple[bool, str]:
     structural = _has_structural_defect(diff)
     if structural is not None:
         return False, f"malformed_diff: {structural}"
+    dir_conflict = _has_dir_path_conflict(diff)
+    if dir_conflict is not None:
+        return False, f"dir_conflict: {dir_conflict}"
     rc, err = _run_git_apply(["apply", "--check", "-"], diff)
     if rc != 0:
         return False, f"apply_check_failed: {err}"

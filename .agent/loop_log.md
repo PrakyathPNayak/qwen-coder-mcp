@@ -1009,3 +1009,14 @@ kwarg actually forwarded. Existing tests still pass.
 - DEVIL: legitimate filenames never contain these; tab is preserved (already split off above). NUL check uses literal `\x00` not regex, so cost is O(len). Order: nul/newline before absolute/traversal so the most diagnostic error fires.
 - ACT: 5-line addition; 4 new tests. 278/278.
 - COMMIT: pending.
+
+## Loop 41 — `_apply_diff` reject new-file-vs-existing-directory
+- OBSERVE: Verified live: a diff with `+++ b/mydir` where `mydir/` exists passes `git apply --check` but fails the actual apply with `unable to write file 'mydir' mode 100644: Directory not empty`. Generic `apply_failed:` is logged — no clean diagnostic, and we already commit to running apply.
+- ORIENT: precise diagnostic; cause-level — git's check/apply mismatch is real.
+- DECIDE: new helper `_has_dir_path_conflict` runs after `_has_structural_defect`, before `git apply --check`. Iterates `_diff_paths` and rejects any whose `_REPO / path` is an existing real directory (symlinks excluded — handled by mode/symlink checks).
+- DEVIL:
+  - Correctness: only flags real dirs, not symlinks; OSError swallowed (let git surface it). Source-side overlaps are uncommon and would already be rejected by hunk-content mismatch.
+  - Scope: complements existing apply pipeline; doesn't replace `git apply --check`.
+  - Priority: low-frequency but recoverable cleanly.
+- ACT: helper + pipeline insertion + 3 tests (clash / no-clash / symlink-ignored). 281/281.
+- COMMIT: pending.

@@ -778,3 +778,53 @@ def test_normal_path_unaffected_by_nul_check():
         '+x\n'
     )
     assert loop._has_unsafe_path(diff) is None
+
+
+# ---------- dir-path conflict (loop 41)
+def test_has_dir_path_conflict_detects_existing_dir(tmp_path, monkeypatch):
+    repo = tmp_path / "r"
+    (repo / "mydir").mkdir(parents=True)
+    monkeypatch.setattr(loop, "_REPO", repo)
+    diff = (
+        'diff --git a/mydir b/mydir\n'
+        'new file mode 100644\n'
+        '--- /dev/null\n'
+        '+++ b/mydir\n'
+        '@@ -0,0 +1 @@\n'
+        '+x\n'
+    )
+    msg = loop._has_dir_path_conflict(diff)
+    assert msg is not None and msg.startswith("dir_path_conflict:mydir")
+
+
+def test_has_dir_path_conflict_no_clash(tmp_path, monkeypatch):
+    repo = tmp_path / "r"
+    repo.mkdir()
+    monkeypatch.setattr(loop, "_REPO", repo)
+    diff = (
+        'diff --git a/file.py b/file.py\n'
+        '--- /dev/null\n'
+        '+++ b/file.py\n'
+        '@@ -0,0 +1 @@\n'
+        '+x\n'
+    )
+    assert loop._has_dir_path_conflict(diff) is None
+
+
+def test_has_dir_path_conflict_ignores_symlink_to_dir(tmp_path, monkeypatch):
+    repo = tmp_path / "r"
+    real = tmp_path / "real"
+    real.mkdir()
+    repo.mkdir()
+    (repo / "linkdir").symlink_to(real, target_is_directory=True)
+    monkeypatch.setattr(loop, "_REPO", repo)
+    diff = (
+        'diff --git a/linkdir b/linkdir\n'
+        '--- /dev/null\n'
+        '+++ b/linkdir\n'
+        '@@ -0,0 +1 @@\n'
+        '+x\n'
+    )
+    # Symlinks aren't real directories from our perspective; let
+    # downstream symlink/mode checks handle them. dir-conflict shouldn't fire.
+    assert loop._has_dir_path_conflict(diff) is None
