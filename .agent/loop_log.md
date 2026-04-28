@@ -1542,3 +1542,15 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: env var QWEN_AGGREGATE_SUMMARY_EVERY now mentioned in two places (docstring + startup line); single source of truth would be cleaner but cost is one-line updates which is acceptable.
 - ACT: 5 new tests, docstring + startup line. 486 passed.
 - COMMIT: pending.
+
+## Loop 89 — drift guard against direct L.<attr> = ... in tests
+- OBSERVE: Loop 85 caught one instance of test pollution (TestSwallowSummaries directly rebinding L._log). Loop 87 introduced another (L._CURRENT_ITERATION = 0). The shape repeats; humans + agents will keep adding it.
+- ORIENT: Make this category mechanically un-introducible. AST scan of every test_*.py for Assign nodes with targets like L.foo or loop.foo, exempting attribute writes that occur inside Try.finalbody (the deliberate restoration pattern with try/finally and a real_xxx capture).
+- DECIDE: Single drift-audit test class with one assertion. Allowed-list set holds explicitly-permitted restoration assignments (currently just `L.os.replace`). Any new offender breaks the test with a precise file:line pointer.
+- DEVIL:
+  - Correctness: AST walker tracks Try contexts via in_finally_stack so `with` blocks and nested Try blocks are handled. Verified against current source -- 0 violations.
+  - Scope: The allowed-list could grow into a maintenance burden, but each entry should be paired with a finally clause so reviewer pressure stays high. Acceptable.
+  - Edge: monkeypatch.setattr(L, "x", ...) is a Call, not an Assign with L.x target, so it's correctly ignored.
+  - Migrated loop 87's `L._CURRENT_ITERATION = 0` to `monkeypatch.setattr` first to make the new test pass clean.
+- ACT: 1 new test (drift audit) + 1 fix in loop-87 test. 487 passed.
+- COMMIT: pending.

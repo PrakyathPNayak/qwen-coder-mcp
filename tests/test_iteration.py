@@ -2274,8 +2274,8 @@ class TestDumpLoggerStateExtended:
                 raise KeyboardInterrupt()
         monkeypatch.setattr(L.time, "sleep", _sleep)
 
-        # Reset to ensure clean baseline.
-        L._CURRENT_ITERATION = 0
+        # Reset to ensure clean baseline (use monkeypatch so it auto-restores).
+        monkeypatch.setattr(L, "_CURRENT_ITERATION", 0)
         try:
             L.main()
         except KeyboardInterrupt:
@@ -2372,3 +2372,74 @@ class TestSigusr1DocumentedInDocstring:
     def test_module_docstring_mentions_aggregate_cadence(self):
         from agent import loop as L
         assert "QWEN_AGGREGATE_SUMMARY_EVERY" in L.__doc__
+
+
+class TestNoDirectModuleAssignmentInTests:
+    """Loop 89: direct rebinding of `L.<attr> = ...` (where L is the
+    `agent.loop` module alias) without going through monkeypatch leaks
+    state across tests and silently breaks unrelated tests under
+    different ordering. This guard scans the test sources via AST and
+    flags any such rebinds outside of `try/finally` restoration blocks
+    (e.g., the deliberate `L.os.replace = ...` / `finally: L.os.replace = real`
+    pattern is exempt because the assignment is in a finally body).
+
+    The previous bug fixed in loop 85 (TestSwallowSummaries leaking
+    `L._log = lambda m: None`) is exactly this category. This test
+    prevents regressions of the same shape.
+    """
+
+    _ALLOWED_RESTORATIONS = frozenset({
+        "L.os.replace",  # restored in finally in TestPruneAndCursorRateLimited
+    })
+
+    def _direct_module_assigns(self, source_path):
+        import ast
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        offenders: list[tuple[int, str]] = []
+        # Walk and find Assign nodes whose target is Attribute on Name 'L' or 'loop'.
+        # Track whether we're inside a Try.finalbody (allowed restoration).
+        class _V(ast.NodeVisitor):
+            def __init__(self):
+                self.in_finally_stack = []
+            def visit_Try(self, node):
+                # Walk body and handlers (NOT in finally).
+                self.in_finally_stack.append(False)
+                for child in node.body:
+                    self.visit(child)
+                for h in node.handlers:
+                    self.visit(h)
+                for child in node.orelse:
+                    self.visit(child)
+                self.in_finally_stack[-1] = True
+                for child in node.finalbody:
+                    self.visit(child)
+                self.in_finally_stack.pop()
+            def visit_Assign(self, node):
+                if any(self.in_finally_stack):
+                    return  # Allowed: restoration in finally.
+                for tgt in node.targets:
+                    cur = tgt
+                    parts = []
+                    while isinstance(cur, ast.Attribute):
+                        parts.append(cur.attr)
+                        cur = cur.value
+                    if isinstance(cur, ast.Name) and cur.id in {"L", "loop"}:
+                        full = cur.id + "." + ".".join(reversed(parts))
+                        if full not in TestNoDirectModuleAssignmentInTests._ALLOWED_RESTORATIONS:
+                            offenders.append((node.lineno, full))
+                self.generic_visit(node)
+        _V().visit(tree)
+        return offenders
+
+    def test_no_direct_module_attribute_rebinds(self):
+        from pathlib import Path
+        tests_dir = Path(__file__).resolve().parent
+        violations: list[str] = []
+        for path in sorted(tests_dir.glob("test_*.py")):
+            for lineno, full in self._direct_module_assigns(path):
+                violations.append(f"{path.name}:{lineno} -> {full}")
+        assert not violations, (
+            "Found direct module-attribute rebinds in tests (use "
+            "monkeypatch.setattr instead so state is auto-restored):\n"
+            + "\n".join(violations)
+        )
