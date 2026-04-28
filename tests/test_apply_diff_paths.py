@@ -730,3 +730,51 @@ def test_quoted_path_absolute_rejected():
     )
     msg = loop._has_unsafe_path(diff)
     assert msg is not None and "absolute_path" in msg
+
+
+# ---------- NUL / newline rejection in decoded paths (loop 40)
+def test_quoted_path_with_embedded_nul_rejected():
+    diff = (
+        'diff --git "a/foo\\0bar.py" "b/foo\\0bar.py"\n'
+        '--- "a/foo\\0bar.py"\n'
+        '+++ "b/foo\\0bar.py"\n'
+        '@@ -0,0 +1 @@\n'
+        '+x\n'
+    )
+    msg = loop._has_unsafe_path(diff)
+    assert msg is not None and "nul_in_path" in msg
+
+
+def test_quoted_path_with_embedded_newline_rejected():
+    diff = (
+        'diff --git "a/foo\\nbar.py" "b/foo\\nbar.py"\n'
+        '--- "a/foo\\nbar.py"\n'
+        '+++ "b/foo\\nbar.py"\n'
+        '@@ -0,0 +1 @@\n'
+        '+x\n'
+    )
+    msg = loop._has_unsafe_path(diff)
+    assert msg is not None and "newline_in_path" in msg
+
+
+def test_quoted_path_with_embedded_cr_rejected():
+    diff = (
+        'diff --git "a/foo\\rbar.py" "b/foo\\rbar.py"\n'
+        '--- "a/foo\\rbar.py"\n'
+        '+++ "b/foo\\rbar.py"\n'
+        '@@ -0,0 +1 @@\n'
+        '+x\n'
+    )
+    msg = loop._has_unsafe_path(diff)
+    assert msg is not None and "newline_in_path" in msg
+
+
+def test_normal_path_unaffected_by_nul_check():
+    diff = (
+        'diff --git a/src/foo.py b/src/foo.py\n'
+        '--- a/src/foo.py\n'
+        '+++ b/src/foo.py\n'
+        '@@ -0,0 +1 @@\n'
+        '+x\n'
+    )
+    assert loop._has_unsafe_path(diff) is None

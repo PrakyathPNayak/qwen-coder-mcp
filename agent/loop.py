@@ -439,6 +439,14 @@ def _has_unsafe_path(diff: str) -> str | None:
         path = raw.split("\t", 1)[0]
         if not path:
             return "empty_path"
+        # NUL byte in a path is always hostile — UNIX path APIs split
+        # at NUL silently; a quoted decoded `\0` could rewrite the
+        # destination. Newlines/CR likewise have no place in a real
+        # filename and break log parsing.
+        if "\x00" in path:
+            return f"nul_in_path:{path!r}"
+        if "\n" in path or "\r" in path:
+            return f"newline_in_path:{path!r}"
         if path.startswith("/"):
             return f"absolute_path:{path}"
         # Windows drive prefix: one ASCII letter followed by ':'. POSIX
