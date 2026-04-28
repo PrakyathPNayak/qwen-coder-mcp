@@ -1790,6 +1790,54 @@ def _log_aggregate_swallow_summary(iteration_count: int) -> None:
         pass
 
 
+def _dump_logger_state(reason: str = "manual") -> None:
+    """Emit a multi-line snapshot of every swallow logger's full
+    summary (including ``last_log_message``). Intended to be wired to a
+    SIGUSR1 handler so operators can pull a real-time report from a
+    long-running daemon without restarting it or grepping loop.log.
+
+    Unlike ``_log_aggregate_swallow_summary``, this dump always emits
+    (even when all counts are zero) so a SIGUSR1 ping always produces a
+    visible response. Each logger's full summary dict is written on its
+    own line for grep-friendliness.
+    """
+    try:
+        _log(f"logger-state-dump reason={reason} begin")
+        for lg in _swallow_loggers():
+            try:
+                s = lg.summary()
+            except Exception as exc:
+                _log(f"logger-state-dump summary failed: {exc}")
+                continue
+            try:
+                _log(f"logger-state-dump {s}")
+            except Exception:
+                # str() on s should not fail, but never let dump break.
+                continue
+        _log(f"logger-state-dump reason={reason} end")
+    except Exception:
+        # Observability path; never raise.
+        pass
+
+
+def _install_sigusr1_handler() -> bool:
+    """Install a SIGUSR1 handler that calls ``_dump_logger_state``.
+    Returns True if the handler was installed, False if the platform
+    doesn't support SIGUSR1 (Windows) or installation failed.
+    """
+    try:
+        import signal
+        if not hasattr(signal, "SIGUSR1"):
+            return False
+        signal.signal(
+            signal.SIGUSR1,
+            lambda _signum, _frame: _dump_logger_state(reason="sigusr1"),
+        )
+        return True
+    except Exception:
+        return False
+
+
 def main() -> None:
     from qwen_coder_mcp.config import load_settings  # local import
     settings = load_settings()
@@ -1802,6 +1850,7 @@ def main() -> None:
     client = QwenClient(settings)
     iteration_count = 0
     aggregate_every = _aggregate_summary_every()
+    _install_sigusr1_handler()
     try:
         while True:
             try:

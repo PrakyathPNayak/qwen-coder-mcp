@@ -1423,7 +1423,7 @@ class TestSwallowSummaries:
         L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
         monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "schedule", "linear")
         monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "every", 1000)
-        L._log = lambda m: None  # silent emit during initial driving
+        monkeypatch.setattr(L, "_log", lambda m: None)  # silent during driving
         for _ in range(5):
             L._TIMING_SWALLOW_LOG.report(OSError("e"))
         log_lines = []
@@ -1442,7 +1442,7 @@ class TestSwallowSummaries:
         L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
         monkeypatch.setattr(L._STATE_SWALLOW_LOG, "schedule", "linear")
         monkeypatch.setattr(L._STATE_SWALLOW_LOG, "every", 1000)
-        L._log = lambda m: None
+        monkeypatch.setattr(L, "_log", lambda m: None)
         for _ in range(3):
             L._STATE_SWALLOW_LOG.report(OSError("e"))
         log_lines = []
@@ -2001,3 +2001,82 @@ class TestSwallowLoggerLastMessage:
             assert "[idx=42]" in lg.last_log_message
         finally:
             lg.reset()
+
+
+class TestDumpLoggerState:
+    """Loop 85: `_dump_logger_state()` snapshot writer + SIGUSR1 handler."""
+
+    def test_dump_logger_state_emits_begin_and_end_markers(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import loop as L
+        log_path = tmp_path / "loop.log"
+        monkeypatch.setattr(L, "LOG_FILE", log_path)
+        L._dump_logger_state(reason="test")
+        text = log_path.read_text()
+        assert "logger-state-dump reason=test begin" in text
+        assert "logger-state-dump reason=test end" in text
+
+    def test_dump_logger_state_emits_one_line_per_logger(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import loop as L
+        log_path = tmp_path / "loop.log"
+        monkeypatch.setattr(L, "LOG_FILE", log_path)
+        L._dump_logger_state(reason="test")
+        text = log_path.read_text()
+        # Each logger's summary line contains "logger-state-dump {".
+        body_lines = [
+            ln for ln in text.splitlines() if "logger-state-dump {" in ln
+        ]
+        assert len(body_lines) == len(L._swallow_loggers())
+
+    def test_dump_logger_state_includes_last_log_message_field(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import loop as L
+        log_path = tmp_path / "loop.log"
+        monkeypatch.setattr(L, "LOG_FILE", log_path)
+        # Trigger one report so at least one logger has a non-None message.
+        L._STATE_SWALLOW_LOG.reset()
+        try:
+            monkeypatch.setattr(L._STATE_SWALLOW_LOG, "every", 1)
+            L._STATE_SWALLOW_LOG.report(RuntimeError("seeded"))
+            L._dump_logger_state(reason="test")
+            text = log_path.read_text()
+            assert "last_log_message" in text
+            assert "seeded" in text
+        finally:
+            L._STATE_SWALLOW_LOG.reset()
+
+    def test_dump_logger_state_swallows_internal_errors(
+        self, tmp_path, monkeypatch
+    ):
+        """Even if one logger's summary blows up, the dump must finish."""
+        from agent import loop as L
+        log_path = tmp_path / "loop.log"
+        monkeypatch.setattr(L, "LOG_FILE", log_path)
+
+        class _Bad:
+            label = "bad"
+            def summary(self):
+                raise RuntimeError("cannot summarize")
+
+        original = L._swallow_loggers
+        monkeypatch.setattr(
+            L, "_swallow_loggers",
+            lambda: tuple(list(original()) + [_Bad()])
+        )
+        # Should not raise.
+        L._dump_logger_state(reason="badtest")
+        text = log_path.read_text()
+        assert "logger-state-dump reason=badtest end" in text
+        assert "summary failed" in text
+
+    def test_install_sigusr1_handler_returns_true_on_posix(self):
+        from agent import loop as L
+        import sys
+        if sys.platform == "win32":
+            assert L._install_sigusr1_handler() is False
+        else:
+            assert L._install_sigusr1_handler() is True

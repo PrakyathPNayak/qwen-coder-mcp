@@ -1498,3 +1498,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Memory: O(1) per logger, 9 loggers → trivial.
 - ACT: 7 new tests. 468 passed.
 - COMMIT: pending.
+
+## Loop 85 — _dump_logger_state SIGUSR1 handler
+- OBSERVE: last_log_message is now stored, but no operator-facing path to dump it. Long-running daemon needs runtime introspection without restart.
+- ORIENT: Add _dump_logger_state(reason) that walks _swallow_loggers() and emits each summary on its own line. Wire SIGUSR1 to _dump_logger_state(reason=sigusr1) in main(). Per-line emit because grep-friendly; Windows-safe since signal.SIGUSR1 is gated.
+- DECIDE: Two helpers: pure _dump_logger_state(reason) (testable, no signal coupling) and _install_sigusr1_handler() (installs handler, returns bool for platform support). main() calls install but ignores return.
+- DEVIL:
+  - Correctness: Each summary call wrapped in try/except so one bad logger cannot abort the dump. Verified by test injecting a bad logger.
+  - Scope: Devil caught a pre-existing test pollution bug -- TestSwallowSummaries direct L._log = lambda m: None assignments never restored, so any dump test that relied on actual file I/O failed under suite ordering. Migrated both to monkeypatch.
+  - Priority: SIGUSR1 itself cannot be tested without spawning a process; the test verifies install succeeds on POSIX. Acceptable.
+- ACT: 2 helpers + 5 tests + 2 pre-existing bug fixes. 473 passed.
+- COMMIT: pending.
