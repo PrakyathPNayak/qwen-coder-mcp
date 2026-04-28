@@ -282,3 +282,55 @@ def test_qwen_client_chat_strips_think_block_live(live_server) -> None:
     # Crucially: no leaked thinking trace.
     assert "<think>" not in out
     assert "</think>" not in out
+
+
+def test_long_prompt_chunked_prefill_doesnt_oom(live_server) -> None:
+    # Loop 228 regression pin for the loop-227 bug: a chat
+    # completion whose prompt is long enough to span MULTIPLE
+    # chunked-prefill chunks at the new lowered MAX_BATCHED=2048
+    # default. This exercises the GDN/mamba forward-pass scratch
+    # allocation path (chunk_gated_delta_rule_fwd_h) that OOM'd
+    # at the old 0.95 gpu_util / 4096 max-batched defaults.
+    #
+    # If a future loop bumps gpu_util back up or doubles
+    # MAX_BATCHED without proportionally lowering the other
+    # knob, this test starts failing with EngineDeadError /
+    # CUDA OOM during generation. The test is heavy (real model)
+    # but it's gated by QWEN_SERVE_E2E_REAL_MODEL so it only
+    # runs on the operator's hardware.
+    models = _http_get_json(
+        f"{live_server['base_url']}/v1/models",
+        key=live_server["api_key"],
+    )
+    model_id = models["data"][0]["id"]
+
+    # Build a prompt of ~3000 tokens of plain ASCII so it spans
+    # 2 chunks at 2048 max-batched-tokens. Use a deterministic
+    # filler that won't tokenize to <100 tokens of repetition.
+    filler_lines = [
+        f"Item {i:04d}: a short note about index {i} for indexing purposes."
+        for i in range(280)
+    ]
+    long_prompt = (
+        "Here is a list of items. After reading them, reply with only "
+        "the literal token PINGOK and nothing else.\n\n"
+        + "\n".join(filler_lines)
+    )
+    out = _http_post_json(
+        f"{live_server['base_url']}/v1/chat/completions",
+        {
+            "model": model_id,
+            "messages": [{"role": "user", "content": long_prompt}],
+            "max_tokens": 32,
+            "temperature": 0,
+        },
+        key=live_server["api_key"],
+    )
+    content = out["choices"][0]["message"].get("content") or ""
+    assert content, f"empty content (engine may have died mid-generation): {out}"
+    # We don't strictly require the model to comply with the
+    # instruction at long context -- the *load* is what we're
+    # testing. Just assert generation completed without an
+    # EngineDeadError surfacing as an HTTP error or empty output.
+    assert "finish_reason" in out["choices"][0]
+    assert out["choices"][0]["finish_reason"] in {"stop", "length"}

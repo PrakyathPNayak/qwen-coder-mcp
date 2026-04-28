@@ -3721,3 +3721,42 @@ in the same commit (the contract was wrong; the test was its
 canary).
 
 Verify: full suite 1480 passed, 6 skipped (was 1477 + 3).
+
+## Loop 228 - real-model long-prompt E2E pin for the loop-227 GDN bulge
+
+Loop 227 lowered QWEN_SERVE_GPU_UTIL 0.95->0.88 and
+QWEN_SERVE_MAX_BATCHED 4096->2048 to leave forward-pass scratch
+headroom for chunk_gated_delta_rule_fwd_h. The loop-227 unit
+tests pin the new defaults but cannot prove the defaults
+actually fix the OOM -- only that the values flow into argv. A
+future loop could revert one of the values, all unit tests
+would stay green, and the regression returns.
+
+Loop 228 closes that gap with a heavy E2E that exercises the
+exact path that OOMd: a chat completion with a ~3000-token
+prompt, which spans MULTIPLE chunked-prefill chunks at the new
+2048 max-batched default. Each chunk runs through the GDN
+forward and triggers the per-chunk scratch allocation. If a
+future loop bumps gpu_util back up or doubles MAX_BATCHED
+without compensating elsewhere, the test fails with
+EngineDeadError or CUDA OOM during generation.
+
+The test is gated by QWEN_SERVE_E2E_REAL_MODEL=1 (same gate as
+the existing 4 real-model tests) so CI/dev runs skip it. It
+only runs on operator hardware where the bug manifests.
+
+Devil step. Why not also assert peak VRAM via nvidia-smi during
+the call? Because nvidia-smi sampling is async and racy; PyTorch
+allocator stats would be cleaner but require an in-process
+hook. The OOM->EngineDeadError->empty-content path is detectable
+without instrumentation: an OOMing engine produces an HTTP error
+or finish_reason absent. Both are asserted.
+
+Why a prompt of 280 lines? At ~10 tokens per line that's 2800+
+tokens, which forces at least 2 chunked-prefill rounds at
+max-batched=2048 -- guaranteeing the GDN forward path runs more
+than once per request. A single-chunk prompt would not exercise
+the bulge code path consistently.
+
+Verify: full suite 1480 passed, 7 skipped (was 6 + the new
+gated test). Heavy test collection confirmed (5 in the file).
