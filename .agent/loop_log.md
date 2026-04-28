@@ -3167,3 +3167,26 @@ The loop-205 `--help=all` validator only checks flag *existence* — it cannot c
 **Act.** New `TestServeArgvCombinationInvariants` class in `tests/test_serve_qwen_help_validation.py` (6 tests, all pure-argv, no vLLM dep — they run unconditionally in CI). Each test docstring cites the failure mode. Helper `_argv_with(**env_overrides)` factored for clean per-test invocation. `_flag_value` helper for checking the value next to a flag.
 
 **Verify.** 14/14 in the help-validation file (was 8). Full suite 1353 passed, 2 skipped (was 1347). Test count around 1.34k → 1.35k.
+
+## Loop 213 — TUI chat-turn E2E vs MockTransport (caught a real bug)
+
+**Observe.** Six-time-deferred. Existing coverage: `test_qwen_client.py` and `test_chat_stream.py` cover the QwenClient HTTP layer with MockTransport in isolation; `test_tui.py` covers the TUI dispatcher with a FakeClient that bypasses HTTP. The integration gap: drive `chat_turn` and `chat_turn_stream` end-to-end through a *real* QwenClient backed by MockTransport — the path a live user actually exercises.
+
+**Orient.** Eleven test cases covering five scenarios:
+1. Happy-path chat: history grows correctly, request body is OpenAI-shaped, Authorization header propagates.
+2. Error paths: 500 yields friendly error and DOES NOT pollute history with a bogus assistant message; 400 same; ConnectError yields the serve_qwen.sh hint.
+3. Streaming happy path: chunks yield incrementally, accumulators monotonic, final reply committed to history.
+4. Stream error: error chunk yielded, no assistant committed.
+5. @-mention expansion: file content actually inlined into the *outgoing request body*, not just into the local history copy.
+6. Health check: model IDs extracted, ConnectError → serve_qwen.sh hint, 401 → API-key hint.
+
+**Devil.**
+- *Correctness:* I asserted `_friendly_chat_error` returns the serve_qwen hint on ConnectError. It DID NOT — bug found. The retry loop in `client.chat` wraps the underlying httpx.ConnectError in a `QwenError("chat failed after 3 attempts: connection refused")`. `_friendly_chat_error` only matched the *capitalised* "Connection refused" / "Connection reset" substrings, so the wrapped message slipped through. Fixed by lowercasing the comparison and also adding "connecttimeout" to the substring list. This is exactly the kind of bug the integration test was designed to catch — a unit test with FakeClient could not have, because the substring check only fires on real httpx-formatted error text. ✅
+- *Scope:* Only chat_turn and chat_turn_stream; the dispatcher is FakeClient-tested elsewhere and that's appropriate (different concerns). The chat-turn helpers ARE the integration boundary. ✅
+- *Priority:* P1 — closes a 6-loop deferral and caught a real connection-error UX regression in the process. ✅
+
+**Act.**
+- New `tests/test_tui_chat_turn_e2e.py` (11 tests, 5 classes).
+- `src/qwen_coder_mcp/tui.py::_friendly_chat_error`: lowercase the substring matchers. Now correctly recognises retry-wrapped ConnectError messages and surfaces the actionable serve_qwen.sh hint.
+
+**Verify.** 11/11 in the new file. Full suite 1364 passed, 2 skipped (was 1353/2). Test count around 1.35k → 1.36k.

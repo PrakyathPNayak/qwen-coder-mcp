@@ -2182,10 +2182,12 @@ def _friendly_chat_error(exc: BaseException) -> str:
         )
     except ImportError:
         connect_types = ()
+    text_lower = text.lower()
     looks_connect = isinstance(exc, connect_types) or (
         "ConnectError" in name
-        or "Connection refused" in text
-        or "Connection reset" in text
+        or "connection refused" in text_lower
+        or "connection reset" in text_lower
+        or "connecttimeout" in text_lower
     )
     if looks_connect:
         return (
