@@ -1016,10 +1016,51 @@ def _append_state(entry: str) -> None:
         fh.write(entry)
 
 
+_HISTORY_MAX_FILES_DEFAULT = 500
+_HISTORY_MAX_FILES_CAP = 100_000
+
+
+def _history_max_files() -> int:
+    """Cap on retained `.loop/history/*.md` files. Env-tunable."""
+    return _env_int_capped(
+        "QWEN_HISTORY_MAX_FILES",
+        _HISTORY_MAX_FILES_DEFAULT,
+        _HISTORY_MAX_FILES_CAP,
+    )
+
+
+def _prune_history(max_files: int) -> int:
+    """Delete oldest history files until at most ``max_files`` remain.
+
+    Order is by mtime ascending — the oldest go first. Returns the
+    number of files deleted. Never raises; pruning is best-effort.
+    """
+    try:
+        if not HISTORY_DIR.exists():
+            return 0
+        entries = [p for p in HISTORY_DIR.iterdir() if p.is_file()]
+        if len(entries) <= max_files:
+            return 0
+        entries.sort(key=lambda p: p.stat().st_mtime)
+        excess = len(entries) - max_files
+        deleted = 0
+        for old in entries[:excess]:
+            try:
+                old.unlink()
+                deleted += 1
+            except OSError:
+                pass
+        return deleted
+    except Exception as exc:  # never break the loop on cleanup
+        _log(f"_prune_history failed: {exc}")
+        return 0
+
+
 def _write_history(name: str, body: str) -> Path:
     HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     path = HISTORY_DIR / name
     path.write_text(body, "utf-8")
+    _prune_history(_history_max_files())
     return path
 
 

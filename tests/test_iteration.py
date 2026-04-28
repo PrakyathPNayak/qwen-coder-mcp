@@ -11,6 +11,7 @@ verifies every major branch:
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -450,3 +451,77 @@ class TestRuntimeLogRotation:
         L._rotate_log_if_oversized(f, 1000)
         assert f.exists()
         assert not (tmp_path / "x.log.1").exists()
+
+
+class TestHistoryRetention:
+    """Loop 52: .loop/history/*.md is bounded."""
+
+    def test_history_default_cap(self):
+        from agent import loop as L
+        assert L._history_max_files() == L._HISTORY_MAX_FILES_DEFAULT
+
+    def test_history_env_override(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_HISTORY_MAX_FILES", "10")
+        assert L._history_max_files() == 10
+
+    def test_history_env_clamped(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_HISTORY_MAX_FILES", "9999999")
+        assert L._history_max_files() == L._HISTORY_MAX_FILES_CAP
+
+    def test_history_env_invalid_falls_back(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_HISTORY_MAX_FILES", "junk")
+        assert L._history_max_files() == L._HISTORY_MAX_FILES_DEFAULT
+
+    def test_prune_noop_when_under_cap(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setattr(L, "HISTORY_DIR", tmp_path)
+        for i in range(3):
+            (tmp_path / f"{i}.md").write_text("x")
+        deleted = L._prune_history(10)
+        assert deleted == 0
+        assert len(list(tmp_path.iterdir())) == 3
+
+    def test_prune_deletes_oldest(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        import time as _t
+        monkeypatch.setattr(L, "HISTORY_DIR", tmp_path)
+        # Create 5 files with strictly increasing mtimes
+        for i in range(5):
+            f = tmp_path / f"{i}.md"
+            f.write_text(str(i))
+            os.utime(f, (1000 + i, 1000 + i))
+        deleted = L._prune_history(2)
+        assert deleted == 3
+        survivors = sorted(p.name for p in tmp_path.iterdir())
+        assert survivors == ["3.md", "4.md"]
+
+    def test_prune_missing_dir_is_noop(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setattr(L, "HISTORY_DIR", tmp_path / "nope")
+        assert L._prune_history(10) == 0
+
+    def test_write_history_triggers_prune(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        import time as _t
+        monkeypatch.setattr(L, "HISTORY_DIR", tmp_path)
+        monkeypatch.setenv("QWEN_HISTORY_MAX_FILES", "2")
+        for i in range(3):
+            f = tmp_path / f"{i}.md"
+            f.write_text("seed")
+            os.utime(f, (1000 + i, 1000 + i))
+        # write a 4th via _write_history, should keep most-recent 2
+        L._write_history("4.md", "new")
+        survivors = sorted(p.name for p in tmp_path.iterdir())
+        assert survivors == ["2.md", "4.md"]
+
+    def test_prune_skips_subdirectories(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setattr(L, "HISTORY_DIR", tmp_path)
+        (tmp_path / "subdir").mkdir()
+        (tmp_path / "a.md").write_text("a")
+        (tmp_path / "b.md").write_text("b")
+        L._prune_history(1)
+        assert (tmp_path / "subdir").exists()

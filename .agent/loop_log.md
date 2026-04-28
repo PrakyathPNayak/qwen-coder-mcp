@@ -1127,3 +1127,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 8 but cheap; combined with the next concrete fix this still helps.
 - ACT: 8 new tests for the canonical helper (default/parse/float/invalid/zero/negative/clamp/alias). 335 passed, 1 skipped.
 - COMMIT: pending.
+
+## Loop 52 — `.loop/history/*.md` retention cap
+- OBSERVE: every iteration may write 1 history file (rejected/applied/apply-failed/out-of-scope/syntax-failed). Continuous run grows inodes unbounded; bucket 5 (resource leak).
+- ORIENT: same class as loops 49 + 50 but for an inode-count limit not a byte size. File-count ceiling fits the directory shape.
+- DECIDE: `_history_max_files()` (default 500, cap 100k, env `QWEN_HISTORY_MAX_FILES`) + `_prune_history(max)` deletes oldest by mtime; called at the end of `_write_history`.
+- DEVIL:
+  - Correctness: prune ignores subdirectories (verified by test). Failure paths swallow exceptions. Pruning runs *after* the write so the new file is always persisted before any cleanup.
+  - Scope: only deletes regular files in HISTORY_DIR; nothing else touched.
+  - Priority: yes, bucket 5; postponing means hitting an fs-inode wall on long runs.
+- ACT: 9 new tests (default/override/clamp/invalid; prune noop/oldest/missing-dir/triggered-from-write/skips-subdirs). Added missing `import os` to test file. 344 passed, 1 skipped.
+- COMMIT: pending.
