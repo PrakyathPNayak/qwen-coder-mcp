@@ -3251,3 +3251,67 @@ Loop 211 saw "OffloadingConnector incompatible with HMA" and concluded "always p
 **Act.** `scripts/serve_qwen.sh`: case-statement before `KV_OFFLOAD_ARG` builds; logs the override to stderr when it fires. Tests updated/added: 6 hybrid families pinned plus a positive-control test on Qwen2.5-7B.
 
 **Verify.** Full suite 1380 passed, 2 skipped (was 1378). Help-validation pairing tests still green (they use `_argv_with()` which keeps the default hybrid model — and they correctly observe that offloading flags are absent now). Smoke check: `vllm serve <new-default-argv> --help` parses cleanly.
+
+## Loop 217 — real-model E2E + chain-of-thought stripping
+
+**Observe.** With the loop-216 hybrid guard in place, the user
+greenlit actually loading Qwen3.6-27B. Boot succeeded in 45s on
+the 4090 (free VRAM 23.8 → 7.0 GiB; weights 16.59 GiB; KV 4.96 GiB).
+`/v1/models` and `/health` both 200. `chat()` returns tokens. So far
+so good — but two surprises surfaced:
+
+1. The model emits chain-of-thought INLINE in `message.content`,
+   not in a separate `reasoning_content` channel. Sometimes wrapped
+   `<think>...</think>`, sometimes only the closing tag. The
+   agent_loop's tool-call regex (`_TOOL_CALL_RE`) would match
+   speculative tool calls the model was reasoning *about* mid-thought.
+2. The opt-125m gated test was the only end-to-end check, and it
+   doesn't exercise the hybrid path that production actually runs on.
+
+**Orient.** Two-front fix in one loop:
+
+A. `_strip_think_blocks(text)` in `qwen_client.py`. Strips
+   `<think>...</think>` (DOTALL, case-insensitive); falls back to
+   "drop everything up to the first `</think>`" for the unwrapped
+   case Qwen3.6 actually produced live. Disable via
+   `QWEN_DISABLE_THINK_STRIP=1` for debugging. Wired into
+   `_extract_text` so every `chat()` caller benefits without changes.
+
+B. `tests/test_serve_qwen_real_model_e2e.py` — gated behind
+   `QWEN_SERVE_E2E_REAL_MODEL=1`. Four tests: `/v1/models`, `/health`
+   at server root (validates the loop-215 stripping), real chat
+   completion with the live model, and `QwenClient.chat()` end-to-end
+   with the live `<think>` strip applied. Reuse-running mode
+   (`QWEN_SERVE_REUSE_RUNNING=1`) lets operators iterate against a
+   persistent server instead of paying the 60s startup each time.
+
+**Devil.**
+- *Correctness — strip is too aggressive?* The regex requires both
+  `<think>` and `</think>` to fire on the wrapped path; the unwrapped
+  fallback only triggers when a bare `</think>` exists. False
+  positives need a literal `</think>` in user-meant content, which
+  is vanishingly unlikely for our coding domain. ✅
+- *Correctness — strip empties the response?* Pinned by
+  `test_empty_after_strip_raises`: the existing "empty content =
+  retry" guard fires correctly even after stripping. ✅
+- *Scope — don't I need to handle streaming?* Yes, `chat_stream`
+  yields raw chunks and would leak think tokens. Deferred to loop
+  218: streaming requires stateful tag-boundary tracking across
+  chunks, which is non-trivial and not currently used by
+  `agent_loop` (it uses non-stream `chat`). ⚠️ logged in next.md.
+- *Scope — gating real-model test correctly?* Gate is opt-in by
+  env var, plus a port-already-in-use safety so we don't clobber a
+  user-managed server. ✅
+- *Priority* — P0 / P0. Both bugs were exposed by literally the
+  first live request, which is exactly what the user authorised
+  this loop to find.
+
+**Act.** Patches above. Live validation: started Qwen3.6-27B via
+`scripts/serve_qwen.sh` (loop-216 fix path), confirmed 60s ready,
+ran the 4 gated tests against the live engine. All passed.
+
+**Verify.** Full suite without the gate: 1392 passed, 6 skipped
+(was 1380 + 12 new strip tests). Gated suite with engine running:
+4/4 passed in 5.55s. Carryover question from loop 164 ("does the
+live model emit `<tool_call>` syntax we can parse?") — answered
+YES live, JSON parsed cleanly out of the wrapper.

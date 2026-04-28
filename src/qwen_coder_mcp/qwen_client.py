@@ -7,11 +7,49 @@ mode, OpenRouter, Together, etc.
 from __future__ import annotations
 
 import json
+import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
 import httpx
+
+
+_THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.DOTALL | re.IGNORECASE)
+_DANGLING_OPEN_THINK_RE = re.compile(r".*?</think\s*>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think_blocks(text: str) -> str:
+    """Strip ``<think>...</think>`` reasoning blocks from assistant content.
+
+    Live testing of Qwen3.6-27B against vLLM 0.11 confirmed the model
+    emits its chain-of-thought inline in ``message.content`` (no
+    separate ``reasoning_content`` channel like DeepSeek-R1). When the
+    agent loop's tool-call regex scans that raw content it can match
+    speculative tool calls the model was reasoning *about*, not
+    actually committing to. Strip the blocks before any downstream
+    parser sees the text.
+
+    Behaviour:
+      * Removes complete ``<think>...</think>`` blocks (case-insensitive).
+      * If a ``</think>`` appears with no opening tag (Qwen3.6 sometimes
+        starts its reasoning unwrapped and only emits the closing tag),
+        drop everything up to and including the first ``</think>``.
+      * Returns the trimmed remainder.
+
+    Disable by setting ``QWEN_DISABLE_THINK_STRIP=1`` for callers that
+    want to inspect the raw chain-of-thought (e.g., debugging).
+    """
+    if os.environ.get("QWEN_DISABLE_THINK_STRIP", "").lower() in {"1", "true", "yes"}:
+        return text
+    if not text or "</think" not in text.lower():
+        return text
+    cleaned = _THINK_BLOCK_RE.sub("", text)
+    if "</think" in cleaned.lower():
+        # No matching open tag — strip everything up to the close.
+        cleaned = _DANGLING_OPEN_THINK_RE.sub("", cleaned, count=1)
+    return cleaned.strip()
 
 from .config import Settings, load_settings
 
@@ -438,6 +476,10 @@ class QwenClient:
             text = ""
         else:
             text = str(content).strip()
+        # Strip Qwen3.6 chain-of-thought blocks before any downstream
+        # parser (tool-call regex, JSON extractor, verdict matcher)
+        # sees the text. See _strip_think_blocks for rationale.
+        text = _strip_think_blocks(text)
         if not text:
             # Empty content is treated as a transient failure: in this
             # agent's domain every prompt expects substantive output
