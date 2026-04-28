@@ -59,6 +59,38 @@ def _safe_markup(text: object) -> str:
     return escape(s)
 
 
+def _safe_log_write(log: Any, content: Any) -> None:
+    """Defensive ``RichLog.write`` wrapper.
+
+    Loops 262/263: even after escaping the obvious dynamic-content
+    sites, model-emitted tool args / tool output / exception messages
+    can still find their way into a markup-templated status line. Rather
+    than add a `_safe_markup` call to every interpolation point and
+    forget one in the next refactor, this helper tries the markup write
+    and -- on ``rich.errors.MarkupError`` only -- falls back to writing
+    the same content fully escaped. The markup styling on the prefix is
+    lost in the fallback, but the line still renders and the TUI keeps
+    running. Any other exception (renderer crash, log unmounted) is
+    swallowed because logging must never break the agent loop.
+    """
+    try:
+        from rich.errors import MarkupError
+    except ImportError:  # pragma: no cover - rich always present at runtime
+        MarkupError = Exception  # type: ignore[assignment,misc]
+    try:
+        log.write(content)
+    except MarkupError:
+        # Re-try with the entire content escaped. Prefix styling is
+        # lost in the fallback, but the line still renders.
+        try:
+            log.write(_safe_markup(content if isinstance(content, str) else str(content)))
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001
+        # Log unmounted, IO error, etc -- never crash the caller.
+        pass
+
+
 @dataclass
 class SlashCommand:
     name: str
@@ -3322,7 +3354,7 @@ def _build_app(
                 save_history_jsonl(self.history, path)
                 msg = f"[green]✓ saved {len(self.history)} messages[/green] → {path}"
             except Exception as exc:  # noqa: BLE001
-                msg = f"[red]save failed:[/red] {type(exc).__name__}: {exc}"
+                msg = f"[red]save failed:[/red] {_safe_markup(type(exc).__name__)}: {_safe_markup(exc)}"
             try:
                 self.query_one("#log", RichLog).write(msg)
             except Exception:  # noqa: BLE001
@@ -3368,20 +3400,20 @@ def _build_app(
             except Exception as exc:  # noqa: BLE001
                 log.write(
                     f"[red]✗ health check raised:[/red] "
-                    f"{type(exc).__name__}: {exc}"
+                    f"{_safe_markup(type(exc).__name__)}: {_safe_markup(exc)}"
                 )
                 return
             if check.get("ok"):
                 models = check.get("models") or []
                 tag = ", ".join(models[:3]) or "(no models reported)"
-                log.write(f"[green]✓ backend ok[/green]  models: {tag}")
+                log.write(f"[green]✓ backend ok[/green]  models: {_safe_markup(tag)}")
                 self._render_engine_probe_line(log)
                 return
             err = check.get("error") or "unknown error"
             hint = check.get("hint")
-            log.write(f"[red]✗ backend unavailable:[/red] {err}")
+            log.write(f"[red]✗ backend unavailable:[/red] {_safe_markup(err)}")
             if hint:
-                log.write(f"[yellow]→ hint:[/yellow] {hint}")
+                log.write(f"[yellow]→ hint:[/yellow] {_safe_markup(hint)}")
 
         def _render_engine_probe_line(self, log) -> None:  # type: ignore[no-untyped-def]
             """If the engine /health probe is available and disagrees
@@ -3400,7 +3432,7 @@ def _build_app(
                 # Probe is observability; never crash the banner.
                 log.write(
                     f"[yellow]⚠ engine probe raised:[/yellow] "
-                    f"{type(exc).__name__}: {exc}"
+                    f"{_safe_markup(type(exc).__name__)}: {_safe_markup(exc)}"
                 )
                 return
             for line in format_engine_probe_lines(probe):
@@ -3500,11 +3532,11 @@ def _build_app(
                         max_write_bytes=self.fs_cfg.max_write_bytes,
                         max_list_entries=self.fs_cfg.max_list_entries,
                     )
-                    log.write(f"[dim](cwd)[/dim] {new_root}")
+                    log.write(f"[dim](cwd)[/dim] {_safe_markup(new_root)}")
                     self._refresh_status()
                     return
                 else:
-                    log.write(text)
+                    _safe_log_write(log, text)
                     self._refresh_status()
                     if quit_now:
                         self.exit()
@@ -3613,7 +3645,7 @@ def _build_app(
                 target = self.fs_cfg.root / ".agent" / "agent_state.json"
                 loaded, source = agent_loop.load_latest_checkpoint(target)
             except Exception as exc:  # noqa: BLE001
-                log.write(f"[yellow]⚠ resume failed: {exc}[/yellow]")
+                log.write(f"[yellow]⚠ resume failed: {_safe_markup(exc)}[/yellow]")
                 return
             if not loaded or source is None:
                 log.write("[yellow]·[/yellow] /agent --resume: no checkpoint to load")
@@ -3677,7 +3709,7 @@ def _build_app(
                     summary = repr(call.args)[:120]
                 self.call_from_thread(
                     self._agent_status,
-                    f"[yellow]✎ write[/yellow] {call.name} {summary}",
+                    f"[yellow]✎ write[/yellow] {_safe_markup(call.name)} {_safe_markup(summary)}",
                 )
                 if not self.agent_confirm_writes:
                     return True
@@ -3716,7 +3748,7 @@ def _build_app(
                 except Exception as exc:  # noqa: BLE001
                     self.call_from_thread(
                         self._agent_status,
-                        f"[yellow]⚠ checkpoint failed at step {step}: {exc}[/yellow]",
+                        f"[yellow]⚠ checkpoint failed at step {step}: {_safe_markup(exc)}[/yellow]",
                     )
 
             def runner() -> None:
@@ -3768,7 +3800,7 @@ def _build_app(
                             pending_tool_name = ev.tool or "?"
                             self.call_from_thread(
                                 self._agent_status,
-                                f"[cyan]→ tool[/cyan] {ev.tool}{args_repr}",
+                                f"[cyan]→ tool[/cyan] {_safe_markup(ev.tool)}{_safe_markup(args_repr)}",
                             )
                         elif ev.kind == "tool_result":
                             head = ev.text.splitlines()[0] if ev.text else ""
@@ -3792,7 +3824,7 @@ def _build_app(
                             suffix = f" {lat}" if lat else ""
                             self.call_from_thread(
                                 self._agent_status,
-                                f"[green]← {ev.tool}[/green]{suffix} {head}",
+                                f"[green]← {_safe_markup(ev.tool)}[/green]{suffix} {_safe_markup(head)}",
                             )
                         elif ev.kind == "final":
                             final_text = ev.text
@@ -3803,7 +3835,7 @@ def _build_app(
                             profile.summary_total_s = ev.latency_s
                             self.call_from_thread(
                                 self._agent_status,
-                                f"[dim]· {ev.text}[/dim]",
+                                f"[dim]· {_safe_markup(ev.text)}[/dim]",
                             )
                         elif ev.kind == "ttft":
                             if ev.latency_s is not None:
@@ -3814,7 +3846,11 @@ def _build_app(
                                     f"[dim]· first token in {format_tool_latency(ev.latency_s)}[/dim]",
                                 )
                 except Exception as exc:  # noqa: BLE001
-                    final_text = f"[agent error: {type(exc).__name__}: {exc}]"
+                    # Plain text -- _post_assistant will escape it before
+                    # interpolating into a markup template. Avoid wrapping
+                    # in literal "[...]" because that itself is ambiguous
+                    # markup once concatenated with the qwen> prefix.
+                    final_text = f"agent error: {type(exc).__name__}: {exc}"
                 profile.ended_at = time.monotonic()
                 self.last_turn_profile = profile
                 self.turn_profiles.append(profile)
@@ -3836,7 +3872,7 @@ def _build_app(
 
         def _agent_status(self, line: str) -> None:
             try:
-                self.query_one("#log", RichLog).write(line)
+                _safe_log_write(self.query_one("#log", RichLog), line)
             except Exception:  # noqa: BLE001
                 pass
 

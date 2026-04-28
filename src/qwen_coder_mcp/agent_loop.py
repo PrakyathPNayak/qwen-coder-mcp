@@ -954,7 +954,13 @@ def run_agent(
             else:
                 reply = client.chat(history)
         except Exception as exc:  # noqa: BLE001
-            err = f"[agent error: {type(exc).__name__}: {exc}]"
+            # Plain-text wrapping (loop 263). The previous "[agent error: ...]"
+            # form was ambiguous markup once a renderer concatenated it
+            # with a styled prefix like "[green]qwen>[/green] ", so any
+            # bracketed payload inside the message (e.g. "[/▍]" progress
+            # chars from tool stdout) crashed the TUI's RichLog with
+            # MarkupError. Plain text passes through escape cleanly.
+            err = f"agent error: {type(exc).__name__}: {exc}"
             history.append(ChatMessage(role="assistant", content=err))
             yield AgentEvent(kind="assistant", text=err)
             yield AgentEvent(kind="final", text=err)
