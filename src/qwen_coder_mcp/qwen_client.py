@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import time
+import functools
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
@@ -144,10 +145,56 @@ def _per_message_overhead_tokens() -> int:
     return v
 
 
+def _real_tokenizer_name() -> str:
+    """Loop 268: model name for the real tokenizer (HuggingFace repo id).
+
+    Empty string disables real tokenisation. ``QWEN_REAL_TOKENIZER`` overrides.
+    When set, ``_estimate_tokens`` lazy-loads ``transformers.AutoTokenizer``
+    once and uses true token counts for budget gating; the char heuristic
+    becomes a silent fallback for tokenizer failures.
+    """
+    return os.environ.get("QWEN_REAL_TOKENIZER", "").strip()
+
+
+@functools.lru_cache(maxsize=4)
+def _real_tokenizer(name: str):
+    """Lazy-load a HuggingFace tokenizer. Returns None on any failure.
+
+    Cached per model name. Never raises -- callers must tolerate ``None``
+    and fall back to the char estimator. Importing ``transformers`` is
+    deferred so users who never set ``QWEN_REAL_TOKENIZER`` pay zero
+    import cost (transformers pulls in numpy etc.).
+    """
+    if not name:
+        return None
+    try:
+        from transformers import AutoTokenizer  # type: ignore
+        return AutoTokenizer.from_pretrained(name, trust_remote_code=True)
+    except Exception:
+        return None
+
+
 def _estimate_tokens(text: str) -> int:
-    """Loop 240: char-based token estimate, conservative (rounds up)."""
+    """Loop 240: char-based token estimate, conservative (rounds up).
+
+    Loop 268: when ``QWEN_REAL_TOKENIZER`` is set to a HF model id, uses
+    the real tokenizer for an exact token count. Falls back silently to
+    the char heuristic if the tokenizer can't be loaded or raises.
+    """
     if not text:
         return 0
+    name = _real_tokenizer_name()
+    if name:
+        tok = _real_tokenizer(name)
+        if tok is not None:
+            try:
+                # encode() returns list[int] of token ids (no special tokens
+                # added so the per-message overhead accounting stays in
+                # _per_message_overhead_tokens()).
+                ids = tok.encode(text, add_special_tokens=False)
+                return max(1, len(ids))
+            except Exception:
+                pass
     cpt = _chars_per_token()
     return max(1, int(len(text) / cpt) + (1 if len(text) % cpt else 0))
 

@@ -4526,3 +4526,18 @@ logic), Priority (P2 -- diagnostic only, not behavioural). Suite
 - *Scope*: did NOT touch semantics `fs_edit` strict-literal callers keep working byte-for-byte. New tool is purely additive. 
 - *Priority*: this is the highest-leverage write-tool fix because every failed `fs_edit` costs a full agent turn. The whitespace-tolerant default matches what the model actually intends ~95% of the time.
 - *Backward-compat hole*: `run_tool`'s switch to `_canonical_tool_name` could theoretically affect tests that pass weird names expecting unknown-tool behavior. Verified: `_canonical_tool_name` is idempotent for unknowns (returns input unchanged). All 1988 prior tests stay green.
+
+## Loop 268 — real-tokenizer-backed `_estimate_tokens`
+
+**Why**: char-based estimator under-counts code/markdown by ~5-15% even at the tightened 3.0 ratio (loop 240). vLLM still occasionally rejects requests for prompt-overflow when the agent stuffs many tool_results into a single round. Need an exact-token mode for production while keeping the zero-dep heuristic as default.
+
+**Change**:
+- `qwen_client.py`: new `_real_tokenizer_name()` (reads `QWEN_REAL_TOKENIZER` env var, empty disables) and `_real_tokenizer(name)` (lru_cache'd, lazy-imports `transformers.AutoTokenizer` only when called with a non-empty name). `_estimate_tokens` tries the real tokenizer first when configured; silently falls back to the char heuristic on any failure. Imports `functools` at module top for the cache decorator.
+
+**Tests**: around 2.05k passed, 7 skipped (+14 new in `tests/test_real_tokenizer.py`).
+
+**Devil**:
+- *Correctness*: never raises -- every failure path (no env, env+no transformers, env+broken tokenizer, env+empty encode) falls back to char heuristic. `test_falls_back_when_encode_raises` and `test_minimum_one_token_for_nonempty` lock corner cases.
+- *Scope*: did NOT change `_chars_per_token` or any caller of `_estimate_tokens`. Default behaviour is byte-identical for users who don't set the env var. Critically, `test_no_env_does_not_import_transformers` proves transformers stays unimported in the default code path -- so e.g. CI runners and minimal installs don't get any new import surface.
+- *Priority*: this lifts the ceiling on every overflow-related bug we've fought since loop 240. Once an operator opts in (`export QWEN_REAL_TOKENIZER=Qwen/Qwen3-Next-80B`), the budget gates become exact rather than heuristic.
+- *Backward-compat hole*: `lru_cache(maxsize=4)` means hot-swapping a HF model name in env mid-process picks up only on cache miss. That's fine for our usage (single-model serving) but a multi-tenant rewrite would need a `cache_clear()` hook. Not blocking.
