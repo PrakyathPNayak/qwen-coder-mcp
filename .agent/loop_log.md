@@ -2518,3 +2518,20 @@ read-only operation, no state changes.
 **Act.** New `_role_counts` helper. `/resume` registered in SLASH_COMMANDS + HELP_TEXT. Branch added to dispatch_slash. 8 new tests in `tests/test_resume_slash.py` covering: registration, tab completion, parse, missing file, happy-path round-trip, in-place mutation contract, corrupt file recovery, and no-assistant-message snippet handling.
 
 **Verify.** `pytest -x -q` → ~1k passed, 1 skipped.
+
+## Loop 175 — per-tool latency in agent transcript
+
+**Observe.** At HEAD `b0281e3` the agent transcript showed `→ tool fs_read path='x.py'` then `← fs_read <head line>` with no timing. When a tool call took 4 seconds vs 40 ms users had no signal which one was the bottleneck — the most common debugging question for agent runs.
+
+**Orient.** Calls are sequential in `run_agent` (the inner `for call in calls:` loop blocks until the result lands), so tracking a single "last call started at" timestamp per worker thread is sufficient. Format must be compact: ms for sub-second, decimal seconds up to a minute, mm:ss after.
+
+**Decide.** Add `format_tool_latency(elapsed_s) -> str` next to `render_stream_tail`. Wire it into the `runner` loop: stamp `monotonic()` on `tool_call` events; compute elapsed and prepend to the `← {tool}` status line on `tool_result`. Negative inputs return `(?)` rather than raise so wall-clock weirdness can't crash the UI.
+
+**Devil.**
+- *Correctness:* What if an exception fires between `tool_call` and `tool_result`? `tool_started_at` stays set, but `run_agent` would have aborted the iterator entirely so we never hit a stray `tool_result`. ✅
+- *Scope:* Should we also track time-to-first-token for the model? That's a different concern (model-side latency vs tool-side latency); ship the tool one first since tools are usually the long pole. ✅
+- *Priority:* Higher impact open items? `/diff` and the live vLLM smoke test are both bigger investments. This shipped a visible UX win in one isolated edit. ✅
+
+**Act.** New `format_tool_latency` module-level helper. Updated the `runner` closure in `_start_agent_turn` to stamp+compute. New `tests/test_format_tool_latency.py` with 10 cases covering: zero, sub-second, exactly-1s, decimal-precision, just-under-60s, exactly-60s, padded mm:ss, multi-minute, negative-as-fallback.
+
+**Verify.** `pytest -x -q` → ~1k passed, 1 skipped.

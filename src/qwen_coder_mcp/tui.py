@@ -1227,6 +1227,22 @@ def render_stream_tail(accum: str, budget: int = 2000) -> str:
     return accum[cut:]
 
 
+def format_tool_latency(elapsed_s: float) -> str:
+    """Render a per-tool elapsed time the way the agent transcript wants
+    it: ``(123ms)`` for sub-second, ``(2.4s)`` for ≥1s, ``(1m04s)`` for
+    ≥60s. Negative inputs render as ``(?)`` rather than raise — wall-clock
+    weirdness shouldn't tank the UI."""
+    if elapsed_s < 0:
+        return "(?)"
+    if elapsed_s < 1.0:
+        return f"({int(elapsed_s * 1000)}ms)"
+    if elapsed_s < 60.0:
+        return f"({elapsed_s:.1f}s)"
+    minutes = int(elapsed_s // 60)
+    seconds = int(elapsed_s - minutes * 60)
+    return f"({minutes}m{seconds:02d}s)"
+
+
 _MARKDOWN_HINTS = (
     "```",
     "\n# ",
@@ -1961,6 +1977,11 @@ def _build_app(
             def runner() -> None:
                 final_text = ""
                 live_buf: list[str] = []
+                # Track the wall-clock start of the most recent tool_call
+                # so we can render a (123ms) suffix once its tool_result
+                # lands. Calls are sequential in run_agent so a single
+                # slot is enough.
+                tool_started_at: float | None = None
                 kwargs: dict[str, Any] = {
                     "client": self.client,
                     "fs_cfg": self.fs_cfg,
@@ -1996,6 +2017,7 @@ def _build_app(
                                         s = s[:60] + "…"
                                     bits.append(f"{k}={s!r}")
                                 args_repr = " " + ", ".join(bits)
+                            tool_started_at = time.monotonic()
                             self.call_from_thread(
                                 self._agent_status,
                                 f"[cyan]→ tool[/cyan] {ev.tool}{args_repr}",
@@ -2004,9 +2026,17 @@ def _build_app(
                             head = ev.text.splitlines()[0] if ev.text else ""
                             if len(head) > 200:
                                 head = head[:200] + "…"
+                            if tool_started_at is not None:
+                                lat = format_tool_latency(
+                                    time.monotonic() - tool_started_at
+                                )
+                                tool_started_at = None
+                            else:
+                                lat = ""
+                            suffix = f" {lat}" if lat else ""
                             self.call_from_thread(
                                 self._agent_status,
-                                f"[green]← {ev.tool}[/green] {head}",
+                                f"[green]← {ev.tool}[/green]{suffix} {head}",
                             )
                         elif ev.kind == "final":
                             final_text = ev.text
