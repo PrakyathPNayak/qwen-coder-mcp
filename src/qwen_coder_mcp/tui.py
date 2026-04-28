@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -83,6 +84,7 @@ Slash commands:
   /save <path>         Save the current chat transcript to a file
   /git <subcmd>        Read-only git status / log / diff / show / branch
   /tests [args]        Run pytest in the repo
+  /tokens              Estimate total tokens in current chat history
   /quit                Exit
 
 @<path> tokens in plain chat are expanded inline as file contents.
@@ -466,7 +468,30 @@ def dispatch_slash(
         return _render_git(fs_cfg, cmd.args), False
     if name == "tests":
         return _render_tests(fs_cfg, cmd.args), False
+    if name == "tokens":
+        if history is None:
+            return "no history available", False
+        total = sum(estimate_tokens(m.content) for m in history)
+        msgs = len(history)
+        return (
+            f"~{total} tokens across {msgs} messages "
+            f"(rough estimate, four characters per token)"
+        ), False
     return f"unknown command: /{name}  (try /help)", False
+
+
+def estimate_tokens(text: str) -> int:
+    """Cheap byte-pair-ish token estimate: roughly four characters per token.
+
+    This is intentionally crude. The real served model has its own
+    tokenizer but pulling it in just for a TUI footer would mean an
+    extra heavyweight dep. Four-chars-per-token is the standard
+    rule-of-thumb for English source code and prose and is good enough
+    for a "you are using N tokens" status line.
+    """
+    if not text:
+        return 0
+    return max(1, len(text) // 4)
 
 
 def chat_turn(
@@ -599,6 +624,10 @@ def _build_app(
             self.client = factory()
             self.history: list[ChatMessage] = []
             self.fs_cfg = cfg
+            self.last_turn_tokens: int = 0
+            self.last_turn_seconds: float = 0.0
+            self.total_tokens: int = 0
+            self.total_turns: int = 0
 
         def compose(self) -> ComposeResult:  # type: ignore[override]
             yield Header()
@@ -659,6 +688,7 @@ def _build_app(
                     self.exit()
                 return
             reply_parts: list[str] = []
+            t0 = time.monotonic()
             try:
                 for chunk, _accum in chat_turn_stream(
                     self.history, line, client=self.client, fs_cfg=self.fs_cfg
@@ -669,9 +699,27 @@ def _build_app(
                 reply = chat_turn(
                     self.history, line, client=self.client, fs_cfg=self.fs_cfg
                 )
+                self._record_turn(line, reply, time.monotonic() - t0)
                 log.write(f"[green]qwen>[/green] {reply}")
+                log.write(self._telemetry_line())
                 return
-            log.write(f"[green]qwen>[/green] {''.join(reply_parts)}")
+            full_reply = "".join(reply_parts)
+            self._record_turn(line, full_reply, time.monotonic() - t0)
+            log.write(f"[green]qwen>[/green] {full_reply}")
+            log.write(self._telemetry_line())
+
+        def _record_turn(self, prompt: str, reply: str, elapsed: float) -> None:
+            tok = estimate_tokens(prompt) + estimate_tokens(reply)
+            self.last_turn_tokens = tok
+            self.last_turn_seconds = elapsed
+            self.total_tokens += tok
+            self.total_turns += 1
+
+        def _telemetry_line(self) -> str:
+            return (
+                f"[dim]~{self.last_turn_tokens} tok  "
+                f"{self.last_turn_seconds:.2f}s[/dim]"
+            )
 
     return QwenTUI
 

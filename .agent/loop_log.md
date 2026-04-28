@@ -1988,3 +1988,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P3 user-requested parity.
 - ACT: git allow list dispatcher; tests slash; expand_at_mentions helper that scans for at word path tokens and appends file bodies under fenced blocks. Fifteen new tests covering git status git not allowed git usage tests run pytest and seven at expansion cases plus chat_turn integration. 776 passed.
 
+
+## Loop 137 — /tokens slash + per-turn telemetry footer
+- DECIDE: copilot and ml intern both surface a token and time meter so the user can sense context window pressure and backend latency. Add slash tokens plus a dim telemetry line after every chat reply.
+- DEVIL:
+  - Correctness: estimate is len divided by four characters per token. Crude but standard. Empty string returns zero, short string returns one, longer strings scale linearly.
+  - Scope: real tokenizer would mean pulling tiktoken or transformers just for a status line. Cost is way out of proportion to value here. Document the rule of thumb in the slash response so the user knows it is approximate.
+  - Priority: P3 user-visible affordance, no risk of regression because telemetry is purely additive on the App layer and the helper is pure.
+- ACT: estimate_tokens helper, slash tokens dispatcher branch, App now records last_turn_tokens, last_turn_seconds, total_tokens, total_turns and writes a dim telemetry line after every chat reply. Five new tests. Seven hundred eighty one passed.
+

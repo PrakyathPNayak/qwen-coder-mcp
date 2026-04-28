@@ -824,3 +824,47 @@ class TestAtMentionExpansion:
         # The user message stored in history should contain expanded body.
         user_msg = [m.content for m in history if m.role == "user"][-1]
         assert "hello content" in user_msg
+
+
+# ----------------------------------------------------------- Loop 137
+class TestEstimateTokens:
+    def test_empty(self) -> None:
+        assert tui.estimate_tokens("") == 0
+
+    def test_short(self) -> None:
+        assert tui.estimate_tokens("a") == 1
+
+    def test_scales_with_length(self) -> None:
+        a = tui.estimate_tokens("x" * 40)
+        b = tui.estimate_tokens("x" * 400)
+        assert b > a
+        assert a == 10
+        assert b == 100
+
+
+class TestTokensSlash:
+    def test_tokens_summary(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = [
+            ChatMessage(role="system", content="x" * 40),
+            ChatMessage(role="user", content="y" * 80),
+        ]
+        text, quit_now = tui.dispatch_slash(
+            tui.parse_slash("/tokens"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert quit_now is False
+        assert "tokens across" in text
+        assert "2 messages" in text
+
+    def test_tokens_no_history(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/tokens"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=None,
+        )
+        assert "no history" in text
