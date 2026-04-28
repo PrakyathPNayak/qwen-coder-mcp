@@ -399,3 +399,34 @@ least one assertion that, if removed by a regression, the parser would
 break in production.
 
 **Result**: 129/129 green.
+
+## Loop 14 — `_apply_diff` rejects unsafe paths pre-apply
+**Bug**: `_apply_diff` trusted `git apply` to be the only line of
+defence against malicious model output containing path traversal
+(`+++ b/../../etc/passwd`), absolute paths (`+++ b//etc/passwd`),
+Windows drive paths (`+++ b/C:/...`), or backslash paths. `git apply`
+*does* refuse most of these, but the failure was logged generically as
+`apply_failed: ...` and indistinguishable from a normal patch-conflict
+failure. Worse: any future change to git's safety posture would
+silently broaden our trust boundary.
+
+**Devil**: (a) Could a legit diff have `..` in a header path? No —
+repo paths are POSIX-relative in `--- a/PATH` / `+++ b/PATH`.
+(b) Does this hide real issues? No — the new error is *more* specific,
+not less; clean diffs are unaffected (verified by
+`test_apply_diff_allows_normal_relative_paths` that actually runs git
+apply against a temp repo and gets `"applied"`).
+(c) `/dev/null` for new-file diffs — handled: `_diff_paths` skips it,
+verified by `test_diff_paths_skips_dev_null`.
+
+**Fix**: added `_DIFF_PATH_HEADER_RE`, `_diff_paths()`,
+`_has_unsafe_path()` in `agent/loop.py`. `_apply_diff` calls
+`_has_unsafe_path` after CRLF normalisation and returns
+`unsafe_path: <reason>` distinctly. Reasons: `path_traversal:<p>`,
+`absolute_path:<p>`, `backslash_in_path:<p>`, `empty_path`.
+
+**Tests**: 11 new in `tests/test_apply_diff_paths.py` —
+parametrised traversal cases, absolute (POSIX & Windows-drive),
+backslash, /dev/null preservation, and a real-git-apply happy-path.
+
+**Result**: 140/140 green.

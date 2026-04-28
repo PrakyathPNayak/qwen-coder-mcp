@@ -235,6 +235,49 @@ def _verdict_accepts(text: str) -> tuple[bool, str]:
 
 
 # ------------------------------------------------------------- diff handling
+_DIFF_PATH_HEADER_RE = re.compile(
+    r"^(?:diff --git\s+a/(?P<a1>\S+)\s+b/(?P<b1>\S+)"
+    r"|---\s+a/(?P<a2>\S+)"
+    r"|\+\+\+\s+b/(?P<b2>\S+))",
+    re.MULTILINE,
+)
+
+
+def _diff_paths(diff: str) -> list[str]:
+    """Return every repo-relative path mentioned in `--- a/`/`+++ b/`/`diff --git` headers."""
+    paths: list[str] = []
+    for m in _DIFF_PATH_HEADER_RE.finditer(diff):
+        for g in ("a1", "b1", "a2", "b2"):
+            v = m.group(g)
+            if v and v != "/dev/null":
+                paths.append(v)
+    return paths
+
+
+def _has_unsafe_path(diff: str) -> str | None:
+    """Return an error message if any header path is unsafe, else None.
+
+    Refuses absolute paths, `..` traversal segments, and Windows-drive paths.
+    Defence in depth: `git apply` already refuses to write outside the tree,
+    but we want the loop to log this distinctly (not as a generic apply
+    failure) and to abort before the working tree is touched.
+    """
+    for raw in _diff_paths(diff):
+        # Strip a single trailing tab+timestamp some diffs emit.
+        path = raw.split("\t", 1)[0]
+        if not path:
+            return "empty_path"
+        if path.startswith("/") or (len(path) >= 2 and path[1] == ":"):
+            return f"absolute_path:{path}"
+        # Normalise forward slashes only; backslashes shouldn't appear.
+        if "\\" in path:
+            return f"backslash_in_path:{path}"
+        parts = path.split("/")
+        if any(p == ".." for p in parts):
+            return f"path_traversal:{path}"
+    return None
+
+
 def _apply_diff(diff_text: str) -> tuple[bool, str]:
     """Try `git apply --check` then `git apply`. Returns (ok, message)."""
     diff = _strip_fence(diff_text)
@@ -247,6 +290,9 @@ def _apply_diff(diff_text: str) -> tuple[bool, str]:
     diff = diff.replace("\r\n", "\n").replace("\r", "\n")
     if not diff.endswith("\n"):
         diff += "\n"
+    unsafe = _has_unsafe_path(diff)
+    if unsafe is not None:
+        return False, f"unsafe_path: {unsafe}"
     proc = subprocess.run(
         ["git", "apply", "--check", "-"],
         cwd=_REPO,
