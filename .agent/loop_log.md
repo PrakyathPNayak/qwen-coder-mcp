@@ -2790,3 +2790,20 @@ read-only operation, no state changes.
 **Act.** Edit the `if name == "lat":` branch: before the int parse, peek at `cmd.args[0]` and case-insensitively match `reset`. Update HELP_TEXT. New `tests/test_lat_reset.py` with 7 cases: clears populated buffer (cleared count), no-op on empty (cleared 0), case-insensitive (RESET/Reset/ReSeT), no crash with `app=None`, old-stub fallback (clears `last_turn_profile`), `/lat` after reset shows placeholder, non-exact token like `resetx` still falls through to the int parser and produces the original error.
 
 **Verify.** All `/lat` tests pass (33). Full suite ~1.2k passed.
+
+## Loop 191 — `/help <term>` substring filter
+
+**Observe.** HELP_TEXT has grown to ~50 lines as we keep adding slash commands. Users searching for "how do I do X?" must scroll/scan the whole table. A text filter on the `/help` output would cut the noise.
+
+**Orient.** Smallest possible knob: pure substring match over the help table, case-insensitive, treating regex metacharacters as literals so users don't have to escape. Multi-line entries (where a command's summary wraps) must be kept together — pulling only the first line would orphan the continuation. Bare `/help` continues to print the whole table unchanged.
+
+**Decide.** Extend the `name in {"", "help"}` branch: when `cmd.rest` is non-empty, walk the help table in two-line blocks (entry + optional continuation), lowercase-substring-match the term against the joined block, keep the matching blocks. Print a "no commands match" message on empty result. Update HELP_TEXT row.
+
+**Devil.**
+- *Correctness:* The two-line block detection is heuristic — a continuation line is "starts with whitespace, doesn't start with '  /', not blank". The current help table follows that shape; if a future row violates it, the filter will mis-group. Acceptable risk; the help text is small enough that any structural drift will be caught by these tests. ✅
+- *Scope:* Should the filter be regex? No — pure substring is more predictable and the tests pin that `.*` is treated literally. Users wanting regex have `grep` for the source. ✅
+- *Priority:* `/checkpoints diff N` is meatier but requires a diff-formatting design pass. `/help --search` is a 30-LoC change in a heavily-trafficked command. Higher leverage right now. ✅
+
+**Act.** Edit the `name in {"", "help"}` branch in `dispatch_slash` to add the filter. Update HELP_TEXT row. New `tests/test_help_search.py` with 10 cases: bare `/help` unchanged, command-name match, case-insensitivity, summary-text match (DuckDuckGo → /search), continuation lines preserved (/grep), no-match message, regex metacharacters treated literally, multi-word terms, header preserved on match, unique-command match (one entry only).
+
+**Verify.** All 10 new tests pass. Full suite ~1.2k passed, 1 skipped.

@@ -126,7 +126,7 @@ def slash_completions(prefix: str) -> list[str]:
 
 HELP_TEXT = """\
 Slash commands:
-  /help                Show this help
+  /help [term]         Show this help; optional substring filter
   /search <query>      DuckDuckGo web search
   /fetch <url>         Fetch a URL's text body
   /read <path>         Read a file from the repo root
@@ -963,6 +963,47 @@ def dispatch_slash(
     """
     name = cmd.name
     if name in {"", "help"}:
+        if cmd.rest:
+            term = cmd.rest.strip().lower()
+            if term:
+                lines = HELP_TEXT.splitlines()
+                header_idx = next(
+                    (i for i, ln in enumerate(lines) if ln.startswith("Slash commands:")),
+                    -1,
+                )
+                if header_idx == -1:
+                    return HELP_TEXT, False
+                kept: list[str] = []
+                # The help table is a sequence of two-line entries:
+                # "  /cmd ...    short summary" optionally followed by
+                # "                continuation".
+                i = header_idx + 1
+                while i < len(lines):
+                    ln = lines[i]
+                    next_ln = lines[i + 1] if i + 1 < len(lines) else ""
+                    is_entry = ln.startswith("  /")
+                    if not is_entry:
+                        i += 1
+                        continue
+                    is_continuation = (
+                        next_ln.startswith(" ")
+                        and not next_ln.startswith("  /")
+                        and next_ln.strip() != ""
+                    )
+                    block = [ln]
+                    if is_continuation:
+                        block.append(next_ln)
+                        i += 2
+                    else:
+                        i += 1
+                    if any(term in part.lower() for part in block):
+                        kept.extend(block)
+                if not kept:
+                    return f"/help: no commands match {term!r}", False
+                return (
+                    "Slash commands matching "
+                    f"{term!r}:\n" + "\n".join(kept)
+                ), False
         return HELP_TEXT, False
     if name == "quit" or name == "exit":
         return "bye", True
