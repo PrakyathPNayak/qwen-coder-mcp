@@ -103,6 +103,10 @@ for completions; `@path` expands a file inline.
   - `list_dir` — list a directory inside the repo root
   - `write_file` — write a file inside the repo root (utf-8)
   - `apply_patch` — apply a unified diff via `git apply` (`check_only` supported)
+  - `run_shell` — run a shell command via `/bin/sh` inside the sandbox
+    (deny list, wall-clock cap, output cap, optional `cwd`/`timeout`)
+    — added in loop 260 so MCP clients have the same shell access the
+    TUI's `/run` already provides.
 
 The filesystem tools are sandboxed to `$QWEN_MCP_FS_ROOT` (default:
 server's cwd). Paths that escape via `..` or symlinks are rejected.

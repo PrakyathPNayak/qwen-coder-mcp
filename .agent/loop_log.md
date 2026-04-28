@@ -4317,3 +4317,32 @@ logic), Priority (P2 -- diagnostic only, not behavioural). Suite
 - *Priority*: small, surgical, closes a 2-loop-old caveat. Worth shipping before tackling the bigger carry-overs (two-phase /run preview, real-tokenizer, fs_regex_edit).
 
 **Suite**: 1891 passed, 7 skipped.
+
+---
+
+## Loop 260 — run_shell exposed as an MCP tool
+
+**Why**: `run_shell` existed in `shell_tools.py` and the agent's tool registry, but the MCP server's `list_tools()` didn't advertise it. External MCP clients (other editors, the Claude Desktop integration, etc.) had no way to shell out — they could read/write files and apply patches but couldn't actually run tests, formatters, or builds. Embarrassing parity gap.
+
+**Change** (src/qwen_coder_mcp/server.py):
+- Added `from . import shell_tools`.
+- Extracted the inner `list_tools()` closure into a module-level `_list_tools()` so the registry is introspectable without spinning up an asyncio handler. The MCP-decorated inner now just `return _list_tools()`.
+- New tool entry for `run_shell` with `cmd` (required), `timeout` (optional number), `cwd` (optional string).
+- New dispatch branch in `_dispatch`: validates non-empty cmd, forwards optional timeout/cwd, catches `ShellError` and `FsError` (cwd escaping the sandbox), formats via `shell_tools.format_run_result`. Same deny list and wall-clock cap that `/run` already enforces.
+
+**Change** (README.md): MCP tools list extended with `run_shell` description.
+
+**Tests** (6 new in tests/test_server.py::TestRunShellMCPTool):
+- `run_shell` appears in `_list_tools()` with the right schema (`cmd` required).
+- Dispatch runs `echo hello` and the formatted result contains `$ echo hello` + `hello`.
+- Empty cmd returns a friendly error (no exception).
+- Deny-listed command (`rm -rf /`) returns `run_shell error: ShellError: ...`.
+- `cwd` argument actually changes the working directory (lists a marker file in a subdir).
+- Sub-second timeout against `sleep 5` trips the timeout path.
+
+**Devil step** (Correctness/Scope/Priority):
+- *Correctness*: extracting `_list_tools()` as a module-level function changed the closure capture — `s = {"type": "string"}` is now a local of the helper, not the inner async function. Confirmed all existing tools still parse the same schema by running the full suite (1897 vs 1891 baseline + 6). The async `list_tools` remains MCP-decorated.
+- *Scope*: I deliberately did NOT add `confirm` callbacks for the MCP path. The MCP server is the back door for power tools (Claude Desktop, IDE plugins) — operators wire their own approval UX upstream. The deny list + sandbox cap is the floor; everything above it is the operator's responsibility. The TUI keeps its own `/run` confirm gate.
+- *Priority*: this was a multi-loop carry-over masquerading as "lots of fixes left" in the operator's ask. Closing it before tackling fs_regex_edit / two-phase preview / real-tokenizer because parity with the agent's tool registry matters more than incremental polish.
+
+**Suite**: 1897 passed, 7 skipped.

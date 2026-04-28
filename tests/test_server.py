@@ -141,3 +141,65 @@ def test_dispatch_devils_advocate_uses_dev_advocate_system():
     srv._dispatch(stub, "devils_advocate", {"path": "a", "original": "o", "diff": "d", "issue": "i"})
     from qwen_coder_mcp import prompts
     assert stub.calls[0]["system"] == prompts.DEVILS_ADVOCATE_SYSTEM
+
+
+# ---- Loop 260: run_shell exposed as an MCP tool ----------------------------
+
+class TestRunShellMCPTool:
+    def test_listed_in_list_tools(self):
+        """Loop 260: run_shell must appear in the MCP tool registry."""
+        from qwen_coder_mcp import server as srv
+        tools = srv._list_tools()
+        names = {t.name for t in tools}
+        assert "run_shell" in names
+        # Schema sanity.
+        rs = next(t for t in tools if t.name == "run_shell")
+        assert "cmd" in rs.inputSchema["properties"]
+        assert rs.inputSchema["required"] == ["cmd"]
+
+    def test_dispatch_runs_command(self, tmp_path):
+        from qwen_coder_mcp import server as srv, fs_tools
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = srv._dispatch(_StubClient(), "run_shell", {"cmd": "echo hello"}, fs_cfg=cfg)
+        assert "hello" in out
+        assert "$ echo hello" in out
+
+    def test_dispatch_empty_cmd_errors(self, tmp_path):
+        from qwen_coder_mcp import server as srv, fs_tools
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = srv._dispatch(_StubClient(), "run_shell", {"cmd": "  "}, fs_cfg=cfg)
+        assert out.startswith("run_shell error:")
+        assert "cmd is required" in out or "empty command" in out
+
+    def test_dispatch_denylist_returns_error(self, tmp_path):
+        from qwen_coder_mcp import server as srv, fs_tools
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = srv._dispatch(_StubClient(), "run_shell", {"cmd": "rm -rf /"}, fs_cfg=cfg)
+        assert out.startswith("run_shell error:")
+        assert "ShellError" in out
+
+    def test_dispatch_honors_cwd(self, tmp_path):
+        from qwen_coder_mcp import server as srv, fs_tools
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (sub / "marker.txt").write_text("x", encoding="utf-8")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = srv._dispatch(
+            _StubClient(),
+            "run_shell",
+            {"cmd": "ls", "cwd": "sub"},
+            fs_cfg=cfg,
+        )
+        assert "marker.txt" in out
+
+    def test_dispatch_honors_timeout(self, tmp_path):
+        from qwen_coder_mcp import server as srv, fs_tools
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        # 0.5s timeout vs `sleep 5` should trip the timeout path.
+        out = srv._dispatch(
+            _StubClient(),
+            "run_shell",
+            {"cmd": "sleep 5", "timeout": 0.5},
+            fs_cfg=cfg,
+        )
+        assert "timeout" in out.lower() or "timed out" in out.lower()

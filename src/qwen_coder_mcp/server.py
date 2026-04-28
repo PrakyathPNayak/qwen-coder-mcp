@@ -15,11 +15,205 @@ from .qwen_client import ChatMessage, QwenClient
 from . import prompts
 from . import web_tools
 from . import fs_tools
+from . import shell_tools
 
 
 def _default_fs_config() -> fs_tools.FsConfig:
     root_str = os.environ.get("QWEN_MCP_FS_ROOT") or os.getcwd()
     return fs_tools.FsConfig(root=Path(root_str))
+
+
+def _list_tools() -> list[Tool]:
+    """Return the static tool registry exposed over MCP. Loop 260
+    extracted this from the inner closure so the registry can be
+    introspected by tests without spinning up an asyncio handler.
+    """
+    s = {"type": "string"}
+    return [
+        Tool(
+            name="chat",
+            description="Free-form chat with Qwen3.6-27B (coding-tuned).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "prompt": s,
+                    "system": s,
+                    "temperature": {"type": "number", "default": 0.2},
+                },
+                "required": ["prompt"],
+            },
+        ),
+        Tool(
+            name="complete_code",
+            description="Complete a code snippet (optionally with goal).",
+            inputSchema={
+                "type": "object",
+                "properties": {"code": s, "instruction": s},
+                "required": ["code"],
+            },
+        ),
+        Tool(
+            name="explain_code",
+            description="Explain a code snippet in natural language.",
+            inputSchema={
+                "type": "object",
+                "properties": {"code": s},
+                "required": ["code"],
+            },
+        ),
+        Tool(
+            name="find_bugs",
+            description="List bugs/issues/improvements for a file.",
+            inputSchema={
+                "type": "object",
+                "properties": {"path": s, "code": s},
+                "required": ["path", "code"],
+            },
+        ),
+        Tool(
+            name="propose_fix",
+            description="Generate a unified diff fixing a specific issue.",
+            inputSchema={
+                "type": "object",
+                "properties": {"path": s, "code": s, "issue": s},
+                "required": ["path", "code", "issue"],
+            },
+        ),
+        Tool(
+            name="devils_advocate",
+            description="Critique a proposed fix; ACCEPT/REJECT verdict.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": s, "original": s, "diff": s, "issue": s,
+                },
+                "required": ["path", "original", "diff", "issue"],
+            },
+        ),
+        Tool(
+            name="refactor",
+            description="Refactor code toward a stated goal.",
+            inputSchema={
+                "type": "object",
+                "properties": {"code": s, "goal": s},
+                "required": ["code", "goal"],
+            },
+        ),
+        Tool(
+            name="write_tests",
+            description="Generate tests for code (framework defaults to pytest).",
+            inputSchema={
+                "type": "object",
+                "properties": {"code": s, "framework": s},
+                "required": ["code"],
+            },
+        ),
+        Tool(
+            name="summarize_repo",
+            description="Summarize a repository given its file tree text.",
+            inputSchema={
+                "type": "object",
+                "properties": {"tree": s},
+                "required": ["tree"],
+            },
+        ),
+        Tool(
+            name="web_search",
+            description=(
+                "Search the web via DuckDuckGo HTML. Returns a numbered "
+                "list of {title, url, snippet}. No API key required."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": s,
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 25},
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
+            name="fetch_url",
+            description=(
+                "Fetch a URL and return its text body (truncated to a "
+                "byte cap). Refuses non-text content types."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "url": s,
+                    "max_bytes": {"type": "integer", "minimum": 1024, "maximum": 5_000_000},
+                },
+                "required": ["url"],
+            },
+        ),
+        Tool(
+            name="read_file",
+            description="Read a file from the configured repo root (utf-8, byte-capped).",
+            inputSchema={
+                "type": "object",
+                "properties": {"path": s},
+                "required": ["path"],
+            },
+        ),
+        Tool(
+            name="list_dir",
+            description="List a directory inside the configured repo root.",
+            inputSchema={
+                "type": "object",
+                "properties": {"path": s},
+            },
+        ),
+        Tool(
+            name="write_file",
+            description="Write a file inside the configured repo root (utf-8).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": s,
+                    "content": s,
+                    "create_parents": {"type": "boolean"},
+                },
+                "required": ["path", "content"],
+            },
+        ),
+        Tool(
+            name="apply_patch",
+            description=(
+                "Apply a unified diff via `git apply`. Set check_only=true "
+                "to test applicability without mutating the tree."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "diff": s,
+                    "check_only": {"type": "boolean"},
+                },
+                "required": ["diff"],
+            },
+        ),
+        Tool(
+            name="run_shell",
+            description=(
+                "Run a shell command via /bin/sh inside the configured "
+                "repo root. Sandboxed (cwd cannot escape root), wall-clock "
+                "capped, and output byte-capped. A built-in deny list "
+                "rejects destructive patterns (rm -rf /, dd of=/dev/, "
+                "mkfs, fork bombs, curl|sh, etc). Returns a formatted "
+                "block with returncode, stdout, stderr, and "
+                "truncated/timeout markers."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "cmd": s,
+                    "timeout": {"type": "number"},
+                    "cwd": s,
+                },
+                "required": ["cmd"],
+            },
+        ),
+    ]
 
 
 def _build_server(client: QwenClient | None = None, fs_config: fs_tools.FsConfig | None = None) -> tuple[Server, QwenClient]:
@@ -30,171 +224,7 @@ def _build_server(client: QwenClient | None = None, fs_config: fs_tools.FsConfig
 
     @server.list_tools()
     async def list_tools() -> list[Tool]:  # type: ignore[override]
-        s = {"type": "string"}
-        return [
-            Tool(
-                name="chat",
-                description="Free-form chat with Qwen3.6-27B (coding-tuned).",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "prompt": s,
-                        "system": s,
-                        "temperature": {"type": "number", "default": 0.2},
-                    },
-                    "required": ["prompt"],
-                },
-            ),
-            Tool(
-                name="complete_code",
-                description="Complete a code snippet (optionally with goal).",
-                inputSchema={
-                    "type": "object",
-                    "properties": {"code": s, "instruction": s},
-                    "required": ["code"],
-                },
-            ),
-            Tool(
-                name="explain_code",
-                description="Explain a code snippet in natural language.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {"code": s},
-                    "required": ["code"],
-                },
-            ),
-            Tool(
-                name="find_bugs",
-                description="List bugs/issues/improvements for a file.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {"path": s, "code": s},
-                    "required": ["path", "code"],
-                },
-            ),
-            Tool(
-                name="propose_fix",
-                description="Generate a unified diff fixing a specific issue.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {"path": s, "code": s, "issue": s},
-                    "required": ["path", "code", "issue"],
-                },
-            ),
-            Tool(
-                name="devils_advocate",
-                description="Critique a proposed fix; ACCEPT/REJECT verdict.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "path": s, "original": s, "diff": s, "issue": s,
-                    },
-                    "required": ["path", "original", "diff", "issue"],
-                },
-            ),
-            Tool(
-                name="refactor",
-                description="Refactor code toward a stated goal.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {"code": s, "goal": s},
-                    "required": ["code", "goal"],
-                },
-            ),
-            Tool(
-                name="write_tests",
-                description="Generate tests for code (framework defaults to pytest).",
-                inputSchema={
-                    "type": "object",
-                    "properties": {"code": s, "framework": s},
-                    "required": ["code"],
-                },
-            ),
-            Tool(
-                name="summarize_repo",
-                description="Summarize a repository given its file tree text.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {"tree": s},
-                    "required": ["tree"],
-                },
-            ),
-            Tool(
-                name="web_search",
-                description=(
-                    "Search the web via DuckDuckGo HTML. Returns a numbered "
-                    "list of {title, url, snippet}. No API key required."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "query": s,
-                        "max_results": {"type": "integer", "minimum": 1, "maximum": 25},
-                    },
-                    "required": ["query"],
-                },
-            ),
-            Tool(
-                name="fetch_url",
-                description=(
-                    "Fetch a URL and return its text body (truncated to a "
-                    "byte cap). Refuses non-text content types."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "url": s,
-                        "max_bytes": {"type": "integer", "minimum": 1024, "maximum": 5_000_000},
-                    },
-                    "required": ["url"],
-                },
-            ),
-            Tool(
-                name="read_file",
-                description="Read a file from the configured repo root (utf-8, byte-capped).",
-                inputSchema={
-                    "type": "object",
-                    "properties": {"path": s},
-                    "required": ["path"],
-                },
-            ),
-            Tool(
-                name="list_dir",
-                description="List a directory inside the configured repo root.",
-                inputSchema={
-                    "type": "object",
-                    "properties": {"path": s},
-                },
-            ),
-            Tool(
-                name="write_file",
-                description="Write a file inside the configured repo root (utf-8).",
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "path": s,
-                        "content": s,
-                        "create_parents": {"type": "boolean"},
-                    },
-                    "required": ["path", "content"],
-                },
-            ),
-            Tool(
-                name="apply_patch",
-                description=(
-                    "Apply a unified diff via `git apply`. Set check_only=true "
-                    "to test applicability without mutating the tree."
-                ),
-                inputSchema={
-                    "type": "object",
-                    "properties": {
-                        "diff": s,
-                        "check_only": {"type": "boolean"},
-                    },
-                    "required": ["diff"],
-                },
-            ),
-        ]
+        return _list_tools()
 
     @server.call_tool()
     async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:  # type: ignore[override]
@@ -316,6 +346,23 @@ def _dispatch(client: QwenClient, name: str, args: dict[str, Any], fs_cfg: fs_to
                 return f"{kind}: {tag}\n{msg}"
         except (fs_tools.FsError, Exception) as exc:  # noqa: BLE001
             return f"{name} error: {type(exc).__name__}: {exc}"
+    if name == "run_shell":
+        cfg = fs_cfg or _default_fs_config()
+        cmd = str(args.get("cmd", "")).strip()
+        if not cmd:
+            return "run_shell error: ValueError: cmd is required"
+        try:
+            kwargs: dict[str, Any] = {}
+            if "timeout" in args and args["timeout"] is not None:
+                kwargs["timeout"] = float(args["timeout"])
+            if args.get("cwd"):
+                kwargs["cwd"] = str(args["cwd"])
+            res = shell_tools.run_shell(cfg, cmd, **kwargs)
+        except (shell_tools.ShellError, fs_tools.FsError) as exc:
+            return f"run_shell error: {type(exc).__name__}: {exc}"
+        except Exception as exc:  # noqa: BLE001
+            return f"run_shell error: {type(exc).__name__}: {exc}"
+        return shell_tools.format_run_result(res)
     raise ValueError(f"unknown tool: {name}")
 
 
