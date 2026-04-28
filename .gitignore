@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+.venv-serve/
 .env
 .env.*
 !.env.example
@@ -12,5 +13,4 @@ venv/
 .ruff_cache/
 dist/
 build/
-.loop/runtime.log
-.loop/*.pid
+.loop/

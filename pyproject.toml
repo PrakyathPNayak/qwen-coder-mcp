@@ -18,6 +18,9 @@ dependencies = [
     "anyio>=4.3",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
 [project.scripts]
 qwen-coder-mcp = "qwen_coder_mcp.server:main"
 
