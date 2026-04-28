@@ -1250,3 +1250,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 1/4 — silent data-flow corruption observability.
 - ACT: 1 test (stubbed `_run_git` + log capture). 387 passed.
 - COMMIT: pending.
+
+## Loop 63 — `_commit_and_push` tri-state return + `commit_skipped_empty` outcome
+- OBSERVE: After loop 62 logged the empty-tree path, the return value was still `False` — same as real failure. Outer loop emitted identical `commit_failed:{rel}` for both, indistinguishable in `runtime.log`/timing.log.
+- ORIENT: Bucket 6 — interface contract lies about distinct conditions. Two callers (the iteration + the rebase-conflict e2e test) need updating; the change is mechanical.
+- DECIDE: Switch return type to `Literal["ok", "empty", "failed"]`. Update the iteration to map `"empty"` to a new outcome `commit_skipped_empty:{rel}`. Add to `OUTER_OUTCOME_CATEGORIES`. Update both existing tests.
+- DEVIL:
+  - Correctness: drift audit (loop 60) immediately catches if I forgot to add to the frozenset — it failed once, then passed after the addition.
+  - Scope: this *is* the cause-level fix to loop 62's symptom-only log.
+  - Priority: bucket 6, complementary to loop 62.
+- ACT: 4 new tests (add-fail, commit-fail, ok, source-audit). Updated 2 existing assertions. 391 passed.
+- COMMIT: pending.

@@ -84,7 +84,7 @@ def test_commit_and_push_aborts_failed_rebase(conflicting_repo: Path):
 
     ok = L._commit_and_push("loop fix", push=True)
 
-    assert ok is False, "push should fail because of rebase conflict"
+    assert ok == "failed", "push should fail because of rebase conflict"
 
     # Tree must be clean — no rebase in progress, no leftover staged changes.
     assert not (conflicting_repo / ".git" / "rebase-merge").exists()

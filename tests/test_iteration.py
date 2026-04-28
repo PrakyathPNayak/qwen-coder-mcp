@@ -687,7 +687,8 @@ class TestOuterOutcomeCategories:
         expected = {
             "applied", "clean", "skip", "rejected",
             "out_of_scope", "validation_failed",
-            "commit_failed", "revert_failed", "apply_failed",
+            "commit_failed", "commit_skipped_empty",
+            "revert_failed", "apply_failed",
             "qwen_error_find_bugs", "qwen_error_propose_fix",
             "qwen_error_devils_advocate",
             "budget_exceeded",
@@ -782,7 +783,55 @@ class TestCommitAndPushEmptyTreeLog:
         monkeypatch.setattr(L, "_log", lambda msg: log_lines.append(msg))
 
         result = L._commit_and_push("test: msg", push=False)
-        assert result is False
+        assert result == "empty"
         assert any("empty staged tree" in line for line in log_lines), log_lines
         # Must not have attempted commit/pull/push
         assert not any(c[0] in ("commit", "pull", "push") for c in calls)
+
+
+class TestCommitAndPushTriState:
+    """Loop 63: _commit_and_push returns 'ok' | 'empty' | 'failed'."""
+
+    def test_add_failure_returns_failed(self, monkeypatch):
+        from agent import loop as L
+        import subprocess
+        def fake(*args, check=True):
+            if args[0] == "add":
+                return subprocess.CompletedProcess(args=list(args), returncode=1, stdout="", stderr="boom")
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(L, "_run_git", fake)
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        assert L._commit_and_push("m", push=False) == "failed"
+
+    def test_commit_failure_returns_failed(self, monkeypatch):
+        from agent import loop as L
+        import subprocess
+        def fake(*args, check=True):
+            if args[0] == "status":
+                return subprocess.CompletedProcess(args=list(args), returncode=0, stdout=" M file\n", stderr="")
+            if args[0] == "commit":
+                return subprocess.CompletedProcess(args=list(args), returncode=1, stdout="", stderr="commit boom")
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(L, "_run_git", fake)
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        assert L._commit_and_push("m", push=False) == "failed"
+
+    def test_success_no_push_returns_ok(self, monkeypatch):
+        from agent import loop as L
+        import subprocess
+        def fake(*args, check=True):
+            if args[0] == "status":
+                return subprocess.CompletedProcess(args=list(args), returncode=0, stdout=" M file\n", stderr="")
+            return subprocess.CompletedProcess(args=list(args), returncode=0, stdout="", stderr="")
+        monkeypatch.setattr(L, "_run_git", fake)
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        assert L._commit_and_push("m", push=False) == "ok"
+
+    def test_iteration_emits_commit_skipped_empty_when_tree_empty(self):
+        from agent import loop as L
+        src = Path(L.__file__).read_text(encoding="utf-8")
+        # Source-level audit: the new outcome string is reachable in _iteration.
+        assert 'f"commit_skipped_empty:{rel}"' in src
+        # And the tri-state branch exists.
+        assert 'commit_status == "empty"' in src
+        assert 'commit_status == "ok"' in src

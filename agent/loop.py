@@ -780,6 +780,7 @@ OUTER_OUTCOME_CATEGORIES: frozenset[str] = frozenset({
     "out_of_scope",
     "validation_failed",
     "commit_failed",
+    "commit_skipped_empty",
     "revert_failed",
     "apply_failed",
     "qwen_error_find_bugs",
@@ -1202,39 +1203,46 @@ def _abort_rebase_if_any() -> None:
         _run_git("clean", "-fd", check=False)
 
 
-def _commit_and_push(message: str, push: bool) -> bool:
+def _commit_and_push(message: str, push: bool) -> str:
+    """Stage, commit and (optionally) push.
+
+    Returns a tri-state status string:
+      - "ok"     — commit (and push, if requested) succeeded
+      - "empty"  — staged tree was empty; nothing to commit (anomalous
+                   when called from `_iteration`, which only invokes us
+                   after a non-empty `_changed_paths()`)
+      - "failed" — git command failed (add, commit, pull-rebase, push)
+    """
     add = _run_git("add", "-A", check=False)
     if add.returncode != 0:
         _log(f"git add failed: {add.stderr.strip()}")
-        return False
+        return "failed"
     status = _run_git("status", "--porcelain", check=False).stdout
     if not status.strip():
         # Anomalous: caller only invokes us after `_apply_diff` succeeded
         # and `_changed_paths()` was non-empty, so an empty staged tree
         # here means the changes were lost between apply and commit
         # (e.g., an external reset, or all changes were .gitignore'd).
-        # Log so this isn't silently indistinguishable from real commit
-        # failure.
         _log("git commit skipped: empty staged tree (apply produced no committable changes)")
-        return False
+        return "empty"
     commit = _run_git("commit", "-m", message, check=False)
     if commit.returncode != 0:
         _log(f"git commit failed: {commit.stderr.strip()}")
-        return False
+        return "failed"
     if not push:
-        return True
+        return "ok"
     # Best-effort sync with remote. On rebase conflict, abort cleanly so
     # the next iteration starts from a known-good tree instead of wedging.
     pull = _run_git("pull", "--rebase", "--autostash", "origin", "main", check=False)
     if pull.returncode != 0:
         _log(f"git pull --rebase failed: {pull.stderr.strip()[:300]}")
         _abort_rebase_if_any()
-        return False
+        return "failed"
     push_proc = _run_git("push", "origin", "HEAD:main", check=False)
     if push_proc.returncode != 0:
         _log(f"git push failed: {push_proc.stderr.strip()}")
-        return False
-    return True
+        return "failed"
+    return "ok"
 
 
 _TIMING_MAX_BYTES_DEFAULT = 1_000_000
@@ -1426,8 +1434,8 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
     summary_line = issue.splitlines()[0][:72]
     commit_msg = f"fix({rel.as_posix()}): {summary_line}"
     with _PhaseTimer(phases, "commit_push"):
-        committed = _commit_and_push(commit_msg, push)
-    if committed:
+        commit_status = _commit_and_push(commit_msg, push)
+    if commit_status == "ok":
         _write_history(
             f"{int(time.time())}-applied.md",
             history_body + "APPLIED + COMMITTED\n",
@@ -1436,9 +1444,14 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
         return _finish(f"applied:{rel}")
 
     rev_ok = _revert_changes()
-    _append_state(f"- {_now()} `{rel}` — commit/push failed, reverted\n")
+    if commit_status == "empty":
+        _append_state(f"- {_now()} `{rel}` — commit skipped: empty staged tree, reverted\n")
+    else:
+        _append_state(f"- {_now()} `{rel}` — commit/push failed, reverted\n")
     if not rev_ok:
         return _finish(f"revert_failed:{rel}:after_commit_push")
+    if commit_status == "empty":
+        return _finish(f"commit_skipped_empty:{rel}")
     return _finish(f"commit_failed:{rel}")
 
 
