@@ -30,6 +30,8 @@ quantizations, and the llama.cpp fallback.
   - `refactor` — rewrite code per a goal
   - `write_tests` — generate tests for code
   - `summarize_repo` — high-level repo summary
+  - `web_search` — DuckDuckGo HTML web search (no API key)
+  - `fetch_url` — fetch a URL's text body (binary content refused, byte-capped)
 - **Backend-agnostic** Qwen client speaking the OpenAI Chat Completions
   protocol — works with vLLM, SGLang, Ollama (OAI shim), DashScope,
   OpenRouter, Together, etc.

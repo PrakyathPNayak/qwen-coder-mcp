@@ -11,6 +11,7 @@ from mcp.types import TextContent, Tool
 
 from .qwen_client import ChatMessage, QwenClient
 from . import prompts
+from . import web_tools
 
 
 def _build_server(client: QwenClient | None = None) -> tuple[Server, QwenClient]:
@@ -109,6 +110,36 @@ def _build_server(client: QwenClient | None = None) -> tuple[Server, QwenClient]
                     "required": ["tree"],
                 },
             ),
+            Tool(
+                name="web_search",
+                description=(
+                    "Search the web via DuckDuckGo HTML. Returns a numbered "
+                    "list of {title, url, snippet}. No API key required."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "query": s,
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 25},
+                    },
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="fetch_url",
+                description=(
+                    "Fetch a URL and return its text body (truncated to a "
+                    "byte cap). Refuses non-text content types."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "url": s,
+                        "max_bytes": {"type": "integer", "minimum": 1024, "maximum": 5_000_000},
+                    },
+                    "required": ["url"],
+                },
+            ),
         ]
 
     @server.call_tool()
@@ -176,6 +207,32 @@ def _dispatch(client: QwenClient, name: str, args: dict[str, Any]) -> str:
         return client.system_user(
             prompts.CODER_SYSTEM, prompts.summarize_repo_user(str(args["tree"]))
         )
+    if name == "web_search":
+        try:
+            results = web_tools.web_search(
+                str(args["query"]),
+                max_results=int(args.get("max_results", 5)),
+            )
+        except (ValueError, Exception) as exc:  # noqa: BLE001
+            return f"web_search error: {type(exc).__name__}: {exc}"
+        return web_tools.format_search_results(results)
+    if name == "fetch_url":
+        try:
+            res = web_tools.fetch_url(
+                str(args["url"]),
+                max_bytes=int(args.get("max_bytes", 200_000)),
+            )
+        except (ValueError, Exception) as exc:  # noqa: BLE001
+            return f"fetch_url error: {type(exc).__name__}: {exc}"
+        if res.get("error") == "non_text_content":
+            return (
+                f"fetch_url: refused non-text content "
+                f"({res.get('content_type')}) from {res.get('url')}"
+            )
+        prefix = f"# {res['url']} (status={res['status']}, ct={res['content_type']})\n"
+        if res.get("truncated"):
+            prefix += "# truncated\n"
+        return prefix + str(res.get("text", ""))
     raise ValueError(f"unknown tool: {name}")
 
 

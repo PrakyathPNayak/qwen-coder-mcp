@@ -1912,3 +1912,11 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: should `--phase` support multiple phases as a union/intersection? Premature; CLI stays simple, analysts use `--phase A | combine-json | --phase B` if needed.
   - Priority: P5. Unlocks drill-down analysis: "were devils_advocate rejections due to slow time or fast rejections on bad proposals".
 - ACT: 2 helpers + 2 CLI flags + 6 tests + README example. 606 passed.
+
+## Loop 128 — `web_search` and `fetch_url` MCP tools
+- DECIDE: pure module `web_tools.py` with `web_search` (DDG html, no key), `fetch_url` (httpx wrapper with content-type/byte-cap safety), `parse_search_results` (regex-tolerant). Wire as 2 new MCP tools. Tests use `httpx.MockTransport`.
+- DEVIL:
+  - Correctness: regex parses DDG markup loosely so a small layout change doesn't crash; falls back to empty list. fetch_url refuses non-http(s) schemes (no `file://` exfil), refuses non-text content types (no binary blobs leaking back through Qwen).
+  - Scope: no caching, no robots.txt parsing -- defer; single-call use case dominates.
+  - Priority: P3 user-requested feature gap. claude-code style web access.
+- ACT: 200-line module, 21 tests, README features list expanded. 627 passed.
