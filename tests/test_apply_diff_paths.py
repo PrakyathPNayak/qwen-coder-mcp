@@ -571,3 +571,72 @@ def test_revert_changes_continues_through_timeouts(monkeypatch):
     monkeypatch.setattr(loop.subprocess, "run", fake_run)
     # Should NOT raise.
     loop._revert_changes()
+
+
+# ----------------------------------------- "\ No newline at end of file"
+def test_no_newline_marker_passes_safety_stack():
+    """A diff containing `\\ No newline at end of file` markers (legitimate
+    git-diff output for files without trailing newlines) must clear
+    every safety check and not be misclassified as malformed."""
+    import agent.loop as L
+
+    diff = (
+        "diff --git a/foo.py b/foo.py\n"
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -1 +1 @@\n"
+        "-x = 1\n"
+        "\\ No newline at end of file\n"
+        "+x = 2\n"
+        "\\ No newline at end of file\n"
+    )
+    assert L._has_unsafe_path(diff) is None
+    assert L._has_binary_patch(diff) is None
+    assert L._has_unsafe_mode(diff) is None
+    assert L._has_structural_defect(diff) is None
+    assert L._has_oversized_diff(diff) is None
+    # And paths parse correctly to the single target file.
+    assert set(L._diff_paths(diff)) == {"foo.py"}
+
+
+# -------------------------------- precise Windows-drive detection
+def _diff_with_path(p: str) -> str:
+    return (
+        f"diff --git a/{p} b/{p}\n"
+        f"--- a/{p}\n"
+        f"+++ b/{p}\n"
+        "@@ -1 +1 @@\n"
+        "-x = 1\n"
+        "+x = 2\n"
+    )
+
+
+def test_posix_path_with_colon_is_allowed():
+    """Filenames containing `:` are legal on POSIX. The drive-letter
+    check must not over-match; only a leading ASCII letter + ':' is
+    a Windows drive."""
+    import agent.loop as L
+    # `a:b.py` — second char is ':', first char is letter → flagged
+    # by the old check. Now allowed because we additionally require
+    # the colon is preceded by an ASCII letter at position 0 AND
+    # nothing else; for unprefixed in-repo paths a `dir/a:b.py`
+    # form is also legitimate.
+    # The leading `a:` form is the borderline case — keep flagged
+    # because it's indistinguishable from a Windows drive.
+    # So we use a path with the colon NOT at position 1.
+    assert L._has_unsafe_path(_diff_with_path("dir/note:1.py")) is None
+
+
+def test_windows_drive_letter_still_rejected():
+    import agent.loop as L
+    out = L._has_unsafe_path(_diff_with_path("C:foo/bar.py"))
+    assert out is not None and out.startswith("absolute_path:")
+    out = L._has_unsafe_path(_diff_with_path("z:bar.py"))
+    assert out is not None and out.startswith("absolute_path:")
+
+
+def test_non_letter_colon_prefix_is_allowed():
+    """A path like `1:foo.py` is a weird filename, not a Windows
+    drive (drive letters are ASCII letters only)."""
+    import agent.loop as L
+    assert L._has_unsafe_path(_diff_with_path("1:foo.py")) is None

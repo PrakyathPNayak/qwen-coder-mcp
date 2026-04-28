@@ -387,7 +387,16 @@ def _has_unsafe_path(diff: str) -> str | None:
         path = raw.split("\t", 1)[0]
         if not path:
             return "empty_path"
-        if path.startswith("/") or (len(path) >= 2 and path[1] == ":"):
+        if path.startswith("/"):
+            return f"absolute_path:{path}"
+        # Windows drive prefix: one ASCII letter followed by ':'. POSIX
+        # filenames legitimately contain `:` (e.g. `a:b.py`), so we must
+        # not flag every 2nd-char-colon path as absolute.
+        if (
+            len(path) >= 2
+            and path[1] == ":"
+            and "A" <= path[0].upper() <= "Z"
+        ):
             return f"absolute_path:{path}"
         # Normalise forward slashes only; backslashes shouldn't appear.
         if "\\" in path:

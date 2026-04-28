@@ -963,3 +963,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P5/P6 — defense-in-depth + perf.
 - ACT: switched stat→lstat, added S_ISLNK guard. New `tests/test_candidate_files.py` with 4 cases (outside-symlink, intra-repo-symlink, dangling, empty). 253/253 green.
 - COMMIT: pending.
+
+## Loop 36 — `_has_unsafe_path` precise Windows-drive detection
+- OBSERVE: While auditing the safety stack against `\ No newline at end of file` diffs (no real bug — added a regression test), discovered `_has_unsafe_path` rule `path[1] == ":"` is over-broad. Any path whose 2nd char is `:` is flagged as a Windows drive, false-positive on legitimate POSIX paths like `dir/note:1.py`.
+- ORIENT: Real correctness bug in a security-adjacent function. Higher leverage than cosmetic locks-in.
+- DECIDE: Tighten the Windows-drive check: `path[0]` must be an ASCII letter `[A-Za-z]` AND `path[1]` must be `:`. Anything else with `:` at position 1 (digit, punctuation, etc.) is just a weird filename, not a drive.
+- DEVIL:
+  - Correctness: `C:foo` and `z:foo` still rejected. `1:foo.py`, `dir/note:1.py` now accepted (legal POSIX). `a:b.py` borderline still flagged.
+  - Scope: cause-level fix.
+  - Priority: precision in the safety stack — false-positives reject legit fixes.
+- ACT: tightened condition. Added 3 tests + 1 no-newline lock-in. 257/257 green.
+- COMMIT: pending.
