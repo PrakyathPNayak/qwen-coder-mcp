@@ -2654,3 +2654,20 @@ read-only operation, no state changes.
 **Act.** New `TurnProfile` dataclass + `format_turn_profile` in `tui.py`. App `__init__` initialises `self.last_turn_profile = None`. Runner builds the profile in-place: `pending_tool_name` on `tool_call`, latency tuple appended on `tool_result`, summary fields on `summary`, ttft (only the first one per turn) on `ttft`. `app=None` kwarg on `dispatch_slash`; App's submit handler passes `app=self`. `/lat` registered in `SLASH_COMMANDS` and `HELP_TEXT`. Twelve tests in `test_lat_slash.py` covering the renderer (None, total/ttft, no tools, numbered tools, unknown latency, summary, unfinished turn) and the dispatcher (no-app, populated app, app missing attribute, registry wiring).
 
 **Verify.** `pytest -x -q` → ~1.1k passed, 1 skipped.
+
+## Loop 183 — boot-time checkpoint hint (`render_checkpoint_hint`)
+
+**Observe.** Loop 181 added `load_latest_checkpoint` for `/resume`'s recovery path. But discovery is the issue — after a crash, a user has to *know* `/resume` exists. The TUI boot loads JSONL history and stays silent if it's empty, even when `.agent/agent_state.json` has perfectly good state.
+
+**Orient.** Two storage layers are now in play: chat-history JSONL (every turn, used by both plain chat and agent) and agent checkpoints (per-tool-call, agent only). Auto-loading the checkpoint into chat history would silently cross those layers — wrong. The right answer is to *surface* the checkpoint's existence so `/resume` is one keystroke away.
+
+**Decide.** Add `render_checkpoint_hint(fs_cfg) -> str | None` — pure helper that returns a one-line hint when a usable checkpoint exists, `None` otherwise. Wire it into `on_mount` after the JSONL restore path: when `prior` is empty, log the hint if any.
+
+**Devil.**
+- *Correctness:* What if both JSONL and checkpoint exist? The hint only fires when JSONL is empty, so users who already have history aren't confused. ✅
+- *Scope:* Should the boot log show recent rotations too? No — that's `/checkpoints`'s job; we don't want to nag at every boot. One discoverability hint, conditional on real recovery value. ✅
+- *Priority:* `/agent --resume` is also queued. But this fixes a specific UX hole — silent recovery state — at minimal cost (~30 lines + 5 tests). The helper is reusable for future boot integrations. ✅
+
+**Act.** New pure helper `render_checkpoint_hint` in `tui.py` next to `_role_counts`. Boot path in `on_mount` calls it when `prior` is empty and writes the returned line to the log. Five tests in `test_checkpoint_hint.py` covering: no checkpoint, primary present, rotation-only fallback, empty primary, corrupt primary.
+
+**Verify.** `pytest -x -q` → ~1.1k passed, 1 skipped.

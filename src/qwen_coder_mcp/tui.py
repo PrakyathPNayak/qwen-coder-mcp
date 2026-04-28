@@ -303,6 +303,27 @@ def _format_checkpoint_listing(snapshots: list[Path]) -> str:
     return "\n".join(rows)
 
 
+def render_checkpoint_hint(fs_cfg: fs_tools.FsConfig) -> str | None:
+    """When a usable agent checkpoint exists at ``.agent/agent_state.json``
+    (or its rotations), return a single-line hint suggesting ``/resume``.
+    Returns ``None`` when no checkpoint is loadable, so callers can
+    short-circuit. Pure / non-raising — used at TUI boot to surface a
+    crash-recovery affordance without silently loading state across
+    storage layers.
+    """
+    try:
+        target = fs_cfg.root / ".agent" / "agent_state.json"
+        history, source = agent_loop.load_latest_checkpoint(target)
+    except Exception:  # noqa: BLE001
+        return None
+    if not history or source is None:
+        return None
+    return (
+        f"[yellow]·[/yellow] agent checkpoint with {len(history)} messages "
+        f"found ({source.name}); type [bold]/resume[/bold] to load it"
+    )
+
+
 def _role_counts(history: list[ChatMessage]) -> dict[str, int]:
     """Count messages by role for status renderings (e.g. /resume)."""
     counts: dict[str, int] = {}
@@ -1801,6 +1822,10 @@ def _build_app(
             if prior:
                 self.history.extend(prior)
                 log.write(f"[dim]restored {len(prior)} prior messages[/dim]")
+            else:
+                hint = render_checkpoint_hint(self.fs_cfg)
+                if hint:
+                    log.write(hint)
             self._refresh_status()
 
         def on_unmount(self) -> None:  # type: ignore[override]
