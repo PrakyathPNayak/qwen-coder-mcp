@@ -142,10 +142,11 @@ Slash commands:
   /find <glob> [path]  Glob search through the repo
   /clear               Clear chat history
   /resume              Reload .agent/agent_state.json into chat history
-  /checkpoints [load N|prune K]
+  /checkpoints [load N|prune K|diff N]
                        List rotated agent-state snapshots; `load N` rehydrates
                        snapshot N (1-based, oldest first) into history;
-                       `prune K` deletes all but the newest K snapshots
+                       `prune K` deletes all but the newest K snapshots;
+                       `diff N` compares current history vs snapshot N
   /save <path>         Save the current chat transcript to a file
   /git <subcmd>        Read-only git status / log / diff / show / branch
   /tests [args]        Run pytest in the repo
@@ -303,6 +304,75 @@ def _format_checkpoint_listing(snapshots: list[Path]) -> str:
         except OSError as exc:
             rows.append(f"{idx:>3}. <stat failed: {exc}>  {snap.name}")
     return "\n".join(rows)
+
+
+def format_history_diff(
+    current: list[ChatMessage],
+    snapshot: list[ChatMessage],
+    *,
+    snapshot_label: str = "snapshot",
+    preview_chars: int = 60,
+) -> str:
+    """Render a paired diff of two histories by index.
+
+    The two histories are walked in parallel up to the longer length.
+    For each index we report one of:
+      ``=  i. role  (preview)``    same role and identical content
+      ``~  i. role  (preview)``    same role but content differs
+      ``≠  i. cur != snap``        role disagrees at this index
+      ``+  i. role  (preview)``    only present in current (snapshot ran out)
+      ``-  i. role  (preview)``    only present in snapshot (current ran out)
+
+    The header line summarises totals. Pure: no I/O, deterministic
+    output for a given pair, callers preview characters at a fixed
+    cap to keep the rendering compact in the TUI log.
+    """
+
+    def _preview(text: str) -> str:
+        flat = text.replace("\n", " ").strip()
+        if len(flat) <= preview_chars:
+            return flat
+        return flat[: preview_chars - 1] + "…"
+
+    n = max(len(current), len(snapshot))
+    if n == 0:
+        return f"(both current and {snapshot_label} are empty)"
+
+    same = changed = role_mismatch = added = dropped = 0
+    rows: list[str] = []
+    for i in range(n):
+        cur = current[i] if i < len(current) else None
+        snp = snapshot[i] if i < len(snapshot) else None
+        if cur is not None and snp is None:
+            added += 1
+            rows.append(f"+  {i+1:>3}. {cur.role}  ({_preview(cur.content)})")
+        elif cur is None and snp is not None:
+            dropped += 1
+            rows.append(f"-  {i+1:>3}. {snp.role}  ({_preview(snp.content)})")
+        elif cur is not None and snp is not None:
+            if cur.role != snp.role:
+                role_mismatch += 1
+                rows.append(
+                    f"≠  {i+1:>3}. {cur.role} != {snp.role}"
+                )
+            elif cur.content == snp.content:
+                same += 1
+                rows.append(f"=  {i+1:>3}. {cur.role}  ({_preview(cur.content)})")
+            else:
+                changed += 1
+                rows.append(
+                    f"~  {i+1:>3}. {cur.role}  "
+                    f"({_preview(cur.content)})"
+                )
+
+    header = (
+        f"diff vs {snapshot_label}: "
+        f"current={len(current)} {snapshot_label}={len(snapshot)} "
+        f"same={same} changed={changed} "
+        f"role_mismatch={role_mismatch} "
+        f"added={added} dropped={dropped}"
+    )
+    return header + "\n" + "\n".join(rows)
 
 
 DEFAULT_ROTATION_KEEP = 5
@@ -974,28 +1044,30 @@ def dispatch_slash(
                 if header_idx == -1:
                     return HELP_TEXT, False
                 kept: list[str] = []
-                # The help table is a sequence of two-line entries:
-                # "  /cmd ...    short summary" optionally followed by
-                # "                continuation".
+                # The help table is a sequence of entries: "  /cmd ..."
+                # optionally followed by one or more indented continuation
+                # lines. We group an entry with all of its continuations.
                 i = header_idx + 1
                 while i < len(lines):
                     ln = lines[i]
-                    next_ln = lines[i + 1] if i + 1 < len(lines) else ""
                     is_entry = ln.startswith("  /")
                     if not is_entry:
                         i += 1
                         continue
-                    is_continuation = (
-                        next_ln.startswith(" ")
-                        and not next_ln.startswith("  /")
-                        and next_ln.strip() != ""
-                    )
                     block = [ln]
-                    if is_continuation:
-                        block.append(next_ln)
-                        i += 2
-                    else:
-                        i += 1
+                    j = i + 1
+                    while j < len(lines):
+                        cont = lines[j]
+                        if (
+                            cont.startswith(" ")
+                            and not cont.startswith("  /")
+                            and cont.strip() != ""
+                        ):
+                            block.append(cont)
+                            j += 1
+                        else:
+                            break
+                    i = j
                     if any(term in part.lower() for part in block):
                         kept.extend(block)
                 if not kept:
@@ -1257,6 +1329,30 @@ def dispatch_slash(
                 f"loaded {len(loaded)} messages from {chosen.name} ({roles})",
                 False,
             )
+        if sub == "diff":
+            if history is None:
+                return "no history available", False
+            if len(cmd.args) < 2:
+                return "usage: /checkpoints diff <N>", False
+            try:
+                idx = int(cmd.args[1])
+            except ValueError:
+                return f"invalid index: {cmd.args[1]!r}", False
+            if not snaps:
+                return "(no rotated checkpoints to diff)", False
+            if idx < 1 or idx > len(snaps):
+                return (
+                    f"index {idx} out of range (have {len(snaps)} snapshots)",
+                    False,
+                )
+            chosen = snaps[idx - 1]
+            loaded = agent_loop.load_agent_checkpoint(chosen)
+            return (
+                format_history_diff(
+                    list(history), loaded, snapshot_label=chosen.name
+                ),
+                False,
+            )
         if sub == "prune":
             if len(cmd.args) < 2:
                 return "usage: /checkpoints prune <K>", False
@@ -1281,7 +1377,7 @@ def dispatch_slash(
                 f"pruned {removed} snapshot(s); {len(snaps) - removed} remain",
                 False,
             )
-        return f"unknown subcommand: {sub!r} (expected load|prune)", False
+        return f"unknown subcommand: {sub!r} (expected load|prune|diff)", False
     if name == "save":
         if history is None:
             return "no history available", False

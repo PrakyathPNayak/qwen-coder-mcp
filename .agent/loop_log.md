@@ -2807,3 +2807,21 @@ read-only operation, no state changes.
 **Act.** Edit the `name in {"", "help"}` branch in `dispatch_slash` to add the filter. Update HELP_TEXT row. New `tests/test_help_search.py` with 10 cases: bare `/help` unchanged, command-name match, case-insensitivity, summary-text match (DuckDuckGo → /search), continuation lines preserved (/grep), no-match message, regex metacharacters treated literally, multi-word terms, header preserved on match, unique-command match (one entry only).
 
 **Verify.** All 10 new tests pass. Full suite ~1.2k passed, 1 skipped.
+
+## Loop 192 — `/checkpoints diff N`
+
+**Observe.** `/checkpoints` lists snapshots and lets users `load` or `prune` them, but there's no way to *preview* what loading would change before doing it. Users running `/resume` were taking a leap of faith — "this newer snapshot might cost me messages I want to keep."
+
+**Orient.** A symmetric paired diff between the current chat history and a chosen snapshot is the right shape. By message index: same/changed/role-mismatch/added/dropped, plus a one-line preview of each row. Pure renderer + a thin dispatch branch.
+
+**Decide.** New `format_history_diff(current, snapshot, *, snapshot_label, preview_chars=60)` returning a header line plus one row per index. Five symbols (`=` `~` `≠` `+` `-`). New `diff <N>` subcommand on `/checkpoints` that loads snapshot N (1-based, oldest-first, same indexing as `load`) and renders the diff against the live history.
+
+**Devil.**
+- *Correctness:* Index-based pairing assumes histories align positionally. If a user inserts a `/sysprompt` mid-session, every later index shifts by one — the diff would show every later row as "changed". True, but that's the *real* state of the world; trying to be clever (LCS) would hide the shift. Index-pairing is honest. ✅
+- *Scope:* No content diff at the line level — just role/equal/preview. Adding `difflib.unified_diff` per-message is the next loop's job if anyone needs it. ✅
+- *Priority:* This unblocks the recovery story (`/resume` is now informed); higher leverage than TTY-width formatting which is pure cosmetics. ✅
+- *Side effect caught during act:* HELP_TEXT row for `/checkpoints` now spans 4 lines. The `/help <term>` filter from loop 191 only collected ONE continuation line — would have orphaned the diff line. Fixed: filter now greedily collects all continuations. Without the loop-191 work, this would have shipped a silent regression on `/help checkpoints`.
+
+**Act.** Added `format_history_diff` next to `_format_checkpoint_listing`. Added `diff` branch to the `/checkpoints` dispatcher (refused on `history is None`, missing arg, non-int, no snapshots, out-of-range). Updated unknown-subcommand message to list `diff`. Updated HELP_TEXT to multi-line entry. Tightened the loop-191 help filter to greedy continuation collection. New `tests/test_checkpoints_diff.py` with 17 cases: 10 for the renderer (both empty, identical, content changed, role mismatch, added, dropped, preview truncation, newline collapse, snapshot label in header, header counts) and 7 for the dispatcher (no args, no snapshots, OOR, invalid index, success path, no-history, unknown-subcommand-message).
+
+**Verify.** All 17 new tests pass. Full suite ~1.2k passed, 1 skipped.
