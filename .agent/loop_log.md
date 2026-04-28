@@ -3090,3 +3090,18 @@ Despite ~1.28k tests passing. Root cause: vLLM 0.11 removed `--swap-space` (repl
 **Act.** Dispatcher now parses `--top K` / `--top=K` interleaved anywhere in the args; same five error paths as loop 207. Eleven new tests in `test_lat_json_top.py` covering basics, edges, errors, and backwards compat (bare `/lat` and `/lat 10 --json` paths regression-pinned).
 
 **Verify.** 11 new + all 1313 prior tests green. Test count around 1.31k → 1.32k.
+
+## Loop 209 — `/help <pattern> --regex` adds regex escape hatch
+
+**Observe.** `/help <term>` does plain substring filtering on the help table. Power users (and the next round of agentic loops) can want regex (alternation, anchors). This is the carried candidate from loop 208 next.md.
+
+**Orient.** Five-line dispatcher change. Defaults preserved; flag opt-in only.
+
+**Devil.**
+- *Correctness:* What if pattern is invalid regex? `re.error` caught and surfaced as a friendly error message; doesn't tank dispatch. ✅
+- *Scope:* Should regex anchor be `re.match` vs `re.search`? `search` matches the spirit of substring search; users add `^` explicitly when they want anchoring. Tested. ✅
+- *Priority:* Quality-of-life only. Acceptable when no priority-1 issues are open (none — bug from loop 205 fixed; lat/tokens/sysinfo all have JSON exports). ✅
+
+**Act.** Dispatcher accepts `--regex` anywhere among args; uses `re.IGNORECASE`; falls back to substring path otherwise. Eleven new tests in `test_help_regex.py` covering basics, errors, flag-position, backwards-compat (plain substring path with special chars *not* regex'd).
+
+**Verify.** 11 new + all 1324 prior tests green. Test count around 1.32k → 1.33k.

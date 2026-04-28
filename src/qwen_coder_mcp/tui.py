@@ -1146,8 +1146,34 @@ def dispatch_slash(
     name = cmd.name
     if name in {"", "help"}:
         if cmd.rest:
-            term = cmd.rest.strip().lower()
+            raw = cmd.rest.strip()
+            # `--regex <pattern>` or `<pattern> --regex` toggles regex mode.
+            use_regex = False
+            tokens = raw.split()
+            if "--regex" in tokens:
+                use_regex = True
+                tokens = [t for t in tokens if t != "--regex"]
+            term_raw = " ".join(tokens).strip()
+            term = term_raw.lower()
             if term:
+                if use_regex:
+                    import re as _re
+
+                    try:
+                        # Substring match by default (no anchoring); use
+                        # IGNORECASE so /help foo --regex behaves like the
+                        # plain substring path on simple inputs.
+                        pattern = _re.compile(term_raw, _re.IGNORECASE)
+                    except _re.error as exc:
+                        return f"/help: invalid regex {term_raw!r}: {exc}", False
+
+                    def _matches(parts: list[str]) -> bool:
+                        return any(pattern.search(p) for p in parts)
+                else:
+
+                    def _matches(parts: list[str]) -> bool:
+                        return any(term in p.lower() for p in parts)
+
                 lines = HELP_TEXT.splitlines()
                 header_idx = next(
                     (i for i, ln in enumerate(lines) if ln.startswith("Slash commands:")),
@@ -1180,13 +1206,14 @@ def dispatch_slash(
                         else:
                             break
                     i = j
-                    if any(term in part.lower() for part in block):
+                    if _matches(block):
                         kept.extend(block)
                 if not kept:
-                    return f"/help: no commands match {term!r}", False
+                    label = term_raw if use_regex else term
+                    return f"/help: no commands match {label!r}", False
+                label = f"regex {term_raw!r}" if use_regex else repr(term)
                 return (
-                    "Slash commands matching "
-                    f"{term!r}:\n" + "\n".join(kept)
+                    f"Slash commands matching {label}:\n" + "\n".join(kept)
                 ), False
         return HELP_TEXT, False
     if name == "quit" or name == "exit":
