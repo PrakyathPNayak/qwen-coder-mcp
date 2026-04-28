@@ -2876,3 +2876,20 @@ read-only operation, no state changes.
 **Act.** Two-line filter against `--since-resume` in the dispatcher; new branch ahead of the index parse. Updated usage string to list both forms. Updated HELP_TEXT entry. Loop-192's `assert out == "usage:..."` softened to substring matches. New `tests/test_checkpoints_diff_since_resume.py` with 7 cases: no checkpoint message, picks primary when present, falls back to rotation when primary missing, --inline composes, no-history, usage string lists --since-resume, flag order doesn't matter (--since-resume --inline == --inline --since-resume).
 
 **Verify.** All 7 new tests pass. Full suite ~1.2k passed, 1 skipped.
+
+## Loop 196 — docs sync for the recovery diff family
+
+**Observe.** `docs/AGENT_CHECKPOINTS.md` was last touched in loop 187 — covers `/resume`, `/checkpoints load/prune`, `/agent --resume`, but NOT the new `diff` / `diff --since-resume` / `/lat reset` / `/lat N` work. New users hitting the docs would never know those features exist.
+
+**Orient.** Pure documentation loop. No code changes; just the slash-command table and the recovery-flow steps.
+
+**Decide.** Add three rows to the slash-command table (`/checkpoints diff N`, `/checkpoints diff --since-resume`, the updated `/lat [N|reset]`). Add a recovery-flow step 5 explicitly recommending `/checkpoints diff --since-resume` *before* `/resume` for non-destructive previews. Update the file-formats note to mention `fs_write` is now atomic too (carry from loop 194).
+
+**Devil.**
+- *Correctness:* Does the new step 5 break the numbering for the existing "resume + continue" step (now step 6)? Yes by design — the natural reading order is now "preview, then act". ✅
+- *Scope:* Should this also document the env-var and config story? Already in the page; not changing in this loop. ✅
+- *Priority:* Doc loops are cheap and unblock onboarding. Worth the cadence. ✅
+
+**Act.** Three edits in `docs/AGENT_CHECKPOINTS.md`. No tests (no code change).
+
+**Verify.** Test suite still green at ~1.2k passed (regression check, no new tests).

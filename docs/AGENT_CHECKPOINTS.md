@@ -24,7 +24,12 @@ After a crash:
 4. `/resume` rehydrates `history` from `.agent/agent_state.json`, falling
    back to the newest readable rotation in `.agent/checkpoints/` if the
    primary is missing or corrupt.
-5. To resume *and immediately continue* the work in one step, use
+5. To preview what loading would change before actually doing it, run
+   `/checkpoints diff --since-resume`. It pairs the on-disk checkpoint
+   against your live history by message index and reports same /
+   changed / role-mismatch / added / dropped totals. Add `--inline` to
+   include `difflib.unified_diff` fragments under each changed row.
+6. To resume *and immediately continue* the work in one step, use
    `/agent --resume <task>` — it pre-loads the latest checkpoint into
    chat history and then runs an agent turn with the given task. A
    missing or empty checkpoint is reported as a notice, not a fatal,
@@ -38,7 +43,9 @@ After a crash:
 | `/checkpoints` | List rotated snapshots oldest-first, with mtime and size. |
 | `/checkpoints load N` | Rehydrate snapshot N (1-based) into chat history. |
 | `/checkpoints prune K` | Delete all but the newest K rotated snapshots. |
-| `/lat` | Print the last agent turn's timing breakdown (TTFT, per-tool latencies, summary). |
+| `/checkpoints diff N` | Preview what `load N` would change vs current history (paired by index). Add `--inline` for per-message unified diffs. |
+| `/checkpoints diff --since-resume` | Same, but auto-pick the snapshot `/resume` would load. Combinable with `--inline`. |
+| `/lat [N\|reset]` | Print the last N agent turns' timing breakdowns (default 1). `/lat reset` clears the buffer. |
 | `/agent --resume <task>` | Run an agent turn after pre-loading the latest checkpoint into chat history. Combinable with `--write` and `--max`. |
 
 ## Configuration
@@ -60,5 +67,5 @@ silently would surprise users; the boot path keeps them distinct and lets
 
 Both layers are JSON arrays of `{role, content}` objects. Reads are
 non-raising — corrupt files are treated as absent, and writes are atomic
-(`.tmp` + `os.replace`) so a crash mid-write can't leave a half-written
-checkpoint on disk.
+(`.tmp` + `os.replace` + `fsync`) so a crash mid-write can't leave a
+half-written checkpoint, JSONL history, or `fs_write` target on disk.
