@@ -261,6 +261,20 @@ def _write_history(name: str, body: str) -> Path:
 
 
 # -------------------------------------------------------------------- core
+def _abort_rebase_if_any() -> None:
+    """Best-effort: if a rebase is in progress, abort it. Then if the tree
+    is still dirty, hard-reset to the current HEAD to guarantee a clean
+    working tree before the next iteration."""
+    rebase_dir_a = _REPO / ".git" / "rebase-merge"
+    rebase_dir_b = _REPO / ".git" / "rebase-apply"
+    if rebase_dir_a.exists() or rebase_dir_b.exists():
+        _run_git("rebase", "--abort", check=False)
+    status = _run_git("status", "--porcelain", check=False).stdout
+    if status.strip():
+        _run_git("reset", "--hard", "HEAD", check=False)
+        _run_git("clean", "-fd", check=False)
+
+
 def _commit_and_push(message: str, push: bool) -> bool:
     add = _run_git("add", "-A", check=False)
     if add.returncode != 0:
@@ -275,8 +289,13 @@ def _commit_and_push(message: str, push: bool) -> bool:
         return False
     if not push:
         return True
-    # Best-effort sync with remote.
-    _run_git("pull", "--rebase", "--autostash", "origin", "main", check=False)
+    # Best-effort sync with remote. On rebase conflict, abort cleanly so
+    # the next iteration starts from a known-good tree instead of wedging.
+    pull = _run_git("pull", "--rebase", "--autostash", "origin", "main", check=False)
+    if pull.returncode != 0:
+        _log(f"git pull --rebase failed: {pull.stderr.strip()[:300]}")
+        _abort_rebase_if_any()
+        return False
     push_proc = _run_git("push", "origin", "HEAD:main", check=False)
     if push_proc.returncode != 0:
         _log(f"git push failed: {push_proc.stderr.strip()}")

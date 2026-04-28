@@ -77,4 +77,47 @@ to include staged-but-not-yet-committed deletions; the validator now
 gracefully skips missing files but the change-detection itself may miss
 them. Worth checking.
 
+---
+
+## Loop 3 — abort failed rebase so the loop never wedges
+
+**OBSERVE**: per `next.md`, `_commit_and_push` ran `git pull --rebase
+--autostash` with `check=False` and ignored its return code. On a real
+rebase conflict the working tree would be left mid-rebase; every
+subsequent `git apply --check` would fail and the loop would be wedged
+permanently until manual intervention.
+
+**ORIENT**: rare but catastrophic — a single conflict could brick a
+multi-day autonomous run. Cheap fix, high leverage.
+
+**DECIDE**: introduce `_abort_rebase_if_any()` that detects
+`.git/rebase-merge` or `.git/rebase-apply`, runs `git rebase --abort`,
+then `git reset --hard HEAD` + `git clean -fd` if the tree is still
+dirty. Wire `_commit_and_push` to call it on `git pull --rebase`
+failure and return False. Verified the suspected `serve_qwen.sh`
+double-`$MODEL` is NOT a bug — vLLM accepts multiple
+`--served-model-name` aliases (just confirmed: PID 1493 booted with
+`served_model_name=['qwen3.6-27b','Lorbus/...']`).
+
+**DEVIL**: (correctness) `ORIG_HEAD` may not exist before any rebase —
+mitigated by using `HEAD` directly and abort-first. (scope) Fighting
+other writers is the symptom, deeper cause is single-writer assumption —
+out of scope; loop is meant for autonomous solo use, conflict-handling
+just needs to not wedge. (priority) Empty-diff no-op edge case is
+guarded by existing `if not status.strip(): return False`. Plan stood.
+
+**ACT**: 3 new tests in `tests/test_commit_and_push.py`:
+1. End-to-end: bare remote + two clones, force a conflict, assert
+   `_commit_and_push` returns False and tree is clean afterward.
+2. `_abort_rebase_if_any` is a no-op on a clean repo.
+3. `_abort_rebase_if_any` resets a dirty working tree.
+36/36 tests green. Compileall clean.
+
+**COMMIT**: pending — `fix(loop): abort failed git rebase so the loop
+never wedges`.
+
+**Revealed**: `_iteration` still has no scope check on the diff — model
+could rewrite an unrelated file. Next loop.
+
+
 
