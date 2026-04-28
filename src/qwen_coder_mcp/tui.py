@@ -30,6 +30,7 @@ conversation memory is preserved within a single session.
 from __future__ import annotations
 
 import os
+import json
 import sys
 import threading
 import time
@@ -117,6 +118,7 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/undo",
     "/retry",
     "/sysinfo",
+    "/memory",
     "/export",
     "/pin",
     "/unpin",
@@ -187,6 +189,10 @@ Slash commands:
   /undo                Pop the last user/assistant exchange
   /retry               Re-send the last user message
   /sysinfo [--json] [--probe]    Snapshot of backend health, model, root, history
+  /memory [show|--json|task <text>|todo add <id> <desc>|todo done <id>|
+           todo del <id>|fact <key> <value>|decision <text>|clear]
+                       Inspect or manage the persistent task memory injected
+                       into every chat (loop 244). Requires QWEN_TASK_MEMORY=1.
   /export <path>       Export full chat as Markdown
   /pin <path> [path...]
                        Attach one or more files to the system prompt for the
@@ -706,6 +712,136 @@ def _render_cd(cfg: fs_tools.FsConfig, path: str) -> str:
     if not target.is_dir():
         return f"cd error: not a directory: {path}"
     return f"{_CD_SENTINEL}{target}"
+
+
+def _render_memory(client: QwenClient, args: list[str]) -> str:
+    """Loop 245: operator-facing surface for the loop-244 TaskMemory.
+
+    Subcommands:
+      (no args) | show       Pretty-print current task / todos / facts / decisions.
+      --json                  Same, JSON form for piping.
+      task <text>             Set the current task description.
+      todo add <id> <desc>    Add an open todo. Status defaults to "open".
+      todo done <id>          Mark todo as done.
+      todo block <id>         Mark todo as blocked.
+      todo del <id>           Remove a todo by id.
+      fact <key> <value>      Record a key→value fact.
+      decision <text>         Append a decision entry (FIFO-capped).
+      clear                   Wipe the entire memory (including persisted file).
+
+    Memory must be enabled (``QWEN_TASK_MEMORY=1``) before calls to
+    ``client.task_memory`` exist; otherwise we return a hint.
+    """
+    tm = getattr(client, "task_memory", None)
+    if tm is None:
+        return (
+            "task memory disabled. enable with QWEN_TASK_MEMORY=1 "
+            "(see README env table for related knobs)."
+        )
+
+    if not args or args[0] in {"show"}:
+        snap = tm.snapshot()
+        if not (
+            snap.get("current_task")
+            or snap.get("todos")
+            or snap.get("facts")
+            or snap.get("decisions")
+        ):
+            return "task memory: empty"
+        lines = ["task memory:"]
+        ct = snap.get("current_task") or ""
+        if ct:
+            lines.append(f"  current task: {ct}")
+        todos = snap.get("todos") or []
+        if todos:
+            lines.append(f"  todos ({len(todos)}):")
+            for t in todos:
+                lines.append(
+                    f"    - [{t.get('status', '?')}] "
+                    f"{t.get('id', '?')}: {t.get('description', '')}"
+                )
+        facts = snap.get("facts") or {}
+        if facts:
+            lines.append(f"  facts ({len(facts)}):")
+            for k, v in facts.items():
+                lines.append(f"    - {k}: {v}")
+        decisions = snap.get("decisions") or []
+        if decisions:
+            lines.append(f"  decisions ({len(decisions)}):")
+            for d in decisions:
+                lines.append(f"    - {d}")
+        return "\n".join(lines)
+
+    if args[0] in {"--json", "--format=json"}:
+        return json.dumps(tm.snapshot(), indent=2, sort_keys=True)
+
+    sub = args[0]
+    rest = args[1:]
+
+    if sub == "task":
+        if not rest:
+            return "usage: /memory task <description>"
+        desc = " ".join(rest).strip()
+        if not desc:
+            return "usage: /memory task <description>"
+        tm.set_current_task(desc)
+        return f"task memory: current_task set to: {desc}"
+
+    if sub == "todo":
+        if not rest:
+            return "usage: /memory todo add <id> <desc> | done <id> | block <id> | del <id>"
+        action = rest[0]
+        rest2 = rest[1:]
+        if action == "add":
+            if len(rest2) < 2:
+                return "usage: /memory todo add <id> <desc>"
+            todo_id = rest2[0]
+            todo_desc = " ".join(rest2[1:]).strip()
+            if not todo_desc:
+                return "usage: /memory todo add <id> <desc>"
+            tm.add_todo(todo_id, todo_desc)
+            return f"task memory: todo added: {todo_id}"
+        if action in {"done", "block"}:
+            if not rest2:
+                return f"usage: /memory todo {action} <id>"
+            status = "done" if action == "done" else "blocked"
+            ok = tm.update_todo_status(rest2[0], status)
+            if not ok:
+                return f"task memory: no such todo: {rest2[0]}"
+            return f"task memory: todo {rest2[0]} → {status}"
+        if action == "del":
+            if not rest2:
+                return "usage: /memory todo del <id>"
+            ok = tm.remove_todo(rest2[0])
+            if not ok:
+                return f"task memory: no such todo: {rest2[0]}"
+            return f"task memory: todo deleted: {rest2[0]}"
+        return f"unknown /memory todo action: {action}"
+
+    if sub == "fact":
+        if len(rest) < 2:
+            return "usage: /memory fact <key> <value>"
+        key = rest[0]
+        value = " ".join(rest[1:]).strip()
+        if not value:
+            return "usage: /memory fact <key> <value>"
+        tm.record_fact(key, value)
+        return f"task memory: fact recorded: {key}={value}"
+
+    if sub == "decision":
+        if not rest:
+            return "usage: /memory decision <text>"
+        text = " ".join(rest).strip()
+        if not text:
+            return "usage: /memory decision <text>"
+        tm.record_decision(text)
+        return f"task memory: decision recorded: {text}"
+
+    if sub == "clear":
+        tm.clear()
+        return "task memory: cleared"
+
+    return f"unknown /memory subcommand: {sub}"
 
 
 def _render_sysinfo_json(
@@ -1944,6 +2080,8 @@ def dispatch_slash(
         if "--json" in cmd.args or "--format=json" in cmd.args:
             return _render_sysinfo_json(client, fs_cfg, history, probe=probe), False
         return _render_sysinfo(client, fs_cfg, history, probe=probe), False
+    if name == "memory":
+        return _render_memory(client, cmd.args), False
     if name == "export":
         if history is None:
             return "no history available", False

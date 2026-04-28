@@ -4140,3 +4140,9 @@ logic), Priority (P2 -- diagnostic only, not behavioural). Suite
 **Tests:** +31 in new `tests/test_task_memory.py`: `TestTaskMemoryPersistence`, `TestRendering`, `TestEnvLoading`, `TestQwenClientInjection`.
 **Devil step:** Correctness — injection order verified (system → memory → dialogue); failure-safe verified. Scope — additive new module + 3 wire-in points. Priority — P0, persistent state survives restarts which summary stubs alone cannot.
 **Bug found mid-flight:** First test run showed wasn't reaching wire payload  memory investigation revealed `chat()` wiring never landed (only `chat_stream` did). Fixed and re-verified. Lesson: when wiring into multiple call sites via sed/edit, always grep for both occurrences post-edit.
+
+## Loop 245 — `/memory` slash command
+**Why:** Loops 243+244 added compression summaries and persistent TaskMemory, but the operator had no way to inspect or seed them. Without a CLI surface, the only way to populate memory was to hand-edit `.agent/context/state.json`, which made the feature near-useless in practice. This loop closes that gap.
+**Change:** Added `/memory` to `SLASH_COMMANDS`, help text, and dispatcher. New `_render_memory()` supports: bare/`show`, `--json`, `task <text>`, `todo add|done|block|del`, `fact <k> <v>`, `decision <text>`, `clear`. Returns clear "QWEN_TASK_MEMORY=1 disabled" hint when memory is off.
+**Tests:** +30 in new `tests/test_memory_command.py` across 7 test classes including dispatcher-integration and disk-persistence tests.
+**Devil step:** Correctness — every subcommand has a usage path AND a happy path test; persistence verified by reload-from-disk. Scope — purely additive (one dispatcher entry, one render function, one help line, one completion entry). Priority — P1, makes the loop-244 feature actually usable; sets the API surface that loop 246 (MCP tool exposure for the *model* to self-manage memory) can mirror.
