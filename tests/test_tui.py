@@ -1267,3 +1267,78 @@ class TestDiffHead:
             history=[],
         )
         assert "error" in text.lower()
+
+
+# ----------------------------------------------------------- Loop 143
+class TestSysInfoSlash:
+    def test_healthy_backend(self, tmp_path: Path) -> None:
+        from qwen_coder_mcp.config import Settings
+        cfg = fs_tools.FsConfig(root=tmp_path)
+
+        class C:
+            settings = Settings(
+                base_url="http://localhost:8000/v1",
+                api_key="k",
+                model="qwen-foo",
+                timeout=5.0,
+                max_tokens=10,
+                loop_interval_seconds=1,
+                loop_max_file_bytes=1000,
+                loop_push=False,
+            )
+            def health_check(self):
+                return {"ok": True, "models": ["qwen-foo"]}
+
+        history = [ChatMessage(role="user", content="hello world")]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/sysinfo"),
+            client=C(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "qwen-foo" in text
+        assert "backend ok" in text
+        assert "1 messages" in text
+        assert str(tmp_path) in text
+
+    def test_unhealthy_backend(self, tmp_path: Path) -> None:
+        from qwen_coder_mcp.config import Settings
+        cfg = fs_tools.FsConfig(root=tmp_path)
+
+        class C:
+            settings = Settings(
+                base_url="http://localhost:8000/v1",
+                api_key="k",
+                model="qwen-foo",
+                timeout=5.0,
+                max_tokens=10,
+                loop_interval_seconds=1,
+                loop_max_file_bytes=1000,
+                loop_push=False,
+            )
+            def health_check(self):
+                return {"ok": False, "error": "connection refused"}
+
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/sysinfo"),
+            client=C(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "unavailable" in text
+        assert "connection refused" in text
+
+    def test_health_check_raises(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+
+        class C:
+            def health_check(self):
+                raise RuntimeError("kaboom")
+
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/sysinfo"),
+            client=C(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "kaboom" in text

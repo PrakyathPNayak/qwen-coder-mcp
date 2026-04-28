@@ -2042,3 +2042,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P3 user requested parity, low risk because the new branch only triggers on a single argument.
 - ACT: _render_diff_head helper that resolves the path through fs tools and shells git with no pager diff HEAD -- path. Dispatcher branch updated to route one arg to head diff and two args to file diff with a refreshed usage message. Five new tests cover modify diff no changes message two arg passthrough usage on no args and path escape. Eight hundred twelve passed.
 
+
+## Loop 143 — /sysinfo snapshot
+- DECIDE: copilot has slash status that combines model plus health plus context size in one line. Add slash sysinfo as a copy-pasteable bug report block.
+- DEVIL:
+  - Correctness: getattr chain on client dot settings dot model so a stub client without a Settings instance still renders unknown rather than raising. health check call is wrapped in a try except so a backend that times out cannot crash the slash dispatcher. token estimate uses the existing helper.
+  - Scope: pure read only, never mutates history or settings.
+  - Priority: P5 polish but free since the helpers exist.
+- ACT: _render_sysinfo helper emitting model base url fs root history count tokens and health line. Dispatcher branch and SLASH_COMMANDS entry. Three new tests covering healthy backend, unhealthy backend, and health check raising. Eight hundred fifteen passed. Also fixed two indentation regressions in _render_diff_head and the retry branch caused by an editor merge in this loop.
+

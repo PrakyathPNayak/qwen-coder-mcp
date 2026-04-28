@@ -88,6 +88,7 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/model",
     "/undo",
     "/retry",
+    "/sysinfo",
     "/quit",
 )
 
@@ -129,6 +130,7 @@ Slash commands:
   /model [id]          Show or switch the served model id
   /undo                Pop the last user/assistant exchange
   /retry               Re-send the last user message
+  /sysinfo             Snapshot of backend health, model, root, history
   /quit                Exit
 
 @<path> tokens in plain chat are expanded inline as file contents.
@@ -313,6 +315,45 @@ def _render_run(cfg: fs_tools.FsConfig, cmd: str) -> str:
     except shell_tools.ShellError as exc:
         return f"run error: {exc}"
     return shell_tools.format_run_result(res)
+
+
+def _render_sysinfo(
+    client: QwenClient,
+    cfg: fs_tools.FsConfig,
+    history: list[ChatMessage] | None,
+) -> str:
+    """Return a one-shot snapshot of backend health, model, root, and
+    history token estimate. Designed for users to copy into a bug report.
+    """
+    settings = getattr(client, "settings", None)
+    model = getattr(settings, "model", None) or "(unknown)"
+    base_url = getattr(settings, "base_url", None) or "(unknown)"
+    try:
+        check = client.health_check()
+    except Exception as exc:  # noqa: BLE001
+        check = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    if check.get("ok"):
+        models = ", ".join((check.get("models") or [])[:3]) or "(none)"
+        health_line = f"backend ok  models: {models}"
+    else:
+        health_line = (
+            f"backend unavailable: {check.get('error') or 'unknown'}"
+        )
+    msgs = len(history) if history is not None else 0
+    tokens = (
+        sum(estimate_tokens(m.content) for m in history)
+        if history is not None
+        else 0
+    )
+    lines = [
+        "qwen-coder-tui sysinfo",
+        f"  model:    {model}",
+        f"  base_url: {base_url}",
+        f"  fs_root:  {cfg.root}",
+        f"  history:  {msgs} messages, ~{tokens} tokens",
+        f"  health:   {health_line}",
+    ]
+    return "\n".join(lines)
 
 
 def _render_grep(
@@ -608,6 +649,8 @@ def dispatch_slash(
         # Strip the user message and any assistant reply that came after.
         del history[last_user_idx:]
         return f"__RETRY__{prompt}", False
+    if name == "sysinfo":
+        return _render_sysinfo(client, fs_cfg, history), False
     return f"unknown command: /{name}  (try /help)", False
 
 
