@@ -1094,3 +1094,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 8 (helps the next person who tunes); but it unblocks data-driven future loops, so net high-leverage.
 - ACT: 4 new tests, all phases instrumented, all `return`s replaced with `_finish()` so timing always flushes. 310 passed, 1 skipped.
 - COMMIT: pending.
+
+## Loop 49 — `.loop/timing.log` size-bounded rotation
+- OBSERVE: Loop 48 introduced an unbounded append-only JSONL log. Continuous run will fill the disk eventually. Bucket 5 (resource leak).
+- ORIENT: priority class is high — fixing immediately after introducing the leak prevents a long-running session from exhibiting it.
+- DECIDE: single-slot rotation. Cap default 1MB, env `QWEN_TIMING_MAX_BYTES` (clamped (0, 100MB]). On every write, if oversized, rename to `.1` (overwriting any old `.1`) before opening fresh.
+- DEVIL:
+  - Correctness: rotation runs *before* the open-append, so the new write goes to a fresh file; verified by test.
+  - Scope: 100MB cap may still be huge — but it bounds it.
+  - Priority: yes, this is bucket 5 and it's caused by my own loop 48; can't be deferred.
+- ACT: 10 new tests covering env parsing (default/override/clamp/invalid/nonpositive), undersized noop, oversized rename, overwriting old rotated, missing-file noop, write-triggers-rotation. 320 passed, 1 skipped.
+- COMMIT: pending.

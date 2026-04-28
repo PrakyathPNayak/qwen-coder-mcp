@@ -320,3 +320,82 @@ class TestPhaseTimer:
         monkeypatch.setattr(L, "TIMING_FILE", bogus_parent / "child.log")
         # Must not raise
         L._write_timing(Path("a.py"), "x", {})
+
+
+class TestTimingRotation:
+    """Loop 49: .loop/timing.log rotates when oversized."""
+
+    def test_rotation_default_cap(self):
+        from agent import loop as L
+        assert L._timing_max_bytes() == L._TIMING_MAX_BYTES_DEFAULT
+
+    def test_rotation_env_override(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_TIMING_MAX_BYTES", "5000")
+        assert L._timing_max_bytes() == 5000
+
+    def test_rotation_env_clamped_to_cap(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_TIMING_MAX_BYTES", "9999999999")
+        assert L._timing_max_bytes() == L._TIMING_MAX_BYTES_CAP
+
+    def test_rotation_env_invalid_falls_back(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_TIMING_MAX_BYTES", "not-a-number")
+        assert L._timing_max_bytes() == L._TIMING_MAX_BYTES_DEFAULT
+
+    def test_rotation_env_nonpositive_falls_back(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_TIMING_MAX_BYTES", "0")
+        assert L._timing_max_bytes() == L._TIMING_MAX_BYTES_DEFAULT
+
+    def test_rotate_when_undersized_is_noop(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        f = tmp_path / "timing.log"
+        f.write_text("small\n")
+        monkeypatch.setattr(L, "TIMING_FILE", f)
+        monkeypatch.setenv("QWEN_TIMING_MAX_BYTES", "1000000")
+        L._rotate_timing_if_oversized()
+        assert f.exists()
+        assert not (tmp_path / "timing.log.1").exists()
+
+    def test_rotate_when_oversized_renames(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        f = tmp_path / "timing.log"
+        f.write_text("x" * 1000)
+        monkeypatch.setattr(L, "TIMING_FILE", f)
+        monkeypatch.setenv("QWEN_TIMING_MAX_BYTES", "100")
+        L._rotate_timing_if_oversized()
+        assert not f.exists()
+        rotated = tmp_path / "timing.log.1"
+        assert rotated.exists()
+        assert rotated.read_text() == "x" * 1000
+
+    def test_rotate_overwrites_existing_rotated(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        f = tmp_path / "timing.log"
+        f.write_text("x" * 1000)
+        rotated = tmp_path / "timing.log.1"
+        rotated.write_text("OLD")
+        monkeypatch.setattr(L, "TIMING_FILE", f)
+        monkeypatch.setenv("QWEN_TIMING_MAX_BYTES", "100")
+        L._rotate_timing_if_oversized()
+        assert rotated.read_text() == "x" * 1000
+
+    def test_rotate_missing_file_is_noop(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        f = tmp_path / "no.log"
+        monkeypatch.setattr(L, "TIMING_FILE", f)
+        L._rotate_timing_if_oversized()  # must not raise
+        assert not f.exists()
+
+    def test_write_timing_triggers_rotation(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        f = tmp_path / "timing.log"
+        f.write_text("x" * 5000)
+        monkeypatch.setattr(L, "TIMING_FILE", f)
+        monkeypatch.setenv("QWEN_TIMING_MAX_BYTES", "100")
+        L._write_timing(Path("a.py"), "x", {"p": 0.1})
+        assert (tmp_path / "timing.log.1").exists()
+        assert f.exists()  # new short file
+        assert f.stat().st_size < 1000
