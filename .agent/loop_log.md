@@ -2069,3 +2069,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P3 user requested parity.
 - ACT: _render_pin and _render_unpin helpers, dispatcher branches, SLASH_COMMANDS entries, help text. Seven new tests cover pin attaching content pin inserting system message when missing pin appending a second file with one marker pin path escape leaving system unchanged unpin clearing the block unpin when nothing pinned and pin truncating a large file. Eight hundred twenty seven passed.
 
+
+## Loop 146 — Markdown rendering for assistant replies
+- DECIDE: claude code and copilot render fenced code blocks with syntax highlighting and lists with bullets. Add lightweight markdown detection plus rich.markdown.Markdown wrap in the App layer so qwen replies that contain fences headings or lists render as proper markdown in the RichLog.
+- DEVIL:
+  - Correctness: helper is pure heuristic over substring presence. False negatives are fine because plain text path still works. False positives in the helper still produce valid output because rich.markdown.Markdown handles plain prose. Wrapped the rich import in try except ImportError so the App still works on a stripped install without rich. The plain prefix path keeps short answers on one line because wrapping a one word reply in markdown looks weird.
+  - Scope: heuristic not a real markdown parser. Real fix would be to ask the model to declare markdown via a content type tag. This is the stepping stone fix not the architecture rewrite.
+  - Priority: P3 user requested parity with claude code copilot ml intern.
+- ACT: looks_like_markdown helper plus _MARKDOWN_HINTS tuple. App._post_assistant method called from both streaming success path and AttributeError fallback. Nine new heuristic tests cover fenced code heading bullet list numbered list blockquote bold plain short text plain paragraph and empty input. Eight hundred thirty six passed.
+

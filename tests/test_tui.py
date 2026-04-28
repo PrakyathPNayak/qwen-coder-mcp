@@ -1511,3 +1511,35 @@ class TestPinSlash:
             history=history,
         )
         assert "[truncated]" in history[0].content
+
+
+# ----------------------------------------------------------- Loop 146
+class TestLooksLikeMarkdown:
+    def test_fenced_code(self) -> None:
+        assert tui.looks_like_markdown("here:\n```python\nprint(1)\n```")
+
+    def test_heading(self) -> None:
+        assert tui.looks_like_markdown("# heading\n\nbody")
+
+    def test_bullet_list(self) -> None:
+        assert tui.looks_like_markdown("intro\n- one\n- two")
+
+    def test_numbered_list(self) -> None:
+        assert tui.looks_like_markdown("steps:\n1. first\n2. second")
+
+    def test_blockquote(self) -> None:
+        assert tui.looks_like_markdown("note:\n> careful")
+
+    def test_bold(self) -> None:
+        assert tui.looks_like_markdown("this is **important** text")
+
+    def test_plain_short_text(self) -> None:
+        assert not tui.looks_like_markdown("yes")
+
+    def test_plain_paragraph(self) -> None:
+        assert not tui.looks_like_markdown(
+            "the answer is forty two because it is the convention"
+        )
+
+    def test_empty(self) -> None:
+        assert not tui.looks_like_markdown("")

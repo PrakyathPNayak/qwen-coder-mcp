@@ -769,6 +769,34 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+_MARKDOWN_HINTS = (
+    "```",
+    "\n# ",
+    "\n## ",
+    "\n### ",
+    "\n- ",
+    "\n* ",
+    "\n1. ",
+    "\n> ",
+    "**",
+    "__",
+)
+
+
+def looks_like_markdown(text: str) -> bool:
+    """Heuristic: true when the assistant reply contains markdown structure
+    that benefits from rich rendering rather than being treated as plain text.
+
+    Used by the App layer to decide whether to wrap a reply in
+    ``rich.markdown.Markdown`` before writing it to the RichLog. Kept pure
+    so unit tests can exercise it without a Textual app.
+    """
+    if not text:
+        return False
+    haystack = "\n" + text
+    return any(hint in haystack for hint in _MARKDOWN_HINTS)
+
+
 def chat_turn(
     history: list[ChatMessage],
     user_text: str,
@@ -1080,13 +1108,33 @@ def _build_app(
                     self.history, line, client=self.client, fs_cfg=self.fs_cfg
                 )
                 self._record_turn(line, reply, time.monotonic() - t0)
-                log.write(f"[green]qwen>[/green] {reply}")
+                self._post_assistant(log, reply)
                 log.write(self._telemetry_line())
                 return
             full_reply = "".join(reply_parts)
             self._record_turn(line, full_reply, time.monotonic() - t0)
-            log.write(f"[green]qwen>[/green] {full_reply}")
+            self._post_assistant(log, full_reply)
             log.write(self._telemetry_line())
+
+        def _post_assistant(self, log, reply: str) -> None:
+            """Write an assistant reply to the RichLog, rendering markdown
+            structure when the reply looks like markdown so fenced code,
+            headings, lists and bold text render with syntax highlighting.
+
+            Plain-text replies fall through to the original prefixed write
+            so short answers stay on one line.
+            """
+            if looks_like_markdown(reply):
+                try:
+                    from rich.markdown import Markdown
+                except ImportError:
+                    log.write(f"[green]qwen>[/green] {reply}")
+                    return
+                log.write("[green]qwen>[/green]")
+                log.write(Markdown(reply))
+            else:
+                log.write(f"[green]qwen>[/green] {reply}")
+
 
         def _record_turn(self, prompt: str, reply: str, elapsed: float) -> None:
             tok = estimate_tokens(prompt) + estimate_tokens(reply)
