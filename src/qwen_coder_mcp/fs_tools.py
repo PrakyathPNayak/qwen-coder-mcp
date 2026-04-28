@@ -119,7 +119,26 @@ def write_file(cfg: FsConfig, rel: str, content: str, *, create_parents: bool = 
         p.parent.mkdir(parents=True, exist_ok=True)
     elif not p.parent.exists():
         raise FsError(f"parent does not exist: {p.parent}")
-    p.write_bytes(encoded)
+    # Atomic write via .tmp + os.replace so a crash mid-write can never
+    # leave the target file half-written. Mirrors save_agent_checkpoint
+    # and save_history_jsonl. The .tmp lives next to the target so
+    # os.replace stays within one filesystem.
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(encoded)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, p)
+    except OSError as exc:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise FsError(f"write failed: {exc}") from exc
     return {"path": rel, "size": len(encoded), "created": True}
 
 

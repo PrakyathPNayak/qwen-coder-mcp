@@ -2842,3 +2842,20 @@ read-only operation, no state changes.
 **Act.** Two kwargs added to `format_history_diff`. `--inline` flag stripped from args before index parsing in the dispatcher (handles before/after the index). HELP_TEXT row updated. Loop-192's `test_diff_no_args` updated to the new usage string. New `tests/test_checkpoints_diff_inline.py` with 12 cases: 7 for the renderer (default off, unified-diff present, only-on-changed, truncation, no-truncate-when-under-cap, snapshot label appears in `---`/`+++` headers, role-mismatch skipped) + 5 for dispatch (flag after index, flag before index, plain mode unchanged, --inline alone errors, sanity).
 
 **Verify.** All 12 new tests pass. Full suite ~1.2k passed, 1 skipped.
+
+## Loop 194 — atomic write for `fs_tools.write_file`
+
+**Observe.** Auditing `apply_patch` for atomicity (next.md candidate). `apply_patch` itself is fine — `git apply` either succeeds or unwinds. But the audit surfaced something worse: `write_file` (the `fs_write` agent tool — the *primary* write surface used by every "write code" agent turn) used `p.write_bytes(encoded)`. That's a single syscall but it does NOT replace atomically — it truncates first, then writes. A crash mid-write leaves a half-written or zero-byte file. Same gap as `save_history_jsonl` had before loop 189.
+
+**Orient.** This is priority-1 territory: silent data corruption on the agent's most-used write tool. The agent runs unattended overnight; an OOM or oom-kill mid-write would silently destroy the file the agent was editing. We caught this *because* we audited — exactly why audits exist.
+
+**Decide.** Same `.tmp + os.replace + fsync` dance as `save_agent_checkpoint` and `save_history_jsonl`. Wrap in `try/except OSError`, unlink the `.tmp` on failure, raise `FsError` so the agent surface keeps its "all errors are FsError" contract.
+
+**Devil.**
+- *Correctness:* `os.replace` is atomic on POSIX and on Windows (since 3.3). The `.tmp` is a sibling of the target so it stays on the same filesystem. ✅ The size-cap check still runs *before* the atomic write — we never create a `.tmp` file just to immediately delete it on size rejection. Pinned by `test_oversize_still_rejected_before_tmp_write`. ✅
+- *Scope:* Should `write_file` also fsync the parent directory after replace? POSIX-strict durability says yes — the directory entry rename isn't guaranteed durable until the parent is fsynced. But this is the same level of paranoia as `save_agent_checkpoint`, which doesn't do parent-fsync either; we'd be making `write_file` stricter than the rest of the codebase. Defer: if we ever want strict-durability everywhere, do it as a separate cross-cutting loop. ✅
+- *Priority:* This is a real integrity gap on the agent's most-used write tool. Higher leverage than TTY-width formatting. ✅
+
+**Act.** Edit `write_file` body to use the atomic dance. New `tests/test_fs_write_atomic.py` with 7 cases: round-trip, no leftover .tmp on success, replace-failure preserves original, .tmp cleaned up after replace failure, the spy assertion that the source is a .tmp at the moment of replace, oversize-rejected-before-tmp-write (no .tmp created on size reject), create_parents still works (no .tmp left in nested dir).
+
+**Verify.** All 7 new tests pass. Full suite ~1.2k passed, 1 skipped.
