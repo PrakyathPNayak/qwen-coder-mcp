@@ -767,6 +767,42 @@ APPLY_ERROR_CATEGORIES: frozenset[str] = frozenset({
 APPLY_OK_CATEGORY: str = "applied"
 
 
+# ---------------------------------------------------------- outer iteration
+# Stable category set for the outer `_iteration` outcome string. Every
+# outcome string starts with one of these tokens (followed by ":" and
+# context). External monitoring/parsers can grep for these to classify
+# loop runs without parsing the full free-form tail.
+OUTER_OUTCOME_CATEGORIES: frozenset[str] = frozenset({
+    "applied",
+    "clean",
+    "skip",
+    "rejected",
+    "out_of_scope",
+    "validation_failed",
+    "commit_failed",
+    "revert_failed",
+    "apply_failed",
+    "qwen_error_find_bugs",
+    "qwen_error_propose_fix",
+    "qwen_error_devils_advocate",
+    "budget_exceeded",
+    "no_candidate_files",
+    "no_hunks",
+})
+
+
+def _outer_outcome_category(outcome: str) -> str:
+    """Extract the leading category from an `_iteration` outcome string.
+
+    Outcome strings are formatted as either ``<category>`` (no colon) or
+    ``<category>:<rest>``; this returns the leading token. If the leading
+    token is not in `OUTER_OUTCOME_CATEGORIES` the raw token is still
+    returned so callers can detect drift, but they SHOULD treat anything
+    outside the frozenset as a contract bug.
+    """
+    return outcome.split(":", 1)[0].strip()
+
+
 def _apply_error_category(msg: str) -> str:
     """Extract the leading category from an `_apply_diff` error message."""
     return msg.split(":", 1)[0].strip()

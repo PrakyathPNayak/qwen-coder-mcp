@@ -661,3 +661,64 @@ class TestApplyFailedOutcomeCategoryTag:
         for expected, msg in sample.items():
             got = L._apply_error_category(msg)
             assert got in L.APPLY_ERROR_CATEGORIES, f"{got!r} not in frozenset"
+
+
+class TestOuterOutcomeCategories:
+    """Loop 60: stable category set for the outer iteration outcome string."""
+
+    def test_helper_extracts_leading_token(self):
+        from agent import loop as L
+        assert L._outer_outcome_category("applied:foo/bar.py") == "applied"
+        assert L._outer_outcome_category("clean:foo.py") == "clean"
+        assert L._outer_outcome_category("no_candidate_files") == "no_candidate_files"
+        assert L._outer_outcome_category("revert_failed:x:after_validation") == "revert_failed"
+
+    def test_helper_handles_empty_string(self):
+        from agent import loop as L
+        assert L._outer_outcome_category("") == ""
+
+    def test_frozenset_is_immutable(self):
+        from agent import loop as L
+        with pytest.raises(AttributeError):
+            L.OUTER_OUTCOME_CATEGORIES.add("nope")  # type: ignore[attr-defined]
+
+    def test_frozenset_includes_all_known_outcomes(self):
+        from agent import loop as L
+        expected = {
+            "applied", "clean", "skip", "rejected",
+            "out_of_scope", "validation_failed",
+            "commit_failed", "revert_failed", "apply_failed",
+            "qwen_error_find_bugs", "qwen_error_propose_fix",
+            "qwen_error_devils_advocate",
+            "budget_exceeded",
+            "no_candidate_files", "no_hunks",
+        }
+        assert expected.issubset(L.OUTER_OUTCOME_CATEGORIES)
+
+    def test_every_finish_call_in_source_uses_known_category(self):
+        """Source-level audit: every `_finish(f"X:..."` must have X in
+        OUTER_OUTCOME_CATEGORIES. Guards against drift when new outcomes
+        are added without updating the frozenset."""
+        from agent import loop as L
+        import re as _re
+        src = Path(L.__file__).read_text(encoding="utf-8")
+        # Match: return _finish(f"<token>...") or return _finish("<token>...")
+        # token = leading run of non-: non-{ non-" chars
+        pattern = _re.compile(
+            r'return\s+_finish\(\s*f?"([a-z_][a-z0-9_]*)[":]'
+        )
+        tokens = set(pattern.findall(src))
+        # Strip off any tokens that came from the helper itself or comments.
+        unknown = tokens - L.OUTER_OUTCOME_CATEGORIES
+        assert not unknown, (
+            f"_iteration emits outcome categories not in "
+            f"OUTER_OUTCOME_CATEGORIES: {sorted(unknown)}"
+        )
+
+    def test_no_extras_beyond_emitted(self):
+        """Inverse audit: every category in the frozenset is actually
+        emitted somewhere in the source. Prevents stale tokens."""
+        from agent import loop as L
+        src = Path(L.__file__).read_text(encoding="utf-8")
+        for cat in L.OUTER_OUTCOME_CATEGORIES:
+            assert cat in src, f"{cat!r} declared but never emitted"

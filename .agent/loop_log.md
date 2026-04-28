@@ -1217,3 +1217,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 6 over the remaining bucket-7+ candidates.
 - ACT: outcome + STATE.md row tag added. 3 contract tests including 9-category round-trip. 377 passed.
 - COMMIT: pending.
+
+## Loop 60 — `OUTER_OUTCOME_CATEGORIES` taxonomy + drift audit
+- OBSERVE: We had `APPLY_ERROR_CATEGORIES` for inner apply errors but no equivalent for the 15 outer-loop outcome categories. Drift is silent.
+- ORIENT: Bucket 6 — outcome tokens are the loop's external API for monitoring. Without a frozenset + audit, future outcome changes won't be caught.
+- DECIDE: Add `OUTER_OUTCOME_CATEGORIES` frozenset + `_outer_outcome_category()` helper, plus two source-level audit tests: (a) every `_finish(f"X..."` token is in the frozenset, (b) every frozenset entry appears in source. Bidirectional contract.
+- DEVIL:
+  - Correctness: regex-based source audit could miss `_finish` calls that aren't on the same line as `return` or that use computed strings. Mitigated: every existing `_finish` call in `_iteration` matches the simple `return _finish(f"..."` pattern (verified by passing test).
+  - Scope: this is the cause-level fix; without the taxonomy, future drift goes silent.
+  - Priority: bucket 6 — same level as loop 59, complementary.
+- ACT: 6 tests including bidirectional source audit. 383 passed.
+- COMMIT: pending.
