@@ -1903,3 +1903,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: leave as two separate functions rather than a single `filter_range(recs, since, until)` -- composition is honest about the two independent boundaries and `--since` alone or `--until` alone are equally valid.
   - Priority: P5 ergonomics. Tiny code, big ROI for log triage.
 - ACT: helper + CLI flag + 5 tests + README example. 600 passed (milestone crossed).
+
+## Loop 127 — `--category` and `--phase` filters
+- OBSERVE: analytics CLI had time-window filters (since/until) but no outcome-focused filters. Real triage: "show me stats for only applied iterations" or "how slow is devils_advocate across all runs".
+- DECIDE: two pure filters: `filter_category(records, category)` for exact match on `category` field, `filter_phase(records, phase)` for records whose `phases` dict contains the phase name as a key. CLI flags apply in chain after time filters. Both pass through on None/empty.
+- DEVIL:
+  - Correctness: phase filter checks `phase in phases` (key existence) not value >= threshold -- correct because the schema is phase name → wall_s, and a phase with 0.0 is still a phase that ran.
+  - Scope: should `--phase` support multiple phases as a union/intersection? Premature; CLI stays simple, analysts use `--phase A | combine-json | --phase B` if needed.
+  - Priority: P5. Unlocks drill-down analysis: "were devils_advocate rejections due to slow time or fast rejections on bad proposals".
+- ACT: 2 helpers + 2 CLI flags + 6 tests + README example. 606 passed.

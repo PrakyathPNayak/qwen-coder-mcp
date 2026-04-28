@@ -245,4 +245,8 @@ python -m agent.timing_analyze --since 2026-04-28T00:00:00Z
 
 # closed interval (since + until)
 python -m agent.timing_analyze --since 2026-04-28T00:00:00Z --until 2026-04-29T00:00:00Z
+
+# only one outcome category, or only iterations that ran a specific phase
+python -m agent.timing_analyze --category applied
+python -m agent.timing_analyze --phase devils_advocate
 ```

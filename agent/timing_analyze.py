@@ -193,6 +193,27 @@ def filter_since(records: list[dict], since: str | None) -> list[dict]:
     return out
 
 
+def filter_category(records: list[dict], category: str | None) -> list[dict]:
+    """Return only records whose `category` field equals `category`.
+    None or empty value is passthrough."""
+    if not category:
+        return records
+    return [r for r in records if r.get("category") == category]
+
+
+def filter_phase(records: list[dict], phase: str | None) -> list[dict]:
+    """Return only records whose `phases` dict contains `phase` as a key.
+    None or empty value is passthrough."""
+    if not phase:
+        return records
+    out: list[dict] = []
+    for r in records:
+        phases = r.get("phases")
+        if isinstance(phases, dict) and phase in phases:
+            out.append(r)
+    return out
+
+
 def filter_until(records: list[dict], until: str | None) -> list[dict]:
     """Symmetric counterpart to `filter_since`: keep only `ts <= until`
     (inclusive). Same UTC Z-suffix lex compare assumption. Records
@@ -243,6 +264,18 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Only include records with ts <= this ISO-8601 timestamp (UTC Z suffix).",
     )
+    p.add_argument(
+        "--category",
+        type=str,
+        default=None,
+        help="Only include records whose category exactly matches this value.",
+    )
+    p.add_argument(
+        "--phase",
+        type=str,
+        default=None,
+        help="Only include records whose phases dict contains this phase name as a key.",
+    )
     args = p.parse_args(argv)
     inputs = _resolve_inputs(args.file, include_rotated=not args.no_rotated)
     if not inputs:
@@ -253,6 +286,8 @@ def main(argv: list[str] | None = None) -> int:
         records.extend(parse_records(path.read_text("utf-8").splitlines()))
     records = filter_since(records, args.since)
     records = filter_until(records, args.until)
+    records = filter_category(records, args.category)
+    records = filter_phase(records, args.phase)
     report = analyze(records)
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))

@@ -468,3 +468,55 @@ class TestUntilFilter:
     def test_readme_mentions_until(self):
         readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
         assert "--until" in readme
+
+
+class TestCategoryAndPhaseFilters:
+    """Loop 127: `--category` and `--phase` filters narrow analytics
+    to a single outcome category or to records that ran a specific
+    named phase."""
+
+    def test_filter_category_passthrough(self):
+        from agent.timing_analyze import filter_category
+        recs = [{"category": "applied"}, {"category": "clean"}]
+        assert filter_category(recs, None) == recs
+        assert filter_category(recs, "") == recs
+
+    def test_filter_category_exact_match(self):
+        from agent.timing_analyze import filter_category
+        recs = [{"category": "applied"}, {"category": "clean"}, {"category": "applied"}]
+        kept = filter_category(recs, "applied")
+        assert len(kept) == 2
+        assert all(r["category"] == "applied" for r in kept)
+
+    def test_filter_phase_passthrough(self):
+        from agent.timing_analyze import filter_phase
+        recs = [{"phases": {"a": 1.0}}]
+        assert filter_phase(recs, None) == recs
+
+    def test_filter_phase_keeps_only_records_with_phase_key(self):
+        from agent.timing_analyze import filter_phase
+        recs = [
+            {"phases": {"discovery": 0.1, "find_bugs": 5.0}},
+            {"phases": {}},
+            {"phases": {"discovery": 0.2}},
+            {},
+        ]
+        kept = filter_phase(recs, "find_bugs")
+        assert len(kept) == 1
+
+    def test_cli_accepts_category_and_phase(self, tmp_path):
+        from agent.timing_analyze import main
+        log = tmp_path / "t.log"
+        log.write_text(
+            json.dumps({"ts": "2026-04-28T00:00:00Z", "category": "applied", "wall_s": 1.0, "phases": {"discovery": 0.1, "find_bugs": 5.0}, "wall_s_delta_phases": 0.0})
+            + "\n"
+            + json.dumps({"ts": "2026-04-28T00:00:00Z", "category": "clean", "wall_s": 0.5, "phases": {}, "wall_s_delta_phases": 0.0})
+            + "\n"
+        )
+        rc = main(["--file", str(log), "--category", "applied", "--phase", "find_bugs", "--no-rotated", "--json"])
+        assert rc == 0
+
+    def test_readme_mentions_category_and_phase(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
+        assert "--category" in readme
+        assert "--phase" in readme
