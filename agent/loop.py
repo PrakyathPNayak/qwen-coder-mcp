@@ -63,14 +63,35 @@ def _log(msg: str) -> None:
         pass
 
 
+_GIT_CMD_TIMEOUT_SECONDS = 60
+
+
 def _run_git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *args],
-        cwd=_REPO,
-        check=check,
-        text=True,
-        capture_output=True,
-    )
+    """Run `git <args>` with a hard timeout.
+
+    Raises `subprocess.TimeoutExpired` only when callers passed
+    `check=True`; with `check=False` (the cleanup paths) we synthesise
+    a non-zero `CompletedProcess` so the caller can keep going.
+    """
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=_REPO,
+            check=check,
+            text=True,
+            capture_output=True,
+            timeout=_GIT_CMD_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        if check:
+            raise
+        _log(f"_run_git timeout: git {' '.join(args)} exceeded {_GIT_CMD_TIMEOUT_SECONDS}s")
+        return subprocess.CompletedProcess(
+            args=["git", *args],
+            returncode=124,
+            stdout="",
+            stderr=f"timed_out_after_{_GIT_CMD_TIMEOUT_SECONDS}s",
+        )
 
 
 def _candidate_files() -> list[Path]:

@@ -520,3 +520,54 @@ def test_run_git_apply_passes_timeout_kwarg(monkeypatch):
     monkeypatch.setattr(loop.subprocess, "run", fake_run)
     loop._run_git_apply(["apply", "-"], "x\n")
     assert captured.get("timeout") == loop._GIT_APPLY_TIMEOUT_SECONDS
+
+
+# ---------------------------------------------------- _run_git timeout tests
+def test_run_git_timeout_with_check_false_returns_124(monkeypatch):
+    import subprocess as sp
+
+    def fake_run(*a, **kw):
+        raise sp.TimeoutExpired(cmd="git checkout", timeout=kw.get("timeout"))
+
+    monkeypatch.setattr(loop.subprocess, "run", fake_run)
+    cp = loop._run_git("checkout", "--", ".", check=False)
+    assert cp.returncode == 124
+    assert "timed_out_after_" in cp.stderr
+
+
+def test_run_git_timeout_with_check_true_raises(monkeypatch):
+    import subprocess as sp
+
+    def fake_run(*a, **kw):
+        raise sp.TimeoutExpired(cmd="git status", timeout=kw.get("timeout"))
+
+    monkeypatch.setattr(loop.subprocess, "run", fake_run)
+    with pytest.raises(sp.TimeoutExpired):
+        loop._run_git("status", check=True)
+
+
+def test_run_git_passes_timeout_kwarg(monkeypatch):
+    captured = {}
+
+    def fake_run(args, *a, **kw):
+        captured.update(kw)
+        return loop.subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(loop.subprocess, "run", fake_run)
+    loop._run_git("status", check=False)
+    assert captured.get("timeout") == loop._GIT_CMD_TIMEOUT_SECONDS
+
+
+def test_revert_changes_continues_through_timeouts(monkeypatch):
+    """If both `git checkout` and `git clean` time out, _revert_changes
+    must not raise — the loop's recovery path keeps going."""
+    import subprocess as sp
+
+    def fake_run(*a, **kw):
+        raise sp.TimeoutExpired(cmd="git", timeout=kw.get("timeout"))
+
+    monkeypatch.setattr(loop.subprocess, "run", fake_run)
+    # Should NOT raise.
+    loop._revert_changes()

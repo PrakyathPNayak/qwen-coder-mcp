@@ -842,3 +842,34 @@ now go through it.
 timeout kwarg is actually forwarded.
 
 **Result**: 226/226 green.
+
+## Loop 29 — `_run_git` had no timeout, `_revert_changes` could wedge
+**Bug**: `_run_git` is the canonical wrapper for non-apply git
+calls (status, checkout, clean, diff, log, commit). None of them
+had a timeout. `_revert_changes()` calls `git checkout -- .` then
+`git clean -fd`; on a slow / failing filesystem either could hang
+indefinitely. Loop 28 capped `_apply_diff` but the recovery path
+remained vulnerable: an applied-then-rejected diff could wedge the
+loop in revert.
+
+**Devil**: (a) Correctness — what about callers passing
+`check=True`? They want the exception to surface (they're verifying
+preconditions); preserve that semantics. With `check=False` the
+caller is in best-effort cleanup mode; synthesise a 124
+CompletedProcess. (b) Could timeout-then-synthesised-CP hide a real
+bug? The synthesised stderr explicitly says
+`timed_out_after_<N>s`; loggable. (c) Scope — the same remedy
+should apply uniformly across the wrapper, not be retro-fitted at
+each call site. (d) Priority — backstops the operating-law
+guarantee.
+
+**Fix**: `_GIT_CMD_TIMEOUT_SECONDS = 60`. `_run_git` passes
+`timeout=` to subprocess.run; on TimeoutExpired with check=False it
+logs and returns rc=124, stderr="timed_out_after_60s"; with
+check=True it re-raises (preserves caller contract).
+
+**Tests**: 4 new — check=False synthesises 124, check=True
+re-raises, timeout kwarg forwarded, `_revert_changes` survives
+double-timeout.
+
+**Result**: 230/230 green.
