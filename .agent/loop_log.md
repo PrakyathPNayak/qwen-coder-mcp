@@ -2260,3 +2260,13 @@ kwarg actually forwarded. Existing tests still pass.
 - *Priority*: data preservation (priority 1 in the priorities table). Justified.
 **ACT:** Added BINDING ctrl+s -> save_history; method calls save_history_jsonl, prints "✓ saved N messages → <path>" or "save failed: ..." in the log. 3 new tests; existing tests untouched.
 **RESULT:** 947 passed (+3).
+
+## Loop 164 -- tool-calling agent loop, the model now invokes tools itself
+**OBSERVE:** User: "the model still isn't invoking search features. Make it agentic." Loop 160 added user-side @web sugar; the model itself had no protocol.
+**DECIDE:** Structured tool-calling layer. Model emits tool_call tags wrapping JSON; runtime parses, executes against a sandboxed registry, feeds tool_result back, repeats up to max_steps. Tools: web_search, web_fetch, fs_read, fs_list, grep, find. New /agent slash + /agent_on toggle. AUTO-FALLBACK: streamed reply containing tool_calls switches to agent transparently.
+**DEVIL:**
+- Correctness: auto-fallback pops the streamed user+assistant before re-running run_agent so history doesn't double-record. Verified.
+- Scope: also handles fenced tool_call blocks; malformed JSON dropped silently.
+- Priority: priority-1. Without an executor, model emitting tool_call tags would leak XML to the user.
+**ACT:** New module agent_loop.py (zero Textual deps). DEFAULT_TOOLS registry, AgentEvent dataclass, parse/run/format helpers, run_agent generator. CODER_SYSTEM rewritten. New slash commands with sentinels. App _start_agent_turn worker + auto-fallback. 24 + 6 new tests.
+**RESULT:** 977 passed (+30 from 947). Tree clean.

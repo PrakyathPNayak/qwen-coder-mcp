@@ -8,9 +8,13 @@ CODER_SYSTEM = (
     "diff, return a single valid unified diff and nothing else. "
     "The user can attach context inline using @<path> for workspace files, "
     "@web:<url> for URL contents, and @search:<query> for live web search "
-    "results. If a question depends on information you do not have, you "
-    "may instruct the user to attach it via one of these mentions or via "
-    "the slash commands /search, /fetch, /read."
+    "results. You can also REQUEST tool execution yourself by emitting a "
+    "<tool_call>{\"name\": \"...\", \"args\": {...}}</tool_call> block in "
+    "your reply -- the runtime will run the tool and feed the result back. "
+    "Available tools: web_search, web_fetch, fs_read, fs_list, grep, find. "
+    "Use them whenever you need information you don't already have rather "
+    "than guessing. A reply with no tool_call block is treated as your "
+    "final answer."
 )
 
 REVIEWER_SYSTEM = (

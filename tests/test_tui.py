@@ -2233,7 +2233,10 @@ class TestPromptAdvertisesWebTools:
 
         assert "@web" in CODER_SYSTEM
         assert "@search" in CODER_SYSTEM
-        assert "/search" in CODER_SYSTEM
+        # Loop 164: prompt now advertises tool_call protocol instead
+        # of telling the model to ask the user to run /search.
+        assert "tool_call" in CODER_SYSTEM
+        assert "web_search" in CODER_SYSTEM
 
 
 # -------------------------------------------------- Loop 161: /search --max
@@ -2466,3 +2469,64 @@ class TestSaveHistoryAction:
         AppCls = tui._build_app(client_factory=_FakeClient)
         keys = {b[0]: b[1] for b in AppCls.BINDINGS}
         assert keys.get("ctrl+s") == "save_history"
+
+
+# -------------------------------------------------- Loop 164: agent dispatcher
+class TestAgentSlashDispatch:
+    """The /agent slash family routes through sentinels because the
+    actual run lives on App._start_agent_turn (worker thread). These
+    tests pin the dispatcher contract so the App handler can rely on
+    the sentinel format."""
+
+    def test_agent_returns_sentinel(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, quit_now = tui.dispatch_slash(
+            tui.parse_slash("/agent find bugs in qwen_client.py"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+        )
+        assert quit_now is False
+        assert text.startswith(tui._AGENT_SENTINEL)
+        assert text[len(tui._AGENT_SENTINEL):] == "find bugs in qwen_client.py"
+
+    def test_agent_empty_returns_usage(self, tmp_path: Path) -> None:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/agent"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        assert "usage:" in text
+
+    def test_agent_on_off_sentinels(self, tmp_path: Path) -> None:
+        on, _ = tui.dispatch_slash(
+            tui.parse_slash("/agent_on"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        off, _ = tui.dispatch_slash(
+            tui.parse_slash("/agent_off"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        assert on == tui._AGENT_TOGGLE_SENTINEL + "on"
+        assert off == tui._AGENT_TOGGLE_SENTINEL + "off"
+
+    def test_agent_in_slash_completions(self) -> None:
+        comps = tui.slash_completions("/agent")
+        assert "/agent" in comps
+        assert "/agent_on" in comps
+        assert "/agent_off" in comps
+
+
+class TestAppAgentMode:
+    def test_agent_default_initially_off(self, tmp_path: Path) -> None:
+        AppCls = tui._build_app(
+            fs_cfg=fs_tools.FsConfig(root=tmp_path), client_factory=_FakeClient
+        )
+        app = AppCls()
+        assert app.agent_default is False
+
+    def test_help_advertises_agent(self) -> None:
+        assert "/agent" in tui.HELP_TEXT
+        assert "/agent_on" in tui.HELP_TEXT
+        assert "/agent_off" in tui.HELP_TEXT

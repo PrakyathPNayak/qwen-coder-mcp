@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from . import fs_tools, prompts, shell_tools, web_tools
+from . import agent_loop, fs_tools, prompts, shell_tools, web_tools
 from .qwen_client import ChatMessage, QwenClient
 
 
@@ -96,6 +96,9 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/open",
     "/cd",
     "/quit",
+    "/agent",
+    "/agent_off",
+    "/agent_on",
 )
 
 
@@ -146,6 +149,9 @@ Slash commands:
   /pinned              List currently pinned files
   /open <path>         Launch $EDITOR on a file in the repo
   /cd [path]           Show or change the fs sandbox root for the session
+  /agent <task>        Run an agentic tool-calling turn (one-off)
+  /agent_on            Make all subsequent chats agentic by default
+  /agent_off           Disable default agent mode (back to plain chat)
   /quit                Exit
 
 @<path> tokens in plain chat are expanded inline as file contents.
@@ -366,6 +372,8 @@ def _render_open(cfg: fs_tools.FsConfig, path: str) -> str:
 
 
 _CD_SENTINEL = "__CD__"
+_AGENT_SENTINEL = "__AGENT__"
+_AGENT_TOGGLE_SENTINEL = "__AGENT_TOGGLE__"
 
 
 def _render_cd(cfg: fs_tools.FsConfig, path: str) -> str:
@@ -819,6 +827,14 @@ def dispatch_slash(
         return HELP_TEXT, False
     if name == "quit" or name == "exit":
         return "bye", True
+    if name == "agent":
+        if not cmd.rest:
+            return "usage: /agent <task>", False
+        return _AGENT_SENTINEL + cmd.rest, False
+    if name == "agent_on":
+        return _AGENT_TOGGLE_SENTINEL + "on", False
+    if name == "agent_off":
+        return _AGENT_TOGGLE_SENTINEL + "off", False
     if name == "search":
         if not cmd.rest:
             return "usage: /search [--max N] <query>", False
@@ -1348,6 +1364,10 @@ def _build_app(
             self.total_tokens: int = 0
             self.total_turns: int = 0
             self._streaming: bool = False
+            # Agent default: when True, normal chat goes through the
+            # tool-calling loop. Off by default so simple turns stay
+            # streamed and cheap. Toggle with /agent_on /agent_off.
+            self.agent_default: bool = False
 
         def compose(self) -> ComposeResult:  # type: ignore[override]
             yield Header(show_clock=True)
@@ -1477,6 +1497,17 @@ def _build_app(
                 if isinstance(text, str) and text.startswith("__RETRY__"):
                     line = text[len("__RETRY__"):]
                     log.write(f"[yellow](retrying)[/yellow] {line}")
+                elif isinstance(text, str) and text.startswith(_AGENT_SENTINEL):
+                    task = text[len(_AGENT_SENTINEL):]
+                    self._streaming = True
+                    self._start_agent_turn(task)
+                    return
+                elif isinstance(text, str) and text.startswith(_AGENT_TOGGLE_SENTINEL):
+                    flag = text[len(_AGENT_TOGGLE_SENTINEL):]
+                    self.agent_default = (flag == "on")
+                    state = "on" if self.agent_default else "off"
+                    log.write(f"[dim]agent default → {state}[/dim]")
+                    return
                 elif isinstance(text, str) and text.startswith(_CD_SENTINEL):
                     new_root = text[len(_CD_SENTINEL):]
                     self.fs_cfg = fs_tools.FsConfig(
@@ -1495,7 +1526,10 @@ def _build_app(
                         self.exit()
                     return
             self._streaming = True
-            self._start_streaming_turn(line)
+            if self.agent_default:
+                self._start_agent_turn(line)
+            else:
+                self._start_streaming_turn(line)
 
         def _start_streaming_turn(self, line: str) -> None:
             t0 = time.monotonic()
@@ -1556,9 +1590,111 @@ def _build_app(
             except Exception:  # noqa: BLE001
                 self._streaming = False
                 return
+            # If the streamed reply contains tool calls, the model is
+            # asking for tool execution. Roll back the streaming-only
+            # bookkeeping (chat_turn_stream already appended the reply
+            # to history) and run the agent loop to resolve them.
+            if agent_loop.parse_tool_calls(reply):
+                # chat_turn_stream appended user+assistant; pop the
+                # assistant so run_agent re-issues the same prompt as
+                # a fresh user turn (history stays clean).
+                if self.history and self.history[-1].role == "assistant":
+                    self.history.pop()
+                if self.history and self.history[-1].role == "user":
+                    self.history.pop()
+                log.write(
+                    "[dim](tool calls detected — switching to agent mode)[/dim]"
+                )
+                self._start_agent_turn(prompt)
+                return
             self._record_turn(prompt, reply, elapsed)
             self._post_assistant(log, reply)
             log.write(self._telemetry_line())
+            self._refresh_status()
+            self._streaming = False
+
+        def _start_agent_turn(self, task: str) -> None:
+            """Run an agentic tool-calling turn in a worker thread.
+
+            Reuses the streaming Static widget for live status of which
+            tool is firing; final answer is rendered via _post_assistant
+            once the loop ends.
+            """
+            t0 = time.monotonic()
+            try:
+                stream = self.query_one("#stream", Static)
+                stream.update("[yellow]agent: thinking…[/yellow]")
+                stream.add_class("live")
+            except Exception:  # noqa: BLE001
+                pass
+            self._refresh_status(streaming=True)
+
+            def runner() -> None:
+                final_text = ""
+                try:
+                    for ev in agent_loop.run_agent(
+                        self.history,
+                        task,
+                        client=self.client,
+                        fs_cfg=self.fs_cfg,
+                    ):
+                        if ev.kind == "tool_call":
+                            args_repr = ""
+                            if ev.args:
+                                bits = []
+                                for k, v in ev.args.items():
+                                    s = str(v)
+                                    if len(s) > 60:
+                                        s = s[:60] + "…"
+                                    bits.append(f"{k}={s!r}")
+                                args_repr = " " + ", ".join(bits)
+                            self.call_from_thread(
+                                self._agent_status,
+                                f"[cyan]→ tool[/cyan] {ev.tool}{args_repr}",
+                            )
+                        elif ev.kind == "tool_result":
+                            head = ev.text.splitlines()[0] if ev.text else ""
+                            if len(head) > 200:
+                                head = head[:200] + "…"
+                            self.call_from_thread(
+                                self._agent_status,
+                                f"[green]← {ev.tool}[/green] {head}",
+                            )
+                        elif ev.kind == "final":
+                            final_text = ev.text
+                        elif ev.kind == "limit":
+                            final_text = ev.text
+                except Exception as exc:  # noqa: BLE001
+                    final_text = f"[agent error: {type(exc).__name__}: {exc}]"
+                self.call_from_thread(
+                    self._finalize_agent, task, final_text, time.monotonic() - t0
+                )
+
+            if _HAS_WORK:
+                self.run_worker(runner, thread=True, exclusive=True)
+            else:  # pragma: no cover
+                import threading
+
+                threading.Thread(target=runner, daemon=True).start()
+
+        def _agent_status(self, line: str) -> None:
+            try:
+                self.query_one("#log", RichLog).write(line)
+            except Exception:  # noqa: BLE001
+                pass
+
+        def _finalize_agent(self, prompt: str, reply: str, elapsed: float) -> None:
+            try:
+                stream = self.query_one("#stream", Static)
+                stream.update("")
+                stream.remove_class("live")
+                log = self.query_one("#log", RichLog)
+            except Exception:  # noqa: BLE001
+                self._streaming = False
+                return
+            self._record_turn(prompt, reply, elapsed)
+            self._post_assistant(log, reply)
+            log.write(self._telemetry_line() + "  [dim](agent)[/dim]")
             self._refresh_status()
             self._streaming = False
 
