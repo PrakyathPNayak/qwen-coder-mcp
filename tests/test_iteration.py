@@ -250,7 +250,11 @@ def test_iteration_aborts_on_budget_after_find_bugs(env, monkeypatch):
     # Loop 83: _iteration now also calls time.monotonic() once at the
     # top to capture iter_monotonic. Provide that initial tick in addition
     # to the deadline-base tick.
-    ticks = itertools.chain([1000.0, 1000.0], itertools.repeat(9999.0))
+    # Loop 107: an additional `_over_budget()` check fires between
+    # _read_file and find_bugs (after_discovery). Provide a third
+    # in-budget tick so that check passes; subsequent 9999.0 ticks
+    # then fire the after_find_bugs check.
+    ticks = itertools.chain([1000.0, 1000.0, 1000.0], itertools.repeat(9999.0))
     monkeypatch.setattr(L.time, "monotonic", lambda: next(ticks))
     monkeypatch.setenv("QWEN_LOOP_ITER_BUDGET_S", "1")
     # Only one reply needed — second call should never be reached.
@@ -3184,3 +3188,60 @@ class TestReadmeOutcomeSchemaDocumented:
         readme = (Path(L.__file__).parent.parent / "README.md").read_text(encoding="utf-8")
         for field in ("ts", "file", "outcome", "category", "phases", "wall_s", "wall_s_delta_phases"):
             assert f"`{field}`" in readme, f"timing.log field `{field}` not documented in README"
+
+
+class TestIterationBudgetCoversDiscovery:
+    """Loop 107: `_iteration_budget_seconds` deadline previously was
+    captured AFTER `_candidate_files` and `_read_file` had already run,
+    so a slow file-discovery phase (cold FS cache, huge repo) could
+    burn arbitrary wall-clock before the budget started counting. Fix:
+    deadline captured immediately after `iter_monotonic` so it covers
+    the entire iteration body, plus a new `_over_budget()` check
+    between read_file and the first Qwen call so discovery alone
+    blowing the budget short-circuits with `budget_exceeded:...:after_discovery`."""
+
+    def test_deadline_capture_precedes_candidate_files(self):
+        """AST audit: `deadline = time.monotonic() + _iteration_budget_seconds()`
+        must appear BEFORE any `_candidate_files()` call in `_iteration`."""
+        from agent import loop as L
+        import ast
+        src = Path(L.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        for func in ast.walk(tree):
+            if not (isinstance(func, ast.FunctionDef) and func.name == "_iteration"):
+                continue
+            deadline_line: int | None = None
+            candidate_line: int | None = None
+            for node in ast.walk(func):
+                if (
+                    isinstance(node, ast.Assign)
+                    and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == "deadline"
+                ):
+                    deadline_line = node.lineno
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "_candidate_files"
+                ):
+                    if candidate_line is None or node.lineno < candidate_line:
+                        candidate_line = node.lineno
+            assert deadline_line is not None and candidate_line is not None, (
+                "expected both a deadline assignment and a _candidate_files call"
+            )
+            assert deadline_line < candidate_line, (
+                f"deadline assignment at line {deadline_line} must precede "
+                f"_candidate_files() call at line {candidate_line}"
+            )
+            return
+        raise AssertionError("_iteration function not found")
+
+    def test_after_discovery_outcome_is_emitted(self):
+        from agent import loop as L
+        src = Path(L.__file__).read_text(encoding="utf-8")
+        assert "budget_exceeded:{rel}:after_discovery" in src
+
+    def test_after_discovery_category_extracts_to_budget_exceeded(self):
+        from agent import loop as L
+        assert L._outer_outcome_category("budget_exceeded:foo.py:after_discovery") == "budget_exceeded"

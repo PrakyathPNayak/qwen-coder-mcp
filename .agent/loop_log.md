@@ -1726,3 +1726,13 @@ kwarg actually forwarded. Existing tests still pass.
   - Granularity: `apply_failed:{category}:{rel}:{msg[:60]}` has internal sub-categories not documented. Out of scope -- the main contract is the leading token.
   - Risk: backticked-token search could false-positive if a category name appears backticked elsewhere in the section for a different reason. Acceptable -- the table format is deterministic.
 - ACT: ~33 README lines + 2 audit tests. 529 passed.
+
+## Loop 107 — Iteration budget didn't cover file discovery + read
+- OBSERVE: `deadline = time.monotonic() + _iteration_budget_seconds()` was set AFTER `_candidate_files()` and `_read_file()` had already executed, so a slow file-discovery phase (cold filesystem cache, huge repo, network filesystem hiccup) could burn arbitrary wall-clock without the budget caring. Budget started counting only when discovery+read finished. The first `_over_budget()` check was after find_bugs, by which point the iteration was already deep in.
+- ORIENT: P4. Real correctness gap on the budgeting contract -- the docstring says "Wall-clock ceiling for one `_iteration` call" but that ceiling didn't apply to non-Qwen phases. Probably fine for typical repos but pathological for a giant repo on a slow disk.
+- DECIDE: (1) Hoist `deadline` capture above `_candidate_files()` so the budget covers everything from iteration start. (2) Add a fresh `_over_budget()` check immediately before find_bugs so a discovery-only blowout exits with `budget_exceeded:{rel}:after_discovery`.
+- DEVIL:
+  - Correctness: hoisting `deadline` doesn't break early-exit paths. `_finish_no_file` doesn't reference `deadline` at all -- it's purely a non-Qwen sentinel. Safe.
+  - Test cascade: existing test `test_iteration_aborts_on_budget_after_find_bugs` mocks `time.monotonic()` with a fixed tick sequence. The new pre-find_bugs check consumes one extra tick. Updated tick-list to include a third in-budget value so the test still reaches the after_find_bugs branch it's asserting. Did NOT delete the old test -- after_find_bugs is still a valid downstream branch.
+  - Scope: should I also wrap discovery in a `_PhaseTimer` so timing.log shows discovery wall-clock? Tempting, but would change the schema and require README + audit updates -- defer to a separate loop.
+- ACT: Hoist `deadline` capture, add `after_discovery` check, fix existing tick-list test, add 3 new audits (deadline precedes _candidate_files in source, new outcome string present, category extraction). 532 passed.

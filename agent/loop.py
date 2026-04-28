@@ -1675,6 +1675,12 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
         _log_swallow_summaries()
         return outcome
 
+    deadline = time.monotonic() + _iteration_budget_seconds()
+    phases: dict[str, float] = {}
+
+    def _over_budget() -> bool:
+        return time.monotonic() > deadline
+
     files = _candidate_files()
     if not files:
         return _finish_no_file("no_candidate_files", Path("."))
@@ -1688,18 +1694,20 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
             f"skip:{rel} (unreadable_or_too_large)", rel
         )
 
-    deadline = time.monotonic() + _iteration_budget_seconds()
-    phases: dict[str, float] = {}
-
-    def _over_budget() -> bool:
-        return time.monotonic() > deadline
-
     def _finish(outcome: str) -> str:
         _write_timing(rel, outcome, phases, iter_monotonic=iter_monotonic)
         _log_swallow_summaries()
         return outcome
 
     _log(f"scanning {rel}")
+    # Loop 107: budget-check after file discovery + read so a slow
+    # `_candidate_files()` or `_read_file()` (e.g., huge repo with cold
+    # filesystem cache) can't burn the entire budget before the first
+    # Qwen call even starts. Without this, the first `_over_budget()`
+    # check is only after find_bugs completes, by which point
+    # discovery+read+find_bugs may have all run past the deadline.
+    if _over_budget():
+        return _finish(f"budget_exceeded:{rel}:after_discovery")
     try:
         with _PhaseTimer(phases, "find_bugs"):
             issues = client.system_user(
