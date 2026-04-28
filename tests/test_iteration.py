@@ -1038,15 +1038,17 @@ class TestWriteTimingFailureCounter:
         from agent import loop as L
         from pathlib import Path
         L._TIMING_SWALLOW_LOG.reset()
+        # Module logger uses exponential schedule. With every=100 default,
+        # 50 failures fire at counts: 1, 2, 4, 8, 16, 32 = 6 logs.
         monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "every", 100)
+        monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "schedule", "exponential")
         monkeypatch.setattr(L, "TIMING_FILE", tmp_path / "x" / "timing.log")
         monkeypatch.setattr(L, "_rotate_timing_if_oversized", lambda: (_ for _ in ()).throw(OSError("disk full")))
         log_lines = []
         monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
         for _ in range(50):
             L._write_timing(Path("a.py"), "applied:a.py", {})
-        # Only first failure logged — counts 2..50 are silent.
-        assert len(log_lines) == 1
+        assert len(log_lines) == 6  # 1, 2, 4, 8, 16, 32
         assert L._TIMING_SWALLOW_LOG.count == 50
         L._TIMING_SWALLOW_LOG.reset()
 
@@ -1054,7 +1056,9 @@ class TestWriteTimingFailureCounter:
         from agent import loop as L
         from pathlib import Path
         L._TIMING_SWALLOW_LOG.reset()
+        # Force linear schedule for predictable cadence verification.
         monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "every", 5)
+        monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "schedule", "linear")
         monkeypatch.setattr(L, "TIMING_FILE", tmp_path / "x" / "timing.log")
         monkeypatch.setattr(L, "_rotate_timing_if_oversized", lambda: (_ for _ in ()).throw(OSError("disk full")))
         log_lines = []
@@ -1113,13 +1117,15 @@ class TestRateLimitedSwallowLogger:
     def test_state_logger_used_by_append_state(self, tmp_path, monkeypatch):
         from agent import loop as L
         L._STATE_SWALLOW_LOG.reset()
+        monkeypatch.setattr(L._STATE_SWALLOW_LOG, "schedule", "linear")
+        monkeypatch.setattr(L._STATE_SWALLOW_LOG, "every", 100)
         monkeypatch.setattr(L, "_rotate_state_if_needed", lambda: (_ for _ in ()).throw(OSError("disk full")))
         log_lines = []
         monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
         for _ in range(3):
             L._append_state("entry\n")
         assert L._STATE_SWALLOW_LOG.count == 3
-        # Only first reported with default every=100.
+        # Linear with every=100: only count=1 fires.
         assert len(log_lines) == 1
         assert "_append_state failed" in log_lines[0]
         L._STATE_SWALLOW_LOG.reset()
@@ -1127,6 +1133,8 @@ class TestRateLimitedSwallowLogger:
     def test_history_logger_used_by_write_history(self, tmp_path, monkeypatch):
         from agent import loop as L
         L._HISTORY_SWALLOW_LOG.reset()
+        monkeypatch.setattr(L._HISTORY_SWALLOW_LOG, "schedule", "linear")
+        monkeypatch.setattr(L._HISTORY_SWALLOW_LOG, "every", 100)
         bad_root = tmp_path / "blocker"
         bad_root.write_text("not a dir")
         monkeypatch.setattr(L, "HISTORY_DIR", bad_root / "history")
@@ -1138,3 +1146,28 @@ class TestRateLimitedSwallowLogger:
         assert len(log_lines) == 1
         assert "_write_history failed" in log_lines[0]
         L._HISTORY_SWALLOW_LOG.reset()
+
+    def test_exponential_schedule_logs_powers_of_two(self, monkeypatch):
+        from agent import loop as L
+        logger = L._RateLimitedSwallowLogger("xyz", every=100, schedule="exponential")
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        for _ in range(64):
+            logger.report(OSError("e"))
+        # Powers of two ≤ 100: 1, 2, 4, 8, 16, 32, 64 = 7 logs.
+        assert len(log_lines) == 7
+        for expected in (1, 2, 4, 8, 16, 32, 64):
+            assert any(f"count={expected})" in l for l in log_lines)
+
+    def test_exponential_falls_back_to_linear_past_every(self, monkeypatch):
+        from agent import loop as L
+        logger = L._RateLimitedSwallowLogger("xyz", every=8, schedule="exponential")
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        for _ in range(20):
+            logger.report(OSError("e"))
+        # Powers of two ≤ 8: 1, 2, 4, 8. Then linear every 8: 16.
+        # = 5 logs at counts 1, 2, 4, 8, 16.
+        assert len(log_lines) == 5
+        for expected in (1, 2, 4, 8, 16):
+            assert any(f"count={expected})" in l for l in log_lines)

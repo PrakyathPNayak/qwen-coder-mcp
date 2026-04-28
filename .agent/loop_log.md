@@ -1338,3 +1338,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 5, was next.md #1.
 - ACT: New helper class, applied at 3 sites; loop-69 tests migrated; 5 new tests for the helper + cross-site usage. 412 passed.
 - COMMIT: pending.
+
+## Loop 71 — exponential schedule for swallow loggers
+- OBSERVE: Loop 70's `_RateLimitedSwallowLogger` defaulted to linear every=100 — counts 2..99 silent. Operator can't see "still failing" on a short fault that resolves before count 100. The cliff: a 50-iteration sustained fault would only show count=1.
+- ORIENT: Cause: linear schedule. Better: exponential 1, 2, 4, 8, …, every; then linear past every. Surfaces persistent faults fast in early iterations while still reporting infrequent late faults.
+- DECIDE: Add `schedule: str = "linear"` param. Mode "exponential" logs powers of two ≤ every, then every-N past that. Class default stays "linear" for explicit-construction callers; the 3 module-level instances opt into exponential.
+- DEVIL:
+  - Correctness: loop-69 tests broke because they assumed linear. Migrated; some assert exponential cadence directly.
+  - Scope: addresses cause (early-warning latency).
+  - Priority: bucket 5; was next.md #5.
+- ACT: Helper extended; 3 module instances switched; 2 new tests for exponential mode (powers-of-2 and post-every linear fallback). 414 passed.
+- COMMIT: pending.

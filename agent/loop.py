@@ -123,19 +123,48 @@ class _RateLimitedSwallowLogger:
 
     A persistent fault (disk full, permission denied) at a sink that runs
     once per iteration would otherwise emit one swallow-log line per
-    iteration. We log the first failure (so the operator notices) and
-    every Nth subsequent failure (so the cumulative count is observable)
-    while suppressing the spam in between.
+    iteration. We log a configurable subset:
+
+    * ``schedule="linear"`` — log when ``count == 1`` or
+      ``count % every == 0``. Predictable cadence.
+    * ``schedule="exponential"`` — log when ``count`` is a power of two
+      up to ``every`` (1, 2, 4, 8, …, ``every``), then linearly every
+      ``every`` after that. Surfaces persistent faults fast while still
+      reporting late, rare faults.
+
+    All module-level instances default to exponential because operators
+    benefit from early warning.
     """
 
-    def __init__(self, label: str, every: int = 100) -> None:
+    def __init__(
+        self,
+        label: str,
+        every: int = 100,
+        schedule: str = "linear",
+    ) -> None:
         self.label = label
         self.every = every
+        self.schedule = schedule
         self.count = 0
+
+    def _should_log(self) -> bool:
+        n = self.count
+        if n == 1:
+            return True
+        if self.schedule == "exponential":
+            # Power-of-two phase: 2, 4, 8, ..., <= every.
+            if n <= self.every and (n & (n - 1)) == 0:
+                return True
+            # Linear phase past `every`.
+            if self.every > 0 and n > self.every and n % self.every == 0:
+                return True
+            return False
+        # Linear default.
+        return self.every > 0 and n % self.every == 0
 
     def report(self, exc: BaseException) -> None:
         self.count += 1
-        if self.count == 1 or (self.every > 0 and self.count % self.every == 0):
+        if self._should_log():
             _log(f"{self.label} failed (count={self.count}): {exc}")
 
     def reset(self) -> None:
@@ -1234,8 +1263,8 @@ def _write_history(name: str, body: str) -> Path | None:
         return None
 
 
-_STATE_SWALLOW_LOG = _RateLimitedSwallowLogger("_append_state")
-_HISTORY_SWALLOW_LOG = _RateLimitedSwallowLogger("_write_history")
+_STATE_SWALLOW_LOG = _RateLimitedSwallowLogger("_append_state", schedule="exponential")
+_HISTORY_SWALLOW_LOG = _RateLimitedSwallowLogger("_write_history", schedule="exponential")
 
 
 # -------------------------------------------------------------------- core
@@ -1313,7 +1342,7 @@ def _rotate_timing_if_oversized() -> None:
     _rotate_log_if_oversized(TIMING_FILE, _timing_max_bytes())
 
 
-_TIMING_SWALLOW_LOG = _RateLimitedSwallowLogger("_write_timing")
+_TIMING_SWALLOW_LOG = _RateLimitedSwallowLogger("_write_timing", schedule="exponential")
 
 
 def _write_timing(rel: Path, outcome: str, phases: dict[str, float]) -> None:
