@@ -222,6 +222,145 @@ ALL_TOOLS: dict[str, ToolFn] = {**DEFAULT_TOOLS, **WRITE_TOOLS}
 DESTRUCTIVE_TOOLS: frozenset[str] = frozenset(WRITE_TOOLS.keys())
 
 
+# ---------------------------------------------------- memory tools (loop 246)
+# Tools that let the model self-manage the persistent TaskMemory
+# (loop 244). They are *additive*: when the QwenClient has a
+# ``task_memory`` attached, ``run_agent`` merges these into the
+# active registry so the model can keep its own context across
+# iterations and process restarts. Each tool is a closure over the
+# bound TaskMemory so the existing ToolFn signature (args, fs_cfg)
+# is preserved -- callers don't have to thread state through.
+
+def build_memory_tools(memory: Any) -> dict[str, ToolFn]:
+    """Return a dict of memory-management tools bound to ``memory``.
+
+    The model uses these to persist task state across turns so it can
+    survive context compression (loop 240/243) and process restarts
+    (loop 244 already auto-injects on read; these add the *write* path).
+
+    Returned tools (all best-effort, never raise into the loop):
+      * ``set_current_task(description: str)``
+      * ``add_todo(id: str, description: str, status: str="open")``
+      * ``update_todo(id: str, status: str)``
+      * ``complete_todo(id: str)`` -- shorthand for status="done"
+      * ``remove_todo(id: str)``
+      * ``record_fact(key: str, value: str)``
+      * ``record_decision(text: str)``
+      * ``recall_state()`` -- returns a JSON snapshot
+    """
+    if memory is None:
+        return {}
+
+    def _need(args: dict[str, Any], *keys: str) -> str | None:
+        for k in keys:
+            v = args.get(k)
+            if v is None or (isinstance(v, str) and not v.strip()):
+                return f"error: missing required arg {k!r}"
+        return None
+
+    def _set_current_task(args: dict[str, Any], _cfg: fs_tools.FsConfig) -> str:
+        err = _need(args, "description")
+        if err:
+            return err
+        memory.set_current_task(str(args["description"]).strip())
+        return f"ok: current_task set to {args['description']!s}"
+
+    def _add_todo(args: dict[str, Any], _cfg: fs_tools.FsConfig) -> str:
+        err = _need(args, "id", "description")
+        if err:
+            return err
+        status = str(args.get("status") or "open").strip() or "open"
+        memory.add_todo(str(args["id"]).strip(), str(args["description"]).strip(), status=status)
+        return f"ok: todo added: {args['id']} ({status})"
+
+    def _update_todo(args: dict[str, Any], _cfg: fs_tools.FsConfig) -> str:
+        err = _need(args, "id", "status")
+        if err:
+            return err
+        ok = memory.update_todo_status(str(args["id"]).strip(), str(args["status"]).strip())
+        if not ok:
+            return f"error: no such todo: {args['id']}"
+        return f"ok: todo {args['id']} -> {args['status']}"
+
+    def _complete_todo(args: dict[str, Any], _cfg: fs_tools.FsConfig) -> str:
+        err = _need(args, "id")
+        if err:
+            return err
+        ok = memory.update_todo_status(str(args["id"]).strip(), "done")
+        if not ok:
+            return f"error: no such todo: {args['id']}"
+        return f"ok: todo {args['id']} -> done"
+
+    def _remove_todo(args: dict[str, Any], _cfg: fs_tools.FsConfig) -> str:
+        err = _need(args, "id")
+        if err:
+            return err
+        ok = memory.remove_todo(str(args["id"]).strip())
+        if not ok:
+            return f"error: no such todo: {args['id']}"
+        return f"ok: todo removed: {args['id']}"
+
+    def _record_fact(args: dict[str, Any], _cfg: fs_tools.FsConfig) -> str:
+        err = _need(args, "key", "value")
+        if err:
+            return err
+        memory.record_fact(str(args["key"]).strip(), str(args["value"]).strip())
+        return f"ok: fact recorded: {args['key']}"
+
+    def _record_decision(args: dict[str, Any], _cfg: fs_tools.FsConfig) -> str:
+        err = _need(args, "text")
+        if err:
+            return err
+        memory.record_decision(str(args["text"]).strip())
+        return f"ok: decision recorded"
+
+    def _recall_state(_args: dict[str, Any], _cfg: fs_tools.FsConfig) -> str:
+        import json as _json
+        return _json.dumps(memory.snapshot(), indent=2, sort_keys=True)
+
+    return {
+        "set_current_task": _set_current_task,
+        "add_todo": _add_todo,
+        "update_todo": _update_todo,
+        "complete_todo": _complete_todo,
+        "remove_todo": _remove_todo,
+        "record_fact": _record_fact,
+        "record_decision": _record_decision,
+        "recall_state": _recall_state,
+    }
+
+
+MEMORY_TOOL_NAMES: frozenset[str] = frozenset({
+    "set_current_task",
+    "add_todo",
+    "update_todo",
+    "complete_todo",
+    "remove_todo",
+    "record_fact",
+    "record_decision",
+    "recall_state",
+})
+
+
+MEMORY_TOOL_PROTOCOL_DOC = """\
+Memory tools (use to persist state across turns -- survives context
+compression and process restarts):
+- set_current_task(description: str) -- replace the current task line
+- add_todo(id: str, description: str, status: str="open") -- track work
+- update_todo(id: str, status: str) -- statuses: open, in_progress, done, blocked
+- complete_todo(id: str) -- shorthand for status="done"
+- remove_todo(id: str)
+- record_fact(key: str, value: str) -- pin a key->value fact
+- record_decision(text: str) -- append a free-form decision entry
+- recall_state() -- return the full memory snapshot as JSON
+
+Use these proactively. When the user gives you a task, call
+set_current_task. When you discover a sub-task, add_todo it. When you
+finish one, complete_todo it. The next turn starts with this state
+already in your system prompt -- so you literally cannot forget.
+"""
+
+
 ConfirmFn = Callable[["ToolCall"], bool]
 
 
@@ -575,14 +714,29 @@ def run_agent(
     """
     from . import prompts as _prompts  # avoid import cycle at module top
 
+    # Loop 246: when the client has a TaskMemory, merge memory-management
+    # tools into whatever registry the caller passed (or the default) so
+    # the model can persist state across turns. The memory protocol blurb
+    # is appended to the tool protocol doc so the model knows the names.
+    memory = getattr(client, "task_memory", None)
+    memory_tools = build_memory_tools(memory) if memory is not None else {}
+    if memory_tools:
+        if tools is None:
+            tools = {**DEFAULT_TOOLS, **memory_tools}
+        else:
+            tools = {**tools, **memory_tools}
+        tool_doc = TOOL_PROTOCOL_DOC + "\n" + MEMORY_TOOL_PROTOCOL_DOC
+    else:
+        tool_doc = TOOL_PROTOCOL_DOC
+
     sys_text = system if system is not None else (
-        _prompts.CODER_SYSTEM + "\n\n" + TOOL_PROTOCOL_DOC
+        _prompts.CODER_SYSTEM + "\n\n" + tool_doc
     )
     if not history or history[0].role != "system":
         history.insert(0, ChatMessage(role="system", content=sys_text))
-    elif TOOL_PROTOCOL_DOC[:40] not in history[0].content:
+    elif tool_doc[:40] not in history[0].content:
         history[0] = ChatMessage(
-            role="system", content=history[0].content + "\n\n" + TOOL_PROTOCOL_DOC
+            role="system", content=history[0].content + "\n\n" + tool_doc
         )
 
     history.append(ChatMessage(role="user", content=user_text))
