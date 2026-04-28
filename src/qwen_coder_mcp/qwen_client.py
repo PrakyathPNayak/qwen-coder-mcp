@@ -51,6 +51,104 @@ def _strip_think_blocks(text: str) -> str:
         cleaned = _DANGLING_OPEN_THINK_RE.sub("", cleaned, count=1)
     return cleaned.strip()
 
+
+class _StreamingThinkStripFilter:
+    """Stateful chunk-level filter that drops ``<think>...</think>``
+    blocks from a streamed assistant response.
+
+    The non-streaming path strips think blocks in one pass via
+    :func:`_strip_think_blocks`. Streaming consumers (TUI, SSE
+    relays) can't apply that pass because tags may be split across
+    delta chunks (chunk1 = ``"<thi"``, chunk2 = ``"nk>...content"``).
+
+    Strategy: track an ``inside`` flag plus a small ``tail`` buffer
+    that holds back any text that *might* be the start of a tag. On
+    each :meth:`feed` call, return whatever is provably outside any
+    think block; hold the rest until enough context arrives. Call
+    :meth:`flush` at end-of-stream to release any tail not part of a
+    tag.
+
+    Limitations:
+      * Only the wrapped case is handled. The unwrapped case (Qwen3.6
+        sometimes emits ``</think>`` without a prior ``<think>``) is
+        impossible to suppress in true streaming because earlier
+        chunks are already user-visible. The non-streaming
+        :func:`_strip_think_blocks` still handles it for the
+        non-streaming path.
+      * Disable wholesale via ``QWEN_DISABLE_THINK_STRIP=1``.
+    """
+
+    # Longest tag we might see partially: ``</think >`` = 9 chars.
+    _MAX_TAG_TAIL = 9
+    _OPEN_RE = re.compile(r"<think\b[^>]*>", re.IGNORECASE)
+    _CLOSE_RE = re.compile(r"</think\s*>", re.IGNORECASE)
+
+    def __init__(self) -> None:
+        self.inside = False
+        self.tail = ""
+        self.disabled = os.environ.get(
+            "QWEN_DISABLE_THINK_STRIP", ""
+        ).lower() in {"1", "true", "yes"}
+
+    def feed(self, chunk: str) -> str:
+        if self.disabled or not chunk:
+            return chunk
+        buf = self.tail + chunk
+        self.tail = ""
+        out: list[str] = []
+        while buf:
+            if self.inside:
+                m = self._CLOSE_RE.search(buf)
+                if m is None:
+                    # Hold up to the longest possible partial-close
+                    # suffix in case the close tag straddles chunks.
+                    if len(buf) > self._MAX_TAG_TAIL:
+                        buf = buf[-self._MAX_TAG_TAIL :]
+                    self.tail = buf
+                    buf = ""
+                    break
+                # Drop everything up to and including the close tag.
+                self.inside = False
+                buf = buf[m.end() :]
+                continue
+            # Outside a think block: search for the next open tag.
+            m = self._OPEN_RE.search(buf)
+            if m is None:
+                # No complete open tag. Hold back any trailing run
+                # that *might* be the start of one (`<th`, `<thin`, ...).
+                lt = buf.rfind("<")
+                if lt != -1 and len(buf) - lt < 8:
+                    out.append(buf[:lt])
+                    self.tail = buf[lt:]
+                else:
+                    out.append(buf)
+                buf = ""
+                break
+            # Emit the prefix before the open tag, then enter the block.
+            out.append(buf[: m.start()])
+            self.inside = True
+            buf = buf[m.end() :]
+        return "".join(out)
+
+    def flush(self) -> str:
+        """Release any held-back tail at end of stream.
+
+        If we're still inside a think block when the stream ends
+        (model truncated mid-thought), drop the tail entirely. If the
+        tail contains no open tag, it's safe to emit verbatim.
+        """
+        if self.disabled:
+            tail, self.tail = self.tail, ""
+            return tail
+        if self.inside:
+            self.tail = ""
+            self.inside = False
+            return ""
+        # Outside a block, the tail can only ever be a partial-tag
+        # prefix that turned out not to be a tag. Safe to release.
+        tail, self.tail = self.tail, ""
+        return tail
+
 from .config import Settings, load_settings
 
 
@@ -424,6 +522,7 @@ class QwenClient:
                 if resp.status_code >= 500 or resp.status_code in _RETRIABLE_4XX:
                     raise QwenError(f"stream {resp.status_code}: {body}")
                 raise QwenFatalError(f"stream client error {resp.status_code}: {body}")
+            think_filter = _StreamingThinkStripFilter()
             for line in resp.iter_lines():
                 if not line:
                     continue
@@ -434,6 +533,12 @@ class QwenClient:
                 data_str = line[len("data:"):].strip()
                 if not data_str or data_str == "[DONE]":
                     if data_str == "[DONE]":
+                        # Flush any held-back tail before ending the
+                        # stream so non-tag suffix tokens still reach
+                        # the consumer.
+                        tail = think_filter.flush()
+                        if tail:
+                            yield tail
                         return
                     continue
                 try:
@@ -446,13 +551,22 @@ class QwenClient:
                     continue
                 content = delta.get("content")
                 if isinstance(content, str) and content:
-                    yield content
+                    cleaned = think_filter.feed(content)
+                    if cleaned:
+                        yield cleaned
                 elif isinstance(content, list):
                     for block in content:
                         if isinstance(block, dict) and "text" in block:
                             t = str(block["text"])
                             if t:
-                                yield t
+                                cleaned = think_filter.feed(t)
+                                if cleaned:
+                                    yield cleaned
+            # Stream ended without an explicit [DONE] sentinel; still
+            # flush so a held tail isn't silently dropped.
+            tail = think_filter.flush()
+            if tail:
+                yield tail
 
     @staticmethod
     def _extract_text(data: dict[str, Any]) -> str:

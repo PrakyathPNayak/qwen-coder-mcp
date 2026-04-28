@@ -3315,3 +3315,50 @@ ran the 4 gated tests against the live engine. All passed.
 4/4 passed in 5.55s. Carryover question from loop 164 ("does the
 live model emit `<tool_call>` syntax we can parse?") — answered
 YES live, JSON parsed cleanly out of the wrapper.
+
+## Loop 218 — streaming-mode <think> stripping
+
+**Observe.** Loop 217 fixed the non-streaming path. The streaming
+path (`chat_stream`, used by the TUI) yields raw chunks straight to
+the consumer. Tags can split across chunks (chunk1=`<thi`,
+chunk2=`nk>...`) so a per-chunk regex is wrong: it leaks both the
+tag fragments AND the content between them.
+
+**Orient.** A stateful filter with two pieces of state:
+
+- `inside`: are we currently between an open `<think>` and its close?
+- `tail`: held-back text that *might* be a tag prefix (e.g., a lone
+  `<` at chunk end, or `<thi`).
+
+Per chunk: combine with `tail`, scan for either an open tag (when
+outside) or a close tag (when inside). Emit text up to the next
+state transition; hold any partial-tag suffix in `tail`. On stream
+end (`flush()`), drop the tail if we're still inside (model
+truncated mid-thought) or release it verbatim if we're outside.
+
+**Devil.**
+- *Correctness — what about `<` in normal code?* Pinned by
+  `test_lt_in_normal_text_safe`: a `<` followed by ≥8 chars of non-
+  tag text is released; a `<` near the chunk end is held until the
+  next chunk disambiguates. Tag matcher is `<think\b[^>]*>`, so
+  `<thingy>` is correctly NOT a think tag (pinned by
+  `test_partial_tag_followed_by_non_tag`). ✅
+- *Correctness — unwrapped case?* CANNOT be fixed in true streaming;
+  earlier chunks are already user-visible by the time `</think>`
+  arrives. Documented limitation. The loop-217 non-streaming strip
+  still handles this case for the non-streaming path. The TUI
+  could opt-in to a "buffer first N tokens" prefix-buffering policy
+  later if this becomes a real problem; deferred. ⚠️
+- *Correctness — truncated stream?* `flush()` drops the tail if we
+  ended inside a block (`test_truncated_mid_block_drops_tail`). ✅
+- *Scope — does this break existing `chat_stream` callers?* The
+  filter is a no-op for any response without `<think>` tags
+  (passthrough test pinned). Disable via `QWEN_DISABLE_THINK_STRIP=1`
+  preserved. ✅
+- *Priority* — P1. The TUI is the user-facing path; loop 217 fixed
+  the agent loop's parser, this fixes the human's terminal.
+
+**Act.** New `_StreamingThinkStripFilter` class + 12 unit tests + 4
+integration tests through `chat_stream` with mocked SSE.
+
+**Verify.** Full suite 1409 passed, 6 skipped (was 1392 + 17).
