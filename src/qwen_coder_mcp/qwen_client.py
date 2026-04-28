@@ -145,10 +145,22 @@ class QwenClient:
         *,
         temperature: float = 0.2,
         max_tokens: int | None = None,
+        top_p: float = 0.95,
+        stop: Iterable[str] | None = None,
+        extra: dict[str, Any] | None = None,
+        max_retries: int = 3,
     ) -> str:
-        """One-shot system+user prompt, returns text."""
+        """One-shot system+user prompt, returns text.
+
+        All sampling kwargs forward to :meth:`chat` so callers retain
+        full control over generation; defaults match :meth:`chat`.
+        """
         return self.chat(
             [ChatMessage("system", system), ChatMessage("user", user)],
             temperature=temperature,
             max_tokens=max_tokens,
+            top_p=top_p,
+            stop=stop,
+            extra=extra,
+            max_retries=max_retries,
         )

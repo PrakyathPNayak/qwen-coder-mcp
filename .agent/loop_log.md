@@ -729,3 +729,27 @@ reject-lines, end-to-end `oversized_diff:` prefix, ordering check
 (oversized takes precedence over path-unsafe).
 
 **Result**: 207/207 green.
+
+## Loop 25 — `system_user` lossy kwargs passthrough
+**Bug**: `QwenClient.system_user` only forwarded `temperature` and
+`max_tokens` to `chat`. Callers couldn't set `top_p`, `stop`,
+`extra`, or `max_retries`. The agent loop happens to use only the
+two forwarded kwargs, but the contract was silently lossy: a future
+caller asking for `stop=["</s>"]` would have it discarded with no
+warning.
+
+**Devil**: (a) Correctness — adding kwargs with same defaults as
+`chat` doesn't change any current behavior. Tested via "defaults
+match" assertion. (b) Could `extra` be misused to override `model`
+field? Yes, but `chat` already does `payload.update(extra)` with
+that risk; not new. (c) Priority — moderate; contract gap with no
+current bug, but inevitable foot-gun. Cheap fix.
+
+**Fix**: `system_user` now accepts `top_p`, `stop`, `extra`,
+`max_retries` and forwards them. Defaults match `chat`.
+
+**Tests**: 3 new in `tests/test_qwen_client.py` — full passthrough
+verified by inspecting outbound payload, defaults match `chat`
+defaults, `max_retries=1` actually limits retries.
+
+**Result**: 210/210 green.

@@ -208,3 +208,63 @@ def test_content_as_list_of_blocks_extracted():
     c = _client_with(handler)
     out = c.chat([ChatMessage("user", "hi")])
     assert "alpha" in out and "beta" in out
+
+
+# --------------------------------------------------- system_user passthrough
+def test_system_user_forwards_temperature_max_tokens_top_p_stop_extra():
+    seen: dict = {}
+
+    def handler(request):
+        import json
+        seen.update(json.loads(request.content))
+        return _ok_response("ok")
+
+    c = _client_with(handler)
+    out = c.system_user(
+        "sys", "usr",
+        temperature=0.05,
+        max_tokens=128,
+        top_p=0.42,
+        stop=["</s>", "EOF"],
+        extra={"presence_penalty": 0.1},
+    )
+    assert out == "ok"
+    assert seen["temperature"] == 0.05
+    assert seen["max_tokens"] == 128
+    assert seen["top_p"] == 0.42
+    assert seen["stop"] == ["</s>", "EOF"]
+    assert seen["presence_penalty"] == 0.1
+    # And the messages were assembled correctly:
+    assert seen["messages"][0] == {"role": "system", "content": "sys"}
+    assert seen["messages"][1] == {"role": "user", "content": "usr"}
+
+
+def test_system_user_default_kwargs_match_chat_defaults():
+    seen: dict = {}
+
+    def handler(request):
+        import json
+        seen.update(json.loads(request.content))
+        return _ok_response("ok")
+
+    c = _client_with(handler)
+    c.system_user("sys", "usr")
+    # Defaults: temperature=0.2, top_p=0.95, max_tokens falls back to settings.max_tokens (64).
+    assert seen["temperature"] == 0.2
+    assert seen["top_p"] == 0.95
+    assert seen["max_tokens"] == 64
+    assert "stop" not in seen
+
+
+def test_system_user_max_retries_forwarded():
+    """If max_retries=1 is forwarded, a 5xx burst raises after one attempt."""
+    calls = {"n": 0}
+
+    def handler(_request):
+        calls["n"] += 1
+        return httpx.Response(503, json={"error": "down"})
+
+    c = _client_with(handler)
+    with pytest.raises(QwenError):
+        c.system_user("sys", "usr", max_retries=1)
+    assert calls["n"] == 1
