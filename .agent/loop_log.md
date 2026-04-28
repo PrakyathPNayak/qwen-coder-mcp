@@ -974,3 +974,11 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: precision in the safety stack — false-positives reject legit fixes.
 - ACT: tightened condition. Added 3 tests + 1 no-newline lock-in. 257/257 green.
 - COMMIT: pending.
+
+## Loop 37 — `QwenClient.chat()` wall-clock budget
+- OBSERVE: per-iteration budget bounds outer loop; `chat()` itself can still consume max_retries × (timeout + backoff) before the iteration check fires.
+- ORIENT: defense in depth — let the per-call ceiling engage so the iteration budget can advance.
+- DECIDE: introduce `_chat_total_budget_seconds()` (env `QWEN_CHAT_BUDGET_S`, default 300s, fallback on bad/<=0). Compute `chat_deadline` once at chat() entry; pre-attempt check raises QwenError with "budget exceeded"; backoff sleep is clamped to remaining budget.
+- DEVIL: (1) Default 300s leaves headroom over httpx 120s + backoff; configurable. (2) Cause-level. (3) Higher leverage than further path-validator polish.
+- ACT: edits in qwen_client.py; 5 new tests covering helper defaults/override/invalid, aborted retry, and happy path. 262/262.
+- COMMIT: pending.

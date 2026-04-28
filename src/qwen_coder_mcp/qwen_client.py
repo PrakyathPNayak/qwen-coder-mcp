@@ -40,6 +40,22 @@ class QwenFatalError(QwenError):
 _RETRIABLE_4XX = frozenset({408, 425, 429})
 
 
+def _chat_total_budget_seconds() -> float:
+    """Wall-clock ceiling for one `chat()` call across all retries.
+    Per-request httpx timeout protects individual attempts; this cap
+    bounds the *aggregate* time including backoff sleeps so a flaky
+    backend can't exhaust the per-iteration budget on a single call."""
+    import os as _os
+    raw = _os.environ.get("QWEN_CHAT_BUDGET_S", "300")
+    try:
+        v = float(raw)
+        if v <= 0:
+            return 300.0
+        return v
+    except (TypeError, ValueError):
+        return 300.0
+
+
 class QwenClient:
     """Thin OpenAI-compatible client with retries and sane defaults."""
 
@@ -104,7 +120,12 @@ class QwenClient:
             payload.update(extra)
 
         last_err: Exception | None = None
+        chat_deadline = time.monotonic() + _chat_total_budget_seconds()
         for attempt in range(max_retries):
+            if time.monotonic() > chat_deadline:
+                raise QwenError(
+                    f"chat budget exceeded after {attempt} attempts: {last_err}"
+                )
             try:
                 resp = self._client.post("/chat/completions", json=payload)
                 if resp.status_code >= 500:
@@ -127,7 +148,11 @@ class QwenClient:
             except (httpx.HTTPError, QwenError, json.JSONDecodeError) as exc:
                 last_err = exc
                 sleep = min(2**attempt, 10)
-                time.sleep(sleep)
+                # Don't sleep past the deadline.
+                remaining = chat_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(sleep, remaining))
         raise QwenError(f"chat failed after {max_retries} attempts: {last_err}")
 
     @staticmethod

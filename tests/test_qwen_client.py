@@ -397,3 +397,59 @@ def test_extra_with_only_safe_keys_still_works():
     # Reserved keys remain client-controlled.
     assert seen["model"] == "qwen3.6-27b"
     assert seen["stream"] is False
+
+
+# ----------------------------------------- chat() wall-clock budget
+def test_chat_budget_helper_default(monkeypatch):
+    from qwen_coder_mcp import qwen_client as Q
+    monkeypatch.delenv("QWEN_CHAT_BUDGET_S", raising=False)
+    assert Q._chat_total_budget_seconds() == 300.0
+
+
+def test_chat_budget_helper_env_override(monkeypatch):
+    from qwen_coder_mcp import qwen_client as Q
+    monkeypatch.setenv("QWEN_CHAT_BUDGET_S", "42.5")
+    assert Q._chat_total_budget_seconds() == 42.5
+
+
+def test_chat_budget_helper_invalid(monkeypatch):
+    from qwen_coder_mcp import qwen_client as Q
+    monkeypatch.setenv("QWEN_CHAT_BUDGET_S", "nope")
+    assert Q._chat_total_budget_seconds() == 300.0
+    monkeypatch.setenv("QWEN_CHAT_BUDGET_S", "0")
+    assert Q._chat_total_budget_seconds() == 300.0
+    monkeypatch.setenv("QWEN_CHAT_BUDGET_S", "-1")
+    assert Q._chat_total_budget_seconds() == 300.0
+
+
+def test_chat_aborts_on_budget_after_first_attempt(monkeypatch):
+    """Drive monotonic forward past the deadline before the second
+    retry. The loop must raise QwenError with `budget exceeded`."""
+    from qwen_coder_mcp import qwen_client as Q
+    import itertools
+
+    # First read sets the deadline (t0 + 300s); subsequent reads jump
+    # far past it so the very first iteration's pre-attempt check
+    # AFTER the first retry's sleep tail will trip.
+    ticks = itertools.chain(
+        [1000.0],   # deadline computation: t0
+        [1000.5],   # first iteration's pre-attempt check (under deadline)
+        [99999.0],  # remaining-time check before sleep -> remaining <= 0
+        itertools.repeat(99999.0),  # second iteration's pre-attempt check
+    )
+    monkeypatch.setattr(Q.time, "monotonic", lambda: next(ticks))
+
+    def transient_handler(_request):
+        return httpx.Response(503, text="transient")
+
+    c = _client_with(transient_handler)
+    with pytest.raises(QwenError) as ei:
+        c.chat([ChatMessage("user", "hi")], max_retries=5)
+    msg = str(ei.value)
+    assert "budget exceeded" in msg or "failed after" in msg
+
+
+def test_chat_succeeds_within_budget():
+    """Sanity: a successful first-try call doesn't trip the budget."""
+    c = _client_with(lambda _r: _ok_response("ok"))
+    assert c.chat([ChatMessage("user", "hi")]) == "ok"
