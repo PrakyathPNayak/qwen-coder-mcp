@@ -1997,3 +1997,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P3 user-visible affordance, no risk of regression because telemetry is purely additive on the App layer and the helper is pure.
 - ACT: estimate_tokens helper, slash tokens dispatcher branch, App now records last_turn_tokens, last_turn_seconds, total_tokens, total_turns and writes a dim telemetry line after every chat reply. Five new tests. Seven hundred eighty one passed.
 
+
+## Loop 138 — /sysprompt and /model slash commands
+- DECIDE: claude code lets you swap system prompt mid session and copilot can switch model. Add slash sysprompt and slash model.
+- DEVIL:
+  - Correctness: Settings is a frozen dataclass so setattr would TypeError. Use object dot dunder setattr to bypass. Tested both show and set paths plus a no-settings client guard.
+  - Scope: replacing the system prompt mid-history could confuse the model on the next turn but that is the user's intent. Document by echoing char count and showing the current prompt on bare slash sysprompt.
+  - Priority: P3 user-requested parity, no risk to core flow.
+- ACT: slash sysprompt with show / replace / insert behavior. slash model with show / set behavior using object dunder setattr to mutate the frozen settings dataclass. Seven new tests. Seven hundred eighty eight passed.
+

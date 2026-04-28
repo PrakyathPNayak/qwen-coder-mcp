@@ -868,3 +868,124 @@ class TestTokensSlash:
             history=None,
         )
         assert "no history" in text
+
+
+# ----------------------------------------------------------- Loop 138
+class TestSysPromptSlash:
+    def test_show_when_present(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history = [ChatMessage(role="system", content="be brief")]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/sysprompt"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "be brief" in text
+
+    def test_show_when_missing(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/sysprompt"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "(none)" in text
+
+    def test_replace_existing(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history = [
+            ChatMessage(role="system", content="old"),
+            ChatMessage(role="user", content="hi"),
+        ]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/sysprompt act as a python tutor"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "set" in text
+        assert history[0].role == "system"
+        assert history[0].content == "act as a python tutor"
+        # User message preserved.
+        assert history[1].role == "user"
+
+    def test_insert_when_absent(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = []
+        tui.dispatch_slash(
+            tui.parse_slash("/sysprompt brand new"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert len(history) == 1
+        assert history[0].role == "system"
+        assert history[0].content == "brand new"
+
+
+class TestModelSlash:
+    def test_shows_current(self, tmp_path: Path) -> None:
+        from qwen_coder_mcp.config import Settings
+        cfg = fs_tools.FsConfig(root=tmp_path)
+
+        class C:
+            settings = Settings(
+                base_url="http://x",
+                api_key="k",
+                model="qwen-foo",
+                timeout=5.0,
+                max_tokens=10,
+                loop_interval_seconds=1,
+                loop_max_file_bytes=1000,
+                loop_push=False,
+            )
+
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/model"),
+            client=C(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "qwen-foo" in text
+
+    def test_sets_new(self, tmp_path: Path) -> None:
+        from qwen_coder_mcp.config import Settings
+        cfg = fs_tools.FsConfig(root=tmp_path)
+
+        class C:
+            settings = Settings(
+                base_url="http://x",
+                api_key="k",
+                model="qwen-foo",
+                timeout=5.0,
+                max_tokens=10,
+                loop_interval_seconds=1,
+                loop_max_file_bytes=1000,
+                loop_push=False,
+            )
+
+        client_obj = C()
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/model qwen-bar"),
+            client=client_obj,
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "qwen-bar" in text
+        assert client_obj.settings.model == "qwen-bar"
+
+    def test_no_settings(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+
+        class C:
+            pass
+
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/model qwen-baz"),
+            client=C(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "no settings" in text

@@ -85,6 +85,8 @@ Slash commands:
   /git <subcmd>        Read-only git status / log / diff / show / branch
   /tests [args]        Run pytest in the repo
   /tokens              Estimate total tokens in current chat history
+  /sysprompt [text]    Show or replace the system prompt
+  /model [id]          Show or switch the served model id
   /quit                Exit
 
 @<path> tokens in plain chat are expanded inline as file contents.
@@ -477,6 +479,31 @@ def dispatch_slash(
             f"~{total} tokens across {msgs} messages "
             f"(rough estimate, four characters per token)"
         ), False
+    if name == "sysprompt":
+        if history is None:
+            return "no history available", False
+        if not cmd.rest:
+            cur = history[0].content if history and history[0].role == "system" else "(none)"
+            return f"current system prompt:\n{cur}", False
+        new_text = cmd.rest
+        if history and history[0].role == "system":
+            history[0] = ChatMessage(role="system", content=new_text)
+        else:
+            history.insert(0, ChatMessage(role="system", content=new_text))
+        return f"(system prompt set, {len(new_text)} chars)", False
+    if name == "model":
+        settings = getattr(client, "settings", None)
+        cur = getattr(settings, "model", None) or "(unknown)"
+        if not cmd.args:
+            return f"current model: {cur}", False
+        new_model = cmd.args[0]
+        if settings is None:
+            return "client has no settings; cannot set model", False
+        try:
+            object.__setattr__(settings, "model", new_model)
+        except Exception as exc:  # noqa: BLE001
+            return f"could not set model: {type(exc).__name__}: {exc}", False
+        return f"(model set: {new_model})", False
     return f"unknown command: /{name}  (try /help)", False
 
 
