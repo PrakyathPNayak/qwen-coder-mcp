@@ -741,6 +741,23 @@ def run_agent(
 
     history.append(ChatMessage(role="user", content=user_text))
 
+    # Loop 248: auto-seed current_task from the user's request on every
+    # agent turn so the model literally cannot forget what it was asked.
+    # We only set it when the user actually said something (skip empty
+    # prompts) and we always overwrite — the user's most recent request
+    # IS the current task. Truncated to 240 chars to keep the injected
+    # system block compact; the full text still lives in history.
+    # Bounded inside try/except so a memory glitch can't break the turn.
+    if memory is not None:
+        try:
+            seed = (user_text or "").strip()
+            if seed:
+                if len(seed) > 240:
+                    seed = seed[:237] + "..."
+                memory.set_current_task(seed)
+        except Exception:  # noqa: BLE001
+            pass
+
     use_stream = stream and hasattr(client, "chat_stream")
 
     tool_count = 0

@@ -271,3 +271,144 @@ class TestRunAgentMergesMemoryTools:
         assert history[0].role == "system"
         assert "Memory tools" in history[0].content
         assert "set_current_task" in history[0].content
+
+
+# ============================================================================
+# Loop 248 — run_agent auto-seeds current_task from user_text
+# ============================================================================
+class TestAutoSeedCurrentTask:
+    """When a TaskMemory is attached, run_agent must record the user's
+    request as current_task on every turn so the model literally cannot
+    forget it. Skips empty prompts. Truncates very long prompts to keep
+    the auto-injected system block compact."""
+
+    def _mock_client(self, *, memory, replies):
+        class _C:
+            def __init__(self):
+                self.task_memory = memory
+                self._replies = list(replies)
+
+            def chat(self, history, **_kw):
+                if not self._replies:
+                    return ""
+                return self._replies.pop(0)
+
+        return _C()
+
+    def test_seeds_current_task_from_user_text(self, memory, cfg):
+        client = self._mock_client(memory=memory, replies=["sure"])
+        list(
+            agent_loop.run_agent(
+                history=[],
+                user_text="implement loop 248 auto-seed",
+                client=client,
+                fs_cfg=cfg,
+                stream=False,
+                max_steps=2,
+            )
+        )
+        assert memory.snapshot()["current_task"] == "implement loop 248 auto-seed"
+
+    def test_overwrites_existing_current_task(self, memory, cfg):
+        memory.set_current_task("stale task from earlier session")
+        client = self._mock_client(memory=memory, replies=["ok"])
+        list(
+            agent_loop.run_agent(
+                history=[],
+                user_text="actually do this thing instead",
+                client=client,
+                fs_cfg=cfg,
+                stream=False,
+                max_steps=2,
+            )
+        )
+        assert memory.snapshot()["current_task"] == "actually do this thing instead"
+
+    def test_truncates_very_long_prompts(self, memory, cfg):
+        client = self._mock_client(memory=memory, replies=["ok"])
+        long_prompt = "x" * 500
+        list(
+            agent_loop.run_agent(
+                history=[],
+                user_text=long_prompt,
+                client=client,
+                fs_cfg=cfg,
+                stream=False,
+                max_steps=2,
+            )
+        )
+        ct = memory.snapshot()["current_task"]
+        assert len(ct) <= 240
+        assert ct.endswith("...")
+
+    def test_skips_empty_prompts(self, memory, cfg):
+        memory.set_current_task("preserved")
+        client = self._mock_client(memory=memory, replies=["ok"])
+        list(
+            agent_loop.run_agent(
+                history=[],
+                user_text="   ",
+                client=client,
+                fs_cfg=cfg,
+                stream=False,
+                max_steps=2,
+            )
+        )
+        # Empty user_text must NOT clobber an existing task.
+        assert memory.snapshot()["current_task"] == "preserved"
+
+    def test_no_memory_attached_is_noop(self, cfg):
+        # Sanity: when no memory, the auto-seed path is skipped silently.
+        class _C:
+            task_memory = None
+
+            def chat(self, history, **_kw):
+                return "ok"
+
+        client = _C()
+        # Must not raise.
+        list(
+            agent_loop.run_agent(
+                history=[],
+                user_text="anything",
+                client=client,
+                fs_cfg=cfg,
+                stream=False,
+                max_steps=2,
+            )
+        )
+
+    def test_memory_failure_does_not_break_turn(self, cfg):
+        """If set_current_task raises, the turn must still complete."""
+
+        class _BoomMemory:
+            def set_current_task(self, _desc):
+                raise RuntimeError("boom")
+
+            def snapshot(self):
+                return {"current_task": "", "todos": [], "facts": {}, "decisions": []}
+
+            def is_empty(self):
+                return True
+
+            def to_system_prompt(self):
+                return ""
+
+        class _C:
+            task_memory = _BoomMemory()
+
+            def chat(self, history, **_kw):
+                return "final"
+
+        client = _C()
+        events = list(
+            agent_loop.run_agent(
+                history=[],
+                user_text="hi",
+                client=client,
+                fs_cfg=cfg,
+                stream=False,
+                max_steps=2,
+            )
+        )
+        assert any(e.kind == "final" for e in events)
