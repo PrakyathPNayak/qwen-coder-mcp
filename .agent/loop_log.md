@@ -1475,3 +1475,15 @@ kwarg actually forwarded. Existing tests still pass.
   - Edge: clamping uses `_env_int_capped`, identical to other env vars.
 - ACT: 4 new tests (silent on zero, emits-with-counts, broken-logger-survives, env clamp). 458 passed.
 - COMMIT: pending.
+
+## Loop 83 — total iteration wallclock in timing.log via `wall_s`
+- OBSERVE: timing.log records per-phase wallclock but doesn't capture total iteration time. `sum(phases.values())` excludes scaffolding (between-phase work, error paths). Long iterations from slow scaffolding aren't visible.
+- ORIENT: Capture `iter_monotonic = time.monotonic()` at top of `_iteration`, pass through `_finish` → `_write_timing`, emit as `wall_s` field.
+- DECIDE: Optional kwarg `iter_monotonic` on `_write_timing` keeps backward-compat (direct test callers without the arg still work). When provided, record gets `wall_s = round(monotonic() - iter_monotonic, 4)`.
+- DEVIL:
+  - Correctness: monotonic clock guaranteed by stdlib. ✓
+  - Scope: deadline still uses its own `time.monotonic()` call (semantics: "from this point forward"); intentionally not collapsed with iter_monotonic to keep budget arithmetic local.
+  - Edge: existing budget test patched `time.monotonic` with a 1-element chain; my new `iter_monotonic = time.monotonic()` consumed that tick. Migrated the test to `[1000.0, 1000.0]` so deadline still gets a low base.
+  - Edge: `wall_s` rounded to 4 decimal places, matching phase-time precision.
+- ACT: 3 new tests (write_timing-includes-wall_s, omits-without-arg, end-to-end). Migrated 1 budget test. 461 passed.
+- COMMIT: pending.

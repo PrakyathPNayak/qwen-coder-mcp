@@ -247,7 +247,10 @@ def test_iteration_aborts_on_budget_after_find_bugs(env, monkeypatch):
     # Drive the clock manually: first read sets the deadline, every
     # subsequent read returns a value far past it.
     import itertools
-    ticks = itertools.chain([1000.0], itertools.repeat(9999.0))
+    # Loop 83: _iteration now also calls time.monotonic() once at the
+    # top to capture iter_monotonic. Provide that initial tick in addition
+    # to the deadline-base tick.
+    ticks = itertools.chain([1000.0, 1000.0], itertools.repeat(9999.0))
     monkeypatch.setattr(L.time, "monotonic", lambda: next(ticks))
     monkeypatch.setenv("QWEN_LOOP_ITER_BUDGET_S", "1")
     # Only one reply needed — second call should never be reached.
@@ -1873,3 +1876,45 @@ class TestAggregateSwallowSummary:
         assert L._aggregate_summary_every() == L._AGGREGATE_SUMMARY_EVERY_DEFAULT
         monkeypatch.setenv("QWEN_AGGREGATE_SUMMARY_EVERY", "50")
         assert L._aggregate_summary_every() == 50
+
+
+class TestTimingWallSeconds:
+    """Loop 83: timing.log records include `wall_s` total iteration
+    wallclock so analytics can distinguish slow Qwen response from slow
+    scaffolding."""
+
+    def test_write_timing_includes_wall_s_when_iter_monotonic_given(
+        self, env, monkeypatch
+    ):
+        from agent import loop as L
+        import json
+        # _write_timing makes one time.monotonic() call when iter_monotonic
+        # is provided. Force it to return 105.5 → delta = 5.5.
+        monkeypatch.setattr(L.time, "monotonic", lambda: 105.5)
+        from pathlib import Path
+        L._write_timing(Path("f.py"), "ok", {"x": 0.1}, iter_monotonic=100.0)
+        # Read last line.
+        line = L.TIMING_FILE.read_text().splitlines()[-1]
+        rec = json.loads(line)
+        assert "wall_s" in rec
+        assert rec["wall_s"] == 5.5
+
+    def test_write_timing_omits_wall_s_when_no_iter_monotonic(self, env):
+        from agent import loop as L
+        import json
+        from pathlib import Path
+        L._write_timing(Path("f.py"), "ok", {"x": 0.1})
+        rec = json.loads(L.TIMING_FILE.read_text().splitlines()[-1])
+        assert "wall_s" not in rec
+
+    def test_iteration_writes_wall_s_to_timing(self, env, monkeypatch):
+        """End-to-end: a real iteration produces a timing record with
+        wall_s populated (since `_iteration` always passes it through)."""
+        from agent import loop as L
+        import json
+        client = _ScriptedClient(["\n   \n"])  # empty issue → quick exit
+        L._iteration(client, max_bytes=10_000, push=False)
+        rec = json.loads(L.TIMING_FILE.read_text().splitlines()[-1])
+        assert "wall_s" in rec
+        assert isinstance(rec["wall_s"], (int, float))
+        assert rec["wall_s"] >= 0.0

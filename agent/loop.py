@@ -1517,12 +1517,25 @@ def _log_swallow_summaries() -> None:
         pass
 
 
-def _write_timing(rel: Path, outcome: str, phases: dict[str, float]) -> None:
+def _write_timing(
+    rel: Path,
+    outcome: str,
+    phases: dict[str, float],
+    *,
+    iter_monotonic: float | None = None,
+) -> None:
     """Append one JSON line per iteration capturing per-phase wallclock.
 
     Phases are recorded only when actually entered, so an early-exit
     iteration produces a partial record. Failures are swallowed: timing
     is observability, not correctness, and must never break the loop.
+
+    When ``iter_monotonic`` is provided (the ``time.monotonic()`` value
+    captured at the start of ``_iteration``), the record includes a
+    ``wall_s`` field with the total iteration wallclock. Unlike
+    ``sum(phases.values())`` this also captures unnamed scaffolding time
+    (between phases, error paths) so analytics can distinguish "slow
+    Qwen response" from "slow setup/teardown".
 
     Failure logging is rate-limited via `_RateLimitedSwallowLogger` so a
     persistent fault (disk full, permission denied) doesn't fill
@@ -1534,13 +1547,15 @@ def _write_timing(rel: Path, outcome: str, phases: dict[str, float]) -> None:
         import json
         TIMING_FILE.parent.mkdir(parents=True, exist_ok=True)
         _rotate_timing_if_oversized()
-        record = {
+        record: dict[str, object] = {
             "ts": _now(),
             "file": rel.as_posix(),
             "outcome": outcome,
             "category": _outer_outcome_category(outcome),
             "phases": {k: round(v, 4) for k, v in phases.items()},
         }
+        if iter_monotonic is not None:
+            record["wall_s"] = round(time.monotonic() - iter_monotonic, 4)
         with TIMING_FILE.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
     except Exception as exc:  # never break the loop on logging
@@ -1576,6 +1591,7 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
     # and produce records that *look* like they came from different
     # iterations on later log review.
     iter_ts = _now()
+    iter_monotonic = time.monotonic()
 
     files = _candidate_files()
     if not files:
@@ -1595,7 +1611,7 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
         return time.monotonic() > deadline
 
     def _finish(outcome: str) -> str:
-        _write_timing(rel, outcome, phases)
+        _write_timing(rel, outcome, phases, iter_monotonic=iter_monotonic)
         _log_swallow_summaries()
         return outcome
 
