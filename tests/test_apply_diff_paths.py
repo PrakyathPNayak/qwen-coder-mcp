@@ -212,3 +212,75 @@ def test_has_unsafe_mode_ignores_mode_in_content_lines():
         "@@ -1 +1 @@\n-x\n+# permissions: 120000 was the old mode\n"
     )
     assert loop._has_unsafe_mode(diff) is None
+
+
+# ----------------------------------------------------------- binary-patch tests
+def test_apply_diff_rejects_git_binary_patch():
+    diff = (
+        "diff --git a/img.png b/img.png\n"
+        "index 0000000..abcdef 100644\n"
+        "GIT binary patch\n"
+        "literal 16\n"
+        "zcmZ?w...base85...\n"
+    )
+    ok, msg = loop._apply_diff(diff)
+    assert ok is False
+    assert msg.startswith("binary_patch:")
+    assert "git_binary_patch" in msg
+
+
+def test_apply_diff_rejects_binary_files_differ_marker():
+    diff = (
+        "diff --git a/img.png b/img.png\n"
+        "Binary files a/img.png and b/img.png differ\n"
+    )
+    ok, msg = loop._apply_diff(diff)
+    assert ok is False
+    assert msg.startswith("binary_patch:")
+    assert "binary_files_marker" in msg
+
+
+def test_has_binary_patch_ignores_phrase_in_content():
+    """A `+` content line that mentions 'Binary files' (e.g. in docs) is
+    not a binary-patch marker."""
+    diff = (
+        "--- a/README.md\n+++ b/README.md\n"
+        "@@ -1 +1,2 @@\n x\n"
+        "+# Note: 'Binary files differ' is git's marker for non-text diffs.\n"
+    )
+    assert loop._has_binary_patch(diff) is None
+
+
+def test_has_binary_patch_ignores_phrase_in_minus_line():
+    """A `-` content line removing prose that contains the phrase must
+    not be flagged either (it's deletion, not binary)."""
+    diff = (
+        "--- a/README.md\n+++ b/README.md\n"
+        "@@ -1,2 +1 @@\n"
+        "-Binary files explained\n x\n"
+    )
+    assert loop._has_binary_patch(diff) is None
+
+
+def test_has_binary_patch_ignores_context_line_inside_hunk():
+    """A context line (leading space) inside a hunk that happens to read
+    'Binary files X and Y differ' is data, not a marker."""
+    diff = (
+        "--- a/README.md\n+++ b/README.md\n"
+        "@@ -1,3 +1,3 @@\n"
+        " Binary files a/x and b/y differ\n"  # context line, not marker
+        "-old\n+new\n"
+    )
+    assert loop._has_binary_patch(diff) is None
+
+
+def test_has_binary_patch_resumes_header_check_in_next_file():
+    """A multi-file diff where the second file is binary — the marker
+    appears outside the first file's hunk, so it must be caught."""
+    diff = (
+        "--- a/README.md\n+++ b/README.md\n"
+        "@@ -1 +1 @@\n-x\n+y\n"
+        "diff --git a/img.png b/img.png\n"
+        "Binary files a/img.png and b/img.png differ\n"
+    )
+    assert loop._has_binary_patch(diff) == "binary_files_marker"

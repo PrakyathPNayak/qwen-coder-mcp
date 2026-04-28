@@ -584,3 +584,33 @@ _rename_failure_even_if_log_fails` asserts a broken logger doesn't
 crash the loop.
 
 **Result**: 181/181 green.
+
+## Loop 20 — `_apply_diff` accepted binary patches
+**Bug**: `_apply_diff`'s safety stack rejected unsafe paths and modes,
+but a model emitting `Binary files a/x and b/y differ` (no-op marker)
+or a real `GIT binary patch\nliteral N\n<base85>` block would slip
+through to `git apply`. The latter could write arbitrary bytes to
+files in the repo. The former is benign but indicates the model
+misunderstood the task and we'd silently commit a no-op as "applied".
+
+**Devil**: (a) Correctness — does our predicate flag content that
+just *mentions* the phrase? Initial impl used line-strip; a markdown
+context line ` Binary files a/x and b/y differ` would match. Fixed by
+restricting the scan to header lines (everything before `@@` per
+file), and re-arming after a new `diff --git` / `---` boundary.
+Added two regression tests. (b) Scope — root cause is "model output
+is untrusted"; this is one more layer of the existing defense in
+depth, alongside path/mode/structural checks. Not addressing
+"validate model is sane", which is a different problem. (c) Priority
+ image-corruption / arbitrary-bytes scenario is plausible and the
+fix is small.
+
+**Fix**: `_has_binary_patch(diff)` returns `git_binary_patch` /
+`binary_files_marker` / None. Wired into `_apply_diff` between path
+and mode checks. Returns `binary_patch:<reason>` on rejection.
+
+**Tests**: 6 new in `tests/test_apply_diff_paths.py` — accept-reject
+for both markers, ignore-in-content (+ line, - line, context line),
+re-arm after second file.
+
+**Result**: 187/187 green.

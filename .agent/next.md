@@ -1,23 +1,19 @@
 # Next loop seed
 
 ## Candidates ranked
-1. **(P5) `_apply_diff` audit for binary-patch markers** —
-   `Binary files differ` lines should be rejected; we don't want a
-   model dropping binary blobs. Plus `GIT binary patch`
-   block-format hunks.
+1. **(P7) `_strip_fence` empty-language fence audit** —
+   bare ``` with no language tag.
 
-2. **(P7) `_strip_fence` empty-language case** — bare ``` fence with
-   no language tag.
+2. **(P7) `qwen_client.system_user` kwargs passthrough contract** —
+   does it forward `temperature` / `max_tokens` to `chat`?
 
-3. **(P7) `qwen_client.system_user`** — passes through `temperature`
-   and other kwargs to `chat`? Contract test.
+3. **(P8) `.agent/loop_log.md` rotation** — mirror STATE.md rotation.
 
-4. **(P8) `.agent/loop_log.md` rotation** — same logic as STATE.md.
+4. **(P6) `_iteration` clamp the model's diff size** before apply —
+   reject diffs larger than configurable threshold (e.g. 64KB or
+   N*original).
 
-5. **(P6) `_iteration` should clamp the model's diff size** before
-   apply — a diff larger than the original file is suspicious. Add
-   a configurable max-diff-size guard.
+5. **(P5) `_apply_diff` audit for `rename from`/`rename to`** —
+   does git-apply use them and do they evade our path check?
 
-## Reminder
-- vLLM check every few loops.
-- Never end output with a question, never pause.
+6. Re-read `agent/loop.py` for next round.

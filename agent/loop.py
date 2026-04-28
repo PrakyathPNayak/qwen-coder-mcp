@@ -291,6 +291,40 @@ def _has_unsafe_path(diff: str) -> str | None:
     return None
 
 
+def _has_binary_patch(diff: str) -> str | None:
+    """Reject diffs containing binary patch markers.
+
+    Two formats matter:
+      1. `Binary files a/X and b/Y differ` — git-diff's textual marker
+         that a binary diff was suppressed; applying it is a no-op but
+         indicates the model misunderstood the task.
+      2. `GIT binary patch` — actual binary delta in base85 blocks. A
+         coding loop never legitimately emits these; the corpus this
+         model edits is text-only.
+
+    Only header lines (everything before the first `@@` hunk header)
+    are scanned. Inside a hunk, content lines are data — a markdown
+    file documenting "Binary files differ" is not a binary patch.
+    """
+    in_hunk = False
+    for line in diff.splitlines():
+        if line.startswith("@@"):
+            in_hunk = True
+            continue
+        if in_hunk:
+            # New file headers reset the in_hunk state.
+            if line.startswith("diff --git ") or line.startswith("--- "):
+                in_hunk = False
+            else:
+                continue
+        s = line.strip()
+        if s.startswith("GIT binary patch"):
+            return "git_binary_patch"
+        if s.startswith("Binary files ") and s.endswith(" differ"):
+            return "binary_files_marker"
+    return None
+
+
 def _has_unsafe_mode(diff: str) -> str | None:
     """Reject diffs that create or change to dangerous file modes.
 
@@ -360,6 +394,9 @@ def _apply_diff(diff_text: str) -> tuple[bool, str]:
     unsafe = _has_unsafe_path(diff)
     if unsafe is not None:
         return False, f"unsafe_path: {unsafe}"
+    binary = _has_binary_patch(diff)
+    if binary is not None:
+        return False, f"binary_patch: {binary}"
     unsafe_mode = _has_unsafe_mode(diff)
     if unsafe_mode is not None:
         return False, f"unsafe_mode: {unsafe_mode}"
