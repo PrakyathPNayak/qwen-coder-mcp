@@ -287,3 +287,32 @@ applies, CRLF inside a markdown fence applies, non-diff input rejected,
 mismatched-base diff fails at apply-check with a structured message.
 
 **Result**: 83/83 green. Commit `<filled by git>`.
+
+## Loop 10 — End-to-end orchestrator coverage
+**Gap**: `_iteration` — the heart of the loop — had zero tests. Every
+branch (clean / rejected / apply_failed / out_of_scope / validation_failed
+/ applied) was production code that ran in the wild without any executable
+contract.
+
+**Devil**: a stub client doesn't exercise the real client (which is fine —
+loop 6 covers the client). It exercises the orchestrator's branching, which
+is what's untested. Acceptable.
+
+**Fix**: `tests/test_iteration.py`, 6 cases on a real per-test git repo
+with a scripted `_ScriptedClient.system_user(...)`. Verifies:
+  - empty response → clean
+  - devil REJECT → reverts, logs to STATE.md
+  - non-diff prose → apply_failed
+  - diff targeting the wrong file → out_of_scope, tree restored
+  - syntactically broken diff → validation_failed, tree restored
+  - happy path → applied, exactly one new commit, devil's-advocate ran
+
+**Side-discoveries** (filed in next.md, not fixed this loop):
+1. `_parse_first_issue` interprets a benign sentence like "No issues found."
+   as a real issue, wasting a coder round-trip. The model should produce
+   empty output for the no-issues case, but the parser should be lenient.
+2. The test required adding `.gitignore` to mirror production. Confirms
+   production correctness depends on `.loop/` being ignored — there is no
+   test covering "what if a user installs without .gitignore". Filed.
+
+**Result**: 89/89 green. Commit `<filled by git>`.

@@ -1,27 +1,28 @@
 # Next loop seed
 
 ## Candidates ranked
-1. **(P3) `_iteration` orchestrator has no end-to-end test.** Wire a fake
-   `QwenClient` (or directly inject a stub via dependency-style monkeypatch),
-   feed it a scripted (issues, diff, verdict) tuple, and verify the happy
-   path commits one change. Then verify each rejection path: not-a-diff,
-   out-of-scope, validation-fails, devil-rejects.
+1. **(P3) `_parse_first_issue` false-positive on benign no-issue replies.**
+   Today, "No issues found." returns "No issues found." as the "issue",
+   wasting a coder round-trip. Add a lightweight allow-list of no-issue
+   phrases ("no issues", "looks good", "clean", "lgtm", "nothing to fix",
+   etc.) returning None when the entire response matches.
 
-2. **(P3) `prompts.py` builders are uncovered.** A regression that drops the
-   "respond ONLY with a unified diff inside ```diff fences" sentence makes
-   every fix `not_a_unified_diff`. Add contract tests that assert each
-   prompt builder returns a string containing the critical instructions.
+2. **(P3) Loop fails open if `.gitignore` is missing or doesn't cover
+   `.loop/`.** Every `_iteration` would then misclassify cursor/runtime
+   updates as untracked → every diff becomes out_of_scope. Either: (a)
+   exclude `.loop/` and `STATE.md` from `_changed_paths` directly, or
+   (b) bootstrap a minimal `.gitignore` if absent. (a) is safer.
 
-3. **(P5) `_apply_diff` does not validate that the diff touches files inside
-   the repo.** A path-traversal diff (`a/../../etc/passwd`) is currently
-   defended against only by `_diff_in_scope` AFTER apply. Sanity-check the
-   diff text itself for `../` segments before invoking `git apply --check`.
-   Probably git already refuses, but worth a unit test.
+3. **(P3) `prompts.py` builders are uncovered.** Contract tests on each
+   builder ensuring the critical instructions are present.
 
-4. **(P6) `server.py` builds `QwenClient` at import path.** Defer + smoke
-   import test.
+4. **(P5) `_apply_diff` should reject diffs whose path components contain
+   `..` (path traversal).** git apply may accept some forms.
 
-5. **(P8) `STATE.md` and `.agent/loop_log.md` rotation.**
+5. **(P6) `server.py` builds `QwenClient` at `_build_server`.** Defer +
+   smoke import test.
+
+6. **(P8) `STATE.md` and `.agent/loop_log.md` rotation.**
 
 ## Reminder
 - vLLM check (`tail .loop/serve.log`, `ps -p 1493`) every few loops.
