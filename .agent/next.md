@@ -1,15 +1,15 @@
-# Loop 167 candidates
+# Loop 168 candidates
 
-1. **Blocking interactive y/n modal** for destructive tool calls. The
-   confirm hook is now in place; TUI just needs a `threading.Event`
-   round-trip: worker pushes the request, UI pops a Confirm widget,
-   resolves the event, worker continues. Bind y/n keys + a 30s
-   default-deny timeout.
-2. **`run_shell` tool** behind write-mode + confirm + allow-list.
-3. **`/agent --max <n>`** -- override hardcoded 6-step cap from CLI.
-4. **Token meter accounting** for tool_result body bytes in the status
+1. **`run_shell` tool** behind write-mode + confirm + a small allow-list
+   (pytest, ruff, git status, ls, cat, grep -- no rm/mv/curl). The
+   confirm gate now exists, so the missing piece is just the tool fn
+   plus extending DESTRUCTIVE_TOOLS.
+2. **`/agent --max <n>`** -- override hardcoded 6-step cap from CLI.
+3. **Token meter accounting** for tool_result body bytes in the status
    footer.
-5. **Auto-checkpoint every N agent turns** to `.agent/agent_state.json`.
+4. **Auto-checkpoint every N agent turns** to `.agent/agent_state.json`.
+5. **Streaming tail bytes-budget** -- the 2000-char tail in
+   `_on_stream_chunk` truncates mid-word; align to nearest space.
 
-Empirical question still open: live vLLM smoke test of the
-`<tool_call>` protocol with Qwen3.6-27B.
+Empirical question still open: does live Qwen3.6-27B reliably emit
+`<tool_call>`? Need a manual smoke test against the vLLM server.

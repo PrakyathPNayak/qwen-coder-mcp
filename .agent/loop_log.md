@@ -2337,3 +2337,36 @@ default-allow, deny, read-tool bypass, hook propagation through
 `run_agent`, and the destructive-set invariant.
 
 **Result**: 989 passed (+5), 1 skipped.
+
+## Loop 167 — blocking y/n modal for destructive tool calls
+
+**Observe**: 989 green from loop 166. confirm hook existed but TUI's
+implementation always returned True with just an audit-log line. next.md
+flagged the real modal as #1.
+
+**Decide**: define a `_ConfirmScreen(ModalScreen[bool])` with `y`/`n`/`escape`
+bindings, push it from the worker thread via `call_from_thread`, and block
+on a `threading.Event` until the user dismisses (or 30s timeout fires
+default-deny). Add `agent_confirm_writes: bool = True` flag plus
+`/confirm_writes_on` / `/confirm_writes_off` slash commands.
+
+**Devil's advocate**:
+- Correctness: Three deny paths -- explicit n/escape, push-screen failure
+  (handled in `_push_confirm`), and 30s timeout. None of them silently
+  approve. Holder uses a list to stay mutable across the callback.
+- Scope: Read tools still bypass the modal in `run_tool` (test from
+  loop 166 still green). Toggle off path lets long autonomous sessions
+  skip prompts -- callers opt into that explicitly.
+- Priority: highest item in next.md. The infrastructure for `run_shell`
+  (loop 168 candidate) needs this gate already in place.
+
+**Act**:
+- tui.py: import threading, ModalScreen; new `_ConfirmScreen` class with
+  CSS + bindings; `_push_confirm` helper; `agent_confirm_writes` flag;
+  `_confirm_write` reworked to do the blocking round-trip; new toggle
+  branches in the sentinel handler; HELP_TEXT + SLASH_COMMANDS updated.
+- tests: `TestAgentWriteAndConfirmDispatch` (7 tests) covering the
+  --write/-w flags, empty-write usage, both toggle sentinels, the
+  default flag values on a fresh App, HELP_TEXT, and completions.
+
+**Result**: 996 passed (+7), 1 skipped.

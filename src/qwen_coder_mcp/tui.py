@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -101,6 +102,8 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/agent_on",
     "/agent_write_off",
     "/agent_write_on",
+    "/confirm_writes_off",
+    "/confirm_writes_on",
 )
 
 
@@ -157,6 +160,8 @@ Slash commands:
   /agent_off           Disable default agent mode (back to plain chat)
   /agent_write_on      Enable fs_write + apply_patch in default agent mode
   /agent_write_off     Disable write tools in default agent mode
+  /confirm_writes_on   Pop a y/n modal before each destructive tool call (default)
+  /confirm_writes_off  Auto-approve destructive tool calls (audit-log only)
   /quit                Exit
 
 @<path> tokens in plain chat are expanded inline as file contents.
@@ -854,6 +859,10 @@ def dispatch_slash(
         return _AGENT_TOGGLE_SENTINEL + "write_on", False
     if name == "agent_write_off":
         return _AGENT_TOGGLE_SENTINEL + "write_off", False
+    if name == "confirm_writes_on":
+        return _AGENT_TOGGLE_SENTINEL + "confirm_on", False
+    if name == "confirm_writes_off":
+        return _AGENT_TOGGLE_SENTINEL + "confirm_off", False
     if name == "search":
         if not cmd.rest:
             return "usage: /search [--max N] <query>", False
@@ -1299,6 +1308,7 @@ def _build_app(
     is only required when running the TUI."""
     from textual.app import App, ComposeResult
     from textual.containers import Vertical
+    from textual.screen import ModalScreen  # type: ignore
     from textual.widgets import Footer, Header, Input, RichLog, Static
     try:
         from textual import work  # type: ignore
@@ -1313,6 +1323,59 @@ def _build_app(
 
     cfg = fs_cfg or _default_fs_cfg()
     factory = client_factory or QwenClient
+
+    class _ConfirmScreen(ModalScreen[bool]):  # type: ignore[misc, type-arg]
+        """Tiny modal that asks the user to approve a destructive tool
+        call. Yes / No are bound to ``y`` / ``n``; ``escape`` denies."""
+
+        BINDINGS = [
+            ("y", "approve", "Yes"),
+            ("n", "deny", "No"),
+            ("escape", "deny", "No"),
+        ]
+
+        CSS = """
+        _ConfirmScreen {
+            align: center middle;
+        }
+        #confirm-box {
+            width: 70%;
+            max-width: 100;
+            border: thick $warning;
+            padding: 1 2;
+            background: $panel;
+        }
+        #confirm-title {
+            color: $warning;
+            text-style: bold;
+        }
+        #confirm-detail {
+            margin: 1 0;
+        }
+        #confirm-help {
+            color: $text-muted;
+        }
+        """
+
+        def __init__(self, prompt: str, detail: str) -> None:
+            super().__init__()
+            self._prompt = prompt
+            self._detail = detail
+
+        def compose(self) -> ComposeResult:  # type: ignore[override]
+            with Vertical(id="confirm-box"):
+                yield Static(f"⚠  {self._prompt}", id="confirm-title")
+                yield Static(self._detail, id="confirm-detail")
+                yield Static(
+                    "[y] approve    [n] deny    [esc] deny",
+                    id="confirm-help",
+                )
+
+        def action_approve(self) -> None:
+            self.dismiss(True)
+
+        def action_deny(self) -> None:
+            self.dismiss(False)
 
     class QwenTUI(App):  # type: ignore[misc]
         CSS = """
@@ -1390,6 +1453,10 @@ def _build_app(
             # Write mode adds fs_write + apply_patch to the agent's tool
             # registry. Off by default since these mutate the workspace.
             self.agent_write_default: bool = False
+            # When True, every destructive tool call pops a y/n modal
+            # before firing. When False, calls are auto-approved (still
+            # logged via the audit hook). Default is to ask.
+            self.agent_confirm_writes: bool = True
 
         def compose(self) -> ComposeResult:  # type: ignore[override]
             yield Header(show_clock=True)
@@ -1539,9 +1606,14 @@ def _build_app(
                         self.agent_write_default = True
                     elif flag == "write_off":
                         self.agent_write_default = False
+                    elif flag == "confirm_on":
+                        self.agent_confirm_writes = True
+                    elif flag == "confirm_off":
+                        self.agent_confirm_writes = False
                     state = (
                         f"agent={'on' if self.agent_default else 'off'} "
-                        f"write={'on' if self.agent_write_default else 'off'}"
+                        f"write={'on' if self.agent_write_default else 'off'} "
+                        f"confirm={'on' if self.agent_confirm_writes else 'off'}"
                     )
                     log.write(f"[dim]{state}[/dim]")
                     return
@@ -1677,11 +1749,12 @@ def _build_app(
             self._refresh_status(streaming=True)
             tools = agent_loop.ALL_TOOLS if write else agent_loop.DEFAULT_TOOLS
 
-            # Audit-trail hook: every destructive call gets logged before
-            # it fires so the user always sees what the agent is changing.
-            # A future loop can promote this to a blocking y/n prompt.
+            # Audit-trail + optional blocking confirmation. The audit
+            # line always lands in the log; if agent_confirm_writes is
+            # True we additionally pop a modal and block the worker
+            # thread on a threading.Event until the user answers (or
+            # the 30s default-deny timeout elapses).
             def _confirm_write(call: agent_loop.ToolCall) -> bool:
-                summary = ""
                 if call.name == "fs_write":
                     p = call.args.get("path", "?")
                     n = len(str(call.args.get("content", "")))
@@ -1697,7 +1770,29 @@ def _build_app(
                     self._agent_status,
                     f"[yellow]✎ write[/yellow] {call.name} {summary}",
                 )
-                return True
+                if not self.agent_confirm_writes:
+                    return True
+                evt = threading.Event()
+                holder: list[bool] = [False]
+
+                def _resolve(value: bool | None) -> None:
+                    holder[0] = bool(value)
+                    evt.set()
+
+                self.call_from_thread(
+                    self._push_confirm,
+                    f"agent wants to run {call.name}",
+                    summary,
+                    _resolve,
+                )
+                # Default-deny if the user takes too long.
+                if not evt.wait(timeout=30.0):
+                    self.call_from_thread(
+                        self._agent_status,
+                        "[red]✗ confirm timeout (30s) — denied[/red]",
+                    )
+                    return False
+                return holder[0]
 
             def runner() -> None:
                 final_text = ""
@@ -1765,6 +1860,22 @@ def _build_app(
                 self.query_one("#log", RichLog).write(line)
             except Exception:  # noqa: BLE001
                 pass
+
+        def _push_confirm(
+            self,
+            prompt: str,
+            detail: str,
+            resolve: Callable[[bool | None], None],
+        ) -> None:
+            """Pop the y/n modal. Called from the worker via
+            call_from_thread; resolves the worker's threading.Event
+            via ``resolve`` once the user answers."""
+            try:
+                self.push_screen(_ConfirmScreen(prompt, detail), resolve)
+            except Exception:  # noqa: BLE001
+                # If the screen can't be pushed for any reason, deny
+                # by default -- safer than silently approving.
+                resolve(False)
 
         def _finalize_agent(self, prompt: str, reply: str, elapsed: float) -> None:
             try:

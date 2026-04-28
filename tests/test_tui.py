@@ -2530,3 +2530,63 @@ class TestAppAgentMode:
         assert "/agent" in tui.HELP_TEXT
         assert "/agent_on" in tui.HELP_TEXT
         assert "/agent_off" in tui.HELP_TEXT
+
+
+class TestAgentWriteAndConfirmDispatch:
+    def test_agent_write_flag_routes_to_write_sentinel(self, tmp_path: Path) -> None:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/agent --write add a docstring"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        assert text.startswith(tui._AGENT_WRITE_SENTINEL)
+        assert text[len(tui._AGENT_WRITE_SENTINEL):] == "add a docstring"
+
+    def test_agent_short_w_flag(self, tmp_path: Path) -> None:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/agent -w refactor x"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        assert text.startswith(tui._AGENT_WRITE_SENTINEL)
+
+    def test_agent_write_empty_returns_usage(self, tmp_path: Path) -> None:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/agent --write"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        assert "usage:" in text
+
+    def test_confirm_writes_toggles(self, tmp_path: Path) -> None:
+        on, _ = tui.dispatch_slash(
+            tui.parse_slash("/confirm_writes_on"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        off, _ = tui.dispatch_slash(
+            tui.parse_slash("/confirm_writes_off"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        assert on == tui._AGENT_TOGGLE_SENTINEL + "confirm_on"
+        assert off == tui._AGENT_TOGGLE_SENTINEL + "confirm_off"
+
+    def test_app_confirm_writes_default_on(self, tmp_path: Path) -> None:
+        AppCls = tui._build_app(
+            fs_cfg=fs_tools.FsConfig(root=tmp_path), client_factory=_FakeClient
+        )
+        app = AppCls()
+        assert app.agent_confirm_writes is True
+        assert app.agent_write_default is False
+
+    def test_help_advertises_write_and_confirm(self) -> None:
+        assert "/agent --write" in tui.HELP_TEXT
+        assert "/confirm_writes_on" in tui.HELP_TEXT
+        assert "/confirm_writes_off" in tui.HELP_TEXT
+
+    def test_completions_include_write_and_confirm(self) -> None:
+        comps = tui.slash_completions("/")
+        assert "/agent_write_on" in comps
+        assert "/confirm_writes_on" in comps
+        assert "/confirm_writes_off" in comps
