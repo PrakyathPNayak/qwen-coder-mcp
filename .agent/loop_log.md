@@ -1799,3 +1799,10 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: Should I also break down delta by category? Possible -- a high delta on `applied` is more concerning than on `no_candidate_files`. Punted -- caller can grep the JSON output. Adding it would clutter the text report.
   - Priority: Useful complement to the per-phase view, low risk.
 - ACT: Extended `analyze` + `format_report`. 5 new tests. 563 passed.
+
+## Loop 114 — Audit `agent.timing_analyze` is documented in README
+- OBSERVE: Loop 112 added the analyzer + README section. Nothing prevents a future commit from removing the README block while keeping the module -- the analyzer would silently become undiscoverable.
+- ORIENT: P5 doc-drift insurance.
+- DECIDE: 3 small README-content audits in test_timing_analyze (module invocation, --json flag, --file flag, "Analysing timing.log" header).
+- DEVIL: Correctness -- string-match audits are low-leverage but cheap. Scope: should I assert the exact heading? No -- the heading wording is incidental, the exact module invocation is what matters. Priority: trivial.
+- ACT: 3 audits. Hit a self-inflicted import order bug (sed prepended a duplicate Path import at top of file before docstring). Fixed by reverting to canonical header. 566 passed.

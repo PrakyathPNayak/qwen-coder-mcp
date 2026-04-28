@@ -200,3 +200,22 @@ class TestWallSDeltaPhasesAnalysis:
         ]
         text = format_report(analyze(recs))
         assert "wall_s_delta_phases: no records emit this field" in text
+
+
+class TestReadmeMentionsAnalyzer:
+    """Loop 114: the analyzer module must be discoverable via the
+    README, not just the loop log. If a future commit removes the
+    README block, this audit fires."""
+
+    def test_readme_documents_module_invocation(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
+        assert "python -m agent.timing_analyze" in readme
+        assert "Analysing timing.log" in readme
+
+    def test_readme_mentions_json_flag(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
+        assert "--json" in readme
+
+    def test_readme_mentions_file_flag(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
+        assert "--file" in readme
