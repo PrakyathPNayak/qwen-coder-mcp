@@ -52,7 +52,8 @@ fault (disk full, network down, perm-denied) at any of these sinks would
 otherwise emit one log line per iteration. The instances cover:
 ``_write_timing``, ``_append_state``, ``_write_history``,
 ``_prune_dir_oldest``, ``_save_cursor``, ``_commit_and_push`` (split into
-``git_local`` and ``git_remote``), and ``_revert_changes``. Each one is
+``git_local`` and ``git_remote``), ``_revert_changes``, and
+``_run_git_timeout``. Each one is
 registered in ``_swallow_loggers()`` and gets a per-iteration summary
 emitted from ``_finish`` whenever its count has grown since the last
 summary.
@@ -332,7 +333,10 @@ def _run_git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]
     except subprocess.TimeoutExpired:
         if check:
             raise
-        _log(f"_run_git timeout: git {' '.join(args)} exceeded {timeout}s")
+        _GIT_TIMEOUT_SWALLOW_LOG.report(
+            RuntimeError(f"exceeded {timeout}s"),
+            context=f"git {' '.join(args)}",
+        )
         return subprocess.CompletedProcess(
             args=["git", *args],
             returncode=124,
@@ -1364,6 +1368,7 @@ _CURSOR_SWALLOW_LOG = _RateLimitedSwallowLogger("_save_cursor", schedule="expone
 _GIT_REMOTE_SWALLOW_LOG = _RateLimitedSwallowLogger("git_remote", schedule="exponential")
 _GIT_LOCAL_SWALLOW_LOG = _RateLimitedSwallowLogger("git_local", schedule="exponential")
 _REVERT_SWALLOW_LOG = _RateLimitedSwallowLogger("_revert_changes", schedule="exponential")
+_GIT_TIMEOUT_SWALLOW_LOG = _RateLimitedSwallowLogger("_run_git_timeout", schedule="exponential")
 
 
 # -------------------------------------------------------------------- core
@@ -1465,6 +1470,7 @@ def _swallow_loggers() -> tuple["_RateLimitedSwallowLogger", ...]:
         _GIT_REMOTE_SWALLOW_LOG,
         _GIT_LOCAL_SWALLOW_LOG,
         _REVERT_SWALLOW_LOG,
+        _GIT_TIMEOUT_SWALLOW_LOG,
     )
 
 

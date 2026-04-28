@@ -1712,3 +1712,55 @@ class TestModuleDocstringRecoveryContract:
         doc = L.__doc__ or ""
         for label in {lg.label for lg in L._swallow_loggers()}:
             assert label in doc, f"missing logger label {label!r} in module docstring"
+
+
+class TestRunGitTimeoutRateLimited:
+    """Loop 80: `_run_git` timeouts route through
+    `_GIT_TIMEOUT_SWALLOW_LOG` so a hung git binary or unreachable
+    remote stops spamming one log line per call."""
+
+    def test_timeout_logger_registered(self):
+        from agent import loop as L
+        labels = {lg.label for lg in L._swallow_loggers()}
+        assert "_run_git_timeout" in labels
+
+    def test_repeated_timeouts_rate_limited(self, monkeypatch):
+        from agent import loop as L
+        import subprocess
+        L._GIT_TIMEOUT_SWALLOW_LOG.reset()
+        monkeypatch.setattr(L._GIT_TIMEOUT_SWALLOW_LOG, "schedule", "linear")
+        monkeypatch.setattr(L._GIT_TIMEOUT_SWALLOW_LOG, "every", 5)
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+
+        def hung_run(*a, **kw):
+            raise subprocess.TimeoutExpired(cmd=a, timeout=kw.get("timeout", 60))
+        monkeypatch.setattr(L.subprocess, "run", hung_run)
+
+        for _ in range(7):
+            cp = L._run_git("status", "--porcelain", check=False)
+            assert cp.returncode == 124
+            assert "timed_out_after_" in cp.stderr
+        timeout_lines = [l for l in log_lines if "_run_git_timeout failed" in l]
+        # Linear every=5: count=1 logs, count=5 logs.
+        assert len(timeout_lines) == 2
+        assert L._GIT_TIMEOUT_SWALLOW_LOG.count == 7
+        # Context (the git args) appears in the line.
+        assert any("git status --porcelain" in l for l in timeout_lines)
+        L._GIT_TIMEOUT_SWALLOW_LOG.reset()
+
+    def test_timeout_with_check_true_still_raises(self, monkeypatch):
+        from agent import loop as L
+        import subprocess
+        L._GIT_TIMEOUT_SWALLOW_LOG.reset()
+        monkeypatch.setattr(L, "_log", lambda m: None)
+
+        def hung_run(*a, **kw):
+            raise subprocess.TimeoutExpired(cmd=a, timeout=kw.get("timeout", 60))
+        monkeypatch.setattr(L.subprocess, "run", hung_run)
+
+        import pytest
+        with pytest.raises(subprocess.TimeoutExpired):
+            L._run_git("status", check=True)
+        # check=True path bypasses the rate limiter entirely.
+        assert L._GIT_TIMEOUT_SWALLOW_LOG.count == 0

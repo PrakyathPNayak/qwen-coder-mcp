@@ -1441,3 +1441,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 8.
 - ACT: 2 new tests (cascade mention + label drift). 446 passed.
 - COMMIT: pending.
+
+## Loop 80 — rate-limit `_run_git` timeout path
+- OBSERVE: Last spam-vulnerable `_log` call (`_run_git timeout: ...`). On a hung git binary or unreachable remote, this fires per `_run_git` call — many per iteration.
+- ORIENT: Same fix shape. Add `_GIT_TIMEOUT_SWALLOW_LOG` exponential. Note: timeout returns rc=124 + synthetic stderr "timed_out_after_Ns" which then flows up to `_GIT_REMOTE_SWALLOW_LOG` for push/pull paths — these are complementary (different layer, different context), not duplicate.
+- DECIDE: Wrap the `_log` in the timeout branch only (check=True keeps raising as documented). Register in `_swallow_loggers()`. Update docstring drift label.
+- DEVIL:
+  - Correctness: check=True path untouched, still raises. Synthetic CompletedProcess unchanged. ✓
+  - Scope: rate-limiter context preserves the git args so operators can see *which* command is hanging. ✓
+  - Priority: bucket 5/6; was next.md #3.
+- ACT: 3 new tests (registration, repeated-timeouts cadence + context, check=True still raises). 449 passed.
+- COMMIT: pending.
