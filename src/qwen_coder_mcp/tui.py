@@ -1138,7 +1138,12 @@ def _build_app(
     is only required when running the TUI."""
     from textual.app import App, ComposeResult
     from textual.containers import Vertical
-    from textual.widgets import Footer, Header, Input, RichLog
+    from textual.widgets import Footer, Header, Input, RichLog, Static
+    try:
+        from textual import work  # type: ignore
+        _HAS_WORK = True
+    except ImportError:
+        _HAS_WORK = False
     try:
         from textual.suggester import SuggestFromList  # type: ignore
         _suggester: object | None = SuggestFromList(SLASH_COMMANDS, case_sensitive=False)
@@ -1150,11 +1155,61 @@ def _build_app(
 
     class QwenTUI(App):  # type: ignore[misc]
         CSS = """
-        Screen { layout: vertical; }
-        RichLog { height: 1fr; border: round $accent; }
-        Input { dock: bottom; }
+        Screen {
+            layout: vertical;
+            background: $surface;
+        }
+        Header {
+            background: $primary-background;
+            color: $text;
+            text-style: bold;
+        }
+        #log {
+            height: 1fr;
+            border: round $primary;
+            padding: 0 1;
+            background: $surface-darken-1;
+            scrollbar-background: $surface;
+            scrollbar-color: $primary;
+        }
+        #stream {
+            display: none;
+            height: auto;
+            max-height: 12;
+            padding: 0 1;
+            margin: 0 0 0 0;
+            border-left: thick $accent;
+            color: $text;
+            background: $surface-darken-2;
+        }
+        #stream.live {
+            display: block;
+        }
+        #status {
+            dock: bottom;
+            height: 1;
+            padding: 0 1;
+            background: $primary-background;
+            color: $text-muted;
+            text-style: italic;
+        }
+        Input {
+            dock: bottom;
+            border: tall $accent;
+            background: $surface-darken-1;
+        }
+        Input:focus {
+            border: tall $primary;
+        }
+        Footer {
+            background: $primary-background;
+        }
         """
-        BINDINGS = [("ctrl+c", "quit", "Quit")]
+        BINDINGS = [
+            ("ctrl+c", "quit", "Quit"),
+            ("ctrl+l", "clear_log", "Clear screen"),
+            ("ctrl+r", "redraw", "Redraw"),
+        ]
 
         def __init__(self) -> None:
             super().__init__()
@@ -1165,34 +1220,43 @@ def _build_app(
             self.last_turn_seconds: float = 0.0
             self.total_tokens: int = 0
             self.total_turns: int = 0
+            self._streaming: bool = False
 
         def compose(self) -> ComposeResult:  # type: ignore[override]
-            yield Header()
+            yield Header(show_clock=True)
             with Vertical():
-                yield RichLog(id="log", highlight=True, markup=True)
+                yield RichLog(id="log", highlight=True, markup=True, wrap=True)
+                yield Static("", id="stream")
             if _suggester is not None:
                 yield Input(
-                    placeholder="message or /help",
+                    placeholder=">  message, /help, or @path",
                     id="entry",
                     suggester=_suggester,  # type: ignore[arg-type]
                 )
             else:
-                yield Input(placeholder="message or /help", id="entry")
+                yield Input(placeholder=">  message, /help, or @path", id="entry")
+            yield Static("", id="status")
             yield Footer()
 
         def on_mount(self) -> None:  # type: ignore[override]
+            self.title = "qwen-coder-tui"
+            settings = getattr(self.client, "settings", None)
+            self.sub_title = (
+                getattr(settings, "model", None) or "qwen"
+            ) + " @ " + (
+                getattr(settings, "base_url", None) or "(unset)"
+            )
             log = self.query_one("#log", RichLog)
-            log.write("[bold]qwen-coder-tui[/bold]  type /help")
+            log.write("[bold cyan]qwen-coder-tui[/bold cyan]  type [bold]/help[/bold] for slash commands or [bold]@path[/bold] to attach a file")
             self._render_health_banner(log)
-            # Restore prior chat from disk so the user can continue
-            # conversations across restarts. Failures are silent.
             try:
                 prior = load_history_jsonl(history_file_path(self.fs_cfg))
             except Exception:  # noqa: BLE001
                 prior = []
             if prior:
                 self.history.extend(prior)
-                log.write(f"[dim](restored {len(prior)} prior messages)[/dim]")
+                log.write(f"[dim]restored {len(prior)} prior messages[/dim]")
+            self._refresh_status()
 
         def on_unmount(self) -> None:  # type: ignore[override]
             try:
@@ -1202,40 +1266,61 @@ def _build_app(
             except Exception:  # noqa: BLE001
                 pass
 
-        def _render_health_banner(self, log) -> None:  # type: ignore[no-untyped-def]
-            """Probe the backend and write a status banner.
+        def action_clear_log(self) -> None:  # type: ignore[override]
+            self.query_one("#log", RichLog).clear()
 
-            Catches all exceptions so a missing httpx, missing settings,
-            or any other startup problem cannot crash the App before
-            the user has typed anything.
-            """
+        def action_redraw(self) -> None:  # type: ignore[override]
+            self.refresh(layout=True)
+
+        def _refresh_status(self) -> None:
+            try:
+                status = self.query_one("#status", Static)
+            except Exception:  # noqa: BLE001
+                return
+            settings = getattr(self.client, "settings", None)
+            model = getattr(settings, "model", None) or "qwen"
+            msgs = len(self.history)
+            ttok = self.total_tokens
+            line = (
+                f"  {model}  ·  {msgs} msg  ·  ~{ttok} tok total  ·  "
+                f"last turn ~{self.last_turn_tokens} tok in "
+                f"{self.last_turn_seconds:.1f}s"
+            )
+            status.update(line)
+
+        def _render_health_banner(self, log) -> None:  # type: ignore[no-untyped-def]
+            """Probe the backend and write a status banner."""
             try:
                 check = self.client.health_check()
             except Exception as exc:  # noqa: BLE001
                 log.write(
-                    f"[red]health check raised:[/red] "
+                    f"[red]✗ health check raised:[/red] "
                     f"{type(exc).__name__}: {exc}"
                 )
                 return
             if check.get("ok"):
                 models = check.get("models") or []
                 tag = ", ".join(models[:3]) or "(no models reported)"
-                log.write(f"[green]backend ok[/green]  models: {tag}")
+                log.write(f"[green]✓ backend ok[/green]  models: {tag}")
                 return
             err = check.get("error") or "unknown error"
             hint = check.get("hint")
-            log.write(f"[red]backend unavailable:[/red] {err}")
+            log.write(f"[red]✗ backend unavailable:[/red] {err}")
             if hint:
-                log.write(f"[yellow]hint:[/yellow] {hint}")
+                log.write(f"[yellow]→ hint:[/yellow] {hint}")
 
         def on_input_submitted(self, event: Input.Submitted) -> None:  # type: ignore[override]
+            if self._streaming:
+                # Ignore submits while a reply is still streaming so
+                # users can't double-fire and corrupt history.
+                return
             line = event.value.strip()
             if not line:
                 return
             entry = self.query_one("#entry", Input)
             entry.value = ""
             log = self.query_one("#log", RichLog)
-            log.write(f"[cyan]you>[/cyan] {line}")
+            log.write(f"[bold cyan]you›[/bold cyan] {line}")
             cmd = parse_slash(line)
             if cmd is not None:
                 text, quit_now = dispatch_slash(
@@ -1245,9 +1330,6 @@ def _build_app(
                     history=self.history,
                 )
                 if isinstance(text, str) and text.startswith("__RETRY__"):
-                    # Retry sentinel: the dispatcher already stripped the
-                    # last turn off history; replay the prompt as if the
-                    # user typed it again.
                     line = text[len("__RETRY__"):]
                     log.write(f"[yellow](retrying)[/yellow] {line}")
                 elif isinstance(text, str) and text.startswith(_CD_SENTINEL):
@@ -1258,33 +1340,81 @@ def _build_app(
                         max_write_bytes=self.fs_cfg.max_write_bytes,
                         max_list_entries=self.fs_cfg.max_list_entries,
                     )
-                    log.write(f"(cwd) {new_root}")
+                    log.write(f"[dim](cwd)[/dim] {new_root}")
+                    self._refresh_status()
                     return
                 else:
                     log.write(text)
+                    self._refresh_status()
                     if quit_now:
                         self.exit()
                     return
-            reply_parts: list[str] = []
+            self._streaming = True
+            self._start_streaming_turn(line)
+
+        def _start_streaming_turn(self, line: str) -> None:
             t0 = time.monotonic()
-            try:
-                for chunk, _accum in chat_turn_stream(
-                    self.history, line, client=self.client, fs_cfg=self.fs_cfg
-                ):
-                    reply_parts.append(chunk)
-            except AttributeError:
-                # Client may not implement chat_stream -- fall back.
-                reply = chat_turn(
-                    self.history, line, client=self.client, fs_cfg=self.fs_cfg
+            stream = self.query_one("#stream", Static)
+            stream.update("")
+            stream.add_class("live")
+
+            def runner() -> None:
+                full = ""
+                try:
+                    for chunk, accum in chat_turn_stream(
+                        self.history,
+                        line,
+                        client=self.client,
+                        fs_cfg=self.fs_cfg,
+                    ):
+                        full = accum
+                        self.call_from_thread(self._on_stream_chunk, accum)
+                except AttributeError:
+                    # Client doesn't implement chat_stream; fall back.
+                    try:
+                        full = chat_turn(
+                            self.history,
+                            line,
+                            client=self.client,
+                            fs_cfg=self.fs_cfg,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        full = f"[stream error: {type(exc).__name__}: {exc}]"
+                except Exception as exc:  # noqa: BLE001
+                    full = f"[stream error: {type(exc).__name__}: {exc}]"
+                self.call_from_thread(
+                    self._finalize_stream, line, full, time.monotonic() - t0
                 )
-                self._record_turn(line, reply, time.monotonic() - t0)
-                self._post_assistant(log, reply)
-                log.write(self._telemetry_line())
+
+            if _HAS_WORK:
+                self.run_worker(runner, thread=True, exclusive=True)
+            else:  # pragma: no cover - very old textual
+                import threading
+
+                threading.Thread(target=runner, daemon=True).start()
+
+        def _on_stream_chunk(self, accum: str) -> None:
+            try:
+                stream = self.query_one("#stream", Static)
+            except Exception:  # noqa: BLE001
                 return
-            full_reply = "".join(reply_parts)
-            self._record_turn(line, full_reply, time.monotonic() - t0)
-            self._post_assistant(log, full_reply)
+            tail = accum[-2000:]
+            stream.update(f"[green]qwen›[/green] {tail}▍")
+
+        def _finalize_stream(self, prompt: str, reply: str, elapsed: float) -> None:
+            try:
+                stream = self.query_one("#stream", Static)
+                stream.update("")
+                stream.remove_class("live")
+                log = self.query_one("#log", RichLog)
+            except Exception:  # noqa: BLE001
+                self._streaming = False
+                return
+            self._record_turn(prompt, reply, elapsed)
+            self._post_assistant(log, reply)
             log.write(self._telemetry_line())
+            self._refresh_status()
+            self._streaming = False
 
         def _post_assistant(self, log, reply: str) -> None:
             """Write an assistant reply to the RichLog, rendering markdown

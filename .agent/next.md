@@ -1,8 +1,9 @@
-# Next Loop Candidates
-1. (P3) qwen_client.chat / chat_stream should surface base_url + body excerpt in the error string when vllm returns a 4xx so we never get an opaque retry loop again.
-2. (P3) Live RichLog token streaming in chat_turn_stream so users see tokens arrive instead of one wall at the end.
-3. (P3) Agent loop loop.py: smoke test that a full OBSERVE/ORIENT/DECIDE/DEVIL/ACT cycle does not crash on an empty repo.
-4. (P5) Status bar widget showing model name plus running token meter.
-5. (P5) Session checkpoint file 018 covering loops 132 onward.
-6. (P5) /find_bugs auto chain to /apply when the model returns a single diff.
-
+# Loop 160 candidates
+1. **Internet access for the model** (user-requested):
+   - Audit `src/qwen_coder_mcp/web_tools.py` for what's exposed.
+   - Add `/search <q>` and `/fetch <url>` slash commands that paste results into history as system context.
+   - Extend `expand_at_mentions` to handle `@web:<url>` analogous to `@<path>`.
+   - Update `prompts.CODER_SYSTEM` so the model knows these capabilities exist.
+2. Status footer shows live "streaming..." indicator while worker runs.
+3. `/find_bugs` -> `/apply` autochain for single-diff replies.
+4. Session checkpoint 018-streaming-tui-extras.md.

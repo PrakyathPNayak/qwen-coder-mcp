@@ -2210,3 +2210,13 @@ kwarg actually forwarded. Existing tests still pass.
   - .env.example: QWEN_MAX_TOKENS=1024 plus a new QWEN_SERVER_MAX_LEN=2048 with comments explaining the relationship.
 - VERIFY: nine hundred fourteen passed one skipped (was eight hundred ninety nine; +15 = seven clamp tests, eight config tests, plus mechanical Settings shim adjustments). Smoke: load_settings with no env shows max_tokens=1024 server_max_len=2048; _resolve_max_tokens on a short prompt returns 1024.
 
+
+## Loop 159 -- live token streaming + CSS polish
+**OBSERVE:** User: "no token streaming, TUI looks horrible." Confirmed `on_input_submitted` ran the SSE generator inline on the UI thread, so the screen never repainted until the full reply landed. CSS was four lines.
+**DECIDE:** Move chat_turn_stream to a `run_worker(thread=True)` worker; surface progress via a `Static#stream` widget mounted between RichLog and Input; add a status bar; rewrite CSS with theme variables + region styling; add ctrl+l/ctrl+r bindings.
+**DEVIL:**
+- *Correctness*: race between worker thread and main UI on `self.history`? `_record_turn` only runs inside `_finalize_stream` which is dispatched via `call_from_thread`, so it's main-thread only. Worker only reads the prompt/yields chunks, never mutates history.
+- *Scope*: is the *real* problem upstream (chat_turn_stream actually buffering)? No -- chat_turn_stream is a generator that yields per-chunk; the bug was demonstrably the sync handler. Verified by reading the function.
+- *Priority*: streaming beats internet access in user-visible impact; missing live tokens is what the user mentioned first. Internet access gets loop 160.
+**ACT:** Refactored on_input_submitted to delegate to `_start_streaming_turn` which spawns a worker thread; added `_on_stream_chunk` (per-chunk Static updater w/ tail-truncation) and `_finalize_stream` (clears Static, calls `_post_assistant`, refreshes status). Guarded against re-entry with `_streaming` flag. CSS rewritten (padded borders, accent focus, status dock, theme vars). Status line shows model/msg-count/total-tokens. New tests: `TestStreamingApp` (5), `TestTuiCss` (3).
+**RESULT:** 922 passed (+8). Commit pending.

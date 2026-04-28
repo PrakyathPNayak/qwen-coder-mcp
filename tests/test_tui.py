@@ -1930,3 +1930,161 @@ class TestPinMultiFile:
             history=history,
         )
         assert text.startswith("usage:")
+
+
+# -------------------------------------------------- Loop 159: live streaming
+class TestStreamingApp:
+    """The streaming refactor moved chat_turn_stream into a worker thread
+    so the UI can render tokens as they arrive. These tests verify the
+    state machine without spinning up a live Textual app: we instantiate
+    the App class, monkeypatch the textual-y query/worker bits, and
+    drive the chunk/finalize callbacks directly."""
+
+    def _app(self, tmp_path):
+        cfg = fs_tools.FsConfig(root=tmp_path)
+
+        class _C(_FakeClient):
+            def chat_stream(self, history):
+                yield from ["hello ", "world"]
+
+        AppCls = tui._build_app(fs_cfg=cfg, client_factory=_C)
+        # Build the app instance without running the textual loop.
+        app = AppCls()
+        return app
+
+    def test_app_class_has_streaming_methods(self, tmp_path: Path) -> None:
+        AppCls = tui._build_app(
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+            client_factory=_FakeClient,
+        )
+        for name in ("_start_streaming_turn", "_on_stream_chunk", "_finalize_stream"):
+            assert hasattr(AppCls, name), f"App missing {name}"
+
+    def test_finalize_clears_streaming_flag(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = self._app(tmp_path)
+        app._streaming = True
+
+        captured: list[object] = []
+
+        class _Stub:
+            def update(self, text: str) -> None:
+                captured.append(("update", text))
+
+            def remove_class(self, name: str) -> None:
+                captured.append(("remove_class", name))
+
+            def write(self, *args, **kwargs) -> None:
+                captured.append(("write", args))
+
+            def clear(self) -> None:
+                pass
+
+        stub = _Stub()
+        monkeypatch.setattr(app, "query_one", lambda _id, _cls: stub)
+        # _post_assistant uses log.write through query_one too; fine.
+        app._finalize_stream("hi", "ok", 0.5)
+        assert app._streaming is False
+        assert app.last_turn_seconds == pytest.approx(0.5)
+        assert app.total_turns == 1
+        # The streaming buffer must be cleared on finalize.
+        assert ("update", "") in captured
+        assert ("remove_class", "live") in captured
+
+    def test_on_stream_chunk_truncates_long_buffer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = self._app(tmp_path)
+
+        captured: list[str] = []
+
+        class _Stub:
+            def update(self, text: str) -> None:
+                captured.append(text)
+
+        monkeypatch.setattr(app, "query_one", lambda _id, _cls: _Stub())
+        app._on_stream_chunk("x" * 5000)
+        assert len(captured) == 1
+        # Should keep only the trailing ~2000 chars plus prefix/suffix.
+        assert len(captured[0]) < 2200
+        assert captured[0].startswith("[green]qwen›[/green] ")
+        assert captured[0].endswith("▍")
+
+    def test_finalize_records_telemetry(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = self._app(tmp_path)
+
+        class _Stub:
+            def update(self, *_a, **_k) -> None: ...
+            def remove_class(self, *_a, **_k) -> None: ...
+            def write(self, *_a, **_k) -> None: ...
+
+        monkeypatch.setattr(app, "query_one", lambda _id, _cls: _Stub())
+        app._finalize_stream("user prompt", "assistant reply text here", 1.25)
+        assert app.total_turns == 1
+        assert app.last_turn_tokens > 0
+        assert app.total_tokens == app.last_turn_tokens
+
+    def test_double_submit_during_stream_is_ignored(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """While streaming, a second submitted Input event must not start
+        a second worker. Otherwise two threads race on history and the
+        chat log corrupts."""
+        app = self._app(tmp_path)
+        app._streaming = True
+
+        started = {"count": 0}
+
+        def _start(line: str) -> None:
+            started["count"] += 1
+
+        monkeypatch.setattr(app, "_start_streaming_turn", _start)
+
+        class _Evt:
+            value = "hello"
+
+        class _Entry:
+            value = "hello"
+
+        class _Log:
+            def write(self, *_a, **_k) -> None: ...
+
+        def _qo(_id, _cls):
+            return _Entry() if _id == "#entry" else _Log()
+
+        monkeypatch.setattr(app, "query_one", _qo)
+        app.on_input_submitted(_Evt())
+        assert started["count"] == 0, "submission during stream must be a no-op"
+
+
+class TestTuiCss:
+    """The CSS got a major polish pass in loop 159 -- distinct regions
+    for log/stream/input/status, padded borders, accent-colored input
+    focus. Lock the public structure so future tweaks do not silently
+    drop a region."""
+
+    def test_css_has_stream_region(self) -> None:
+        AppCls = tui._build_app(client_factory=_FakeClient)
+        css = AppCls.CSS
+        assert "#stream" in css
+        assert "#log" in css
+        assert "#status" in css
+
+    def test_css_uses_theme_variables(self) -> None:
+        css = tui._build_app(client_factory=_FakeClient).CSS
+        # Theme variables (e.g., $primary, $accent, $surface) keep the
+        # TUI consistent across light/dark terminals; raw hex codes
+        # would clash.
+        assert "$primary" in css
+        assert "$accent" in css
+        assert "$surface" in css
+
+    def test_bindings_include_clear_and_redraw(self) -> None:
+        AppCls = tui._build_app(client_factory=_FakeClient)
+        keys = [b[0] for b in AppCls.BINDINGS]
+        assert "ctrl+c" in keys
+        assert "ctrl+l" in keys
+        assert "ctrl+r" in keys
