@@ -65,7 +65,7 @@ def _log(msg: str) -> None:
         pass
 
 
-_GIT_CMD_TIMEOUT_SECONDS = 60
+_GIT_CMD_TIMEOUT_SECONDS = 60  # legacy alias; use _git_cmd_timeout_seconds()
 
 
 _LOOP_ITER_BUDGET_DEFAULT = 600.0
@@ -96,6 +96,28 @@ def _iteration_budget_seconds() -> float:
     return v
 
 
+_GIT_CMD_TIMEOUT_DEFAULT = 60
+_GIT_CMD_TIMEOUT_MAX = 600  # 10 minutes
+
+
+def _git_cmd_timeout_seconds() -> int:
+    """Hard timeout for one `git` subprocess invocation. Configurable
+    via `QWEN_GIT_CMD_TIMEOUT_S`. Clamped to (0, 600s]; bad/non-positive
+    falls back to the default. The cap prevents a typo from disabling
+    the timeout entirely on a slow `git push` against a flaky remote.
+    """
+    raw = os.environ.get("QWEN_GIT_CMD_TIMEOUT_S", str(_GIT_CMD_TIMEOUT_DEFAULT))
+    try:
+        v = int(float(raw))
+    except (TypeError, ValueError):
+        return _GIT_CMD_TIMEOUT_DEFAULT
+    if v <= 0:
+        return _GIT_CMD_TIMEOUT_DEFAULT
+    if v > _GIT_CMD_TIMEOUT_MAX:
+        return _GIT_CMD_TIMEOUT_MAX
+    return v
+
+
 def _run_git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     """Run `git <args>` with a hard timeout.
 
@@ -103,6 +125,7 @@ def _run_git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]
     `check=True`; with `check=False` (the cleanup paths) we synthesise
     a non-zero `CompletedProcess` so the caller can keep going.
     """
+    timeout = _git_cmd_timeout_seconds()
     try:
         return subprocess.run(
             ["git", *args],
@@ -110,18 +133,18 @@ def _run_git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]
             check=check,
             text=True,
             capture_output=True,
-            timeout=_GIT_CMD_TIMEOUT_SECONDS,
+            timeout=timeout,
             errors="surrogateescape",
         )
     except subprocess.TimeoutExpired:
         if check:
             raise
-        _log(f"_run_git timeout: git {' '.join(args)} exceeded {_GIT_CMD_TIMEOUT_SECONDS}s")
+        _log(f"_run_git timeout: git {' '.join(args)} exceeded {timeout}s")
         return subprocess.CompletedProcess(
             args=["git", *args],
             returncode=124,
             stdout="",
-            stderr=f"timed_out_after_{_GIT_CMD_TIMEOUT_SECONDS}s",
+            stderr=f"timed_out_after_{timeout}s",
         )
 
 

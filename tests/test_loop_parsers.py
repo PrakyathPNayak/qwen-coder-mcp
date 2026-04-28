@@ -441,3 +441,33 @@ class TestValidateChangedFilesSyntaxWarning:
         monkeypatch.setattr(L, "_REPO", tmp_path)
         ok, msg = L._validate_changed_files([Path("clean.py")])
         assert ok is True, msg
+
+
+class TestGitCmdTimeoutEnv:
+    """Loop 43: `_git_cmd_timeout_seconds` env clamping."""
+
+    def test_default(self, monkeypatch):
+        monkeypatch.delenv("QWEN_GIT_CMD_TIMEOUT_S", raising=False)
+        assert L._git_cmd_timeout_seconds() == 60
+
+    def test_override(self, monkeypatch):
+        monkeypatch.setenv("QWEN_GIT_CMD_TIMEOUT_S", "120")
+        assert L._git_cmd_timeout_seconds() == 120
+
+    def test_invalid_falls_back(self, monkeypatch):
+        monkeypatch.setenv("QWEN_GIT_CMD_TIMEOUT_S", "nope")
+        assert L._git_cmd_timeout_seconds() == 60
+
+    def test_non_positive_falls_back(self, monkeypatch):
+        monkeypatch.setenv("QWEN_GIT_CMD_TIMEOUT_S", "0")
+        assert L._git_cmd_timeout_seconds() == 60
+        monkeypatch.setenv("QWEN_GIT_CMD_TIMEOUT_S", "-5")
+        assert L._git_cmd_timeout_seconds() == 60
+
+    def test_clamped_to_max(self, monkeypatch):
+        monkeypatch.setenv("QWEN_GIT_CMD_TIMEOUT_S", "99999")
+        assert L._git_cmd_timeout_seconds() == 600
+
+    def test_at_max(self, monkeypatch):
+        monkeypatch.setenv("QWEN_GIT_CMD_TIMEOUT_S", "600")
+        assert L._git_cmd_timeout_seconds() == 600
