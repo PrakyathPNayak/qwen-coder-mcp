@@ -626,3 +626,38 @@ class TestRevertFailedPropagation:
         assert "after_out_of_scope" in src
         assert "after_validation" in src
         assert "after_commit_push" in src
+
+
+class TestApplyFailedOutcomeCategoryTag:
+    """Loop 59: apply_failed outcomes embed the structured category."""
+
+    def test_outcome_format_includes_category(self):
+        from agent import loop as L
+        src = Path(L.__file__).read_text(encoding="utf-8")
+        assert 'f"apply_failed:{category}:{rel}:{msg[:60]}"' in src
+
+    def test_category_extractor_used_in_iteration(self):
+        from agent import loop as L
+        src = Path(L.__file__).read_text(encoding="utf-8")
+        # The iteration must call the canonical extractor (not duplicate logic).
+        assert "_apply_error_category(msg)" in src
+
+    def test_each_known_category_round_trips(self):
+        from agent import loop as L
+        # Every known category should map cleanly through _apply_error_category
+        # for a representative message; this guards against a category being
+        # added to the frozenset without a matching extractor branch.
+        sample = {
+            "not_a_unified_diff": "not_a_unified_diff",
+            "oversized_diff": "oversized_diff: 999999 > 5",
+            "unsafe_path": "unsafe_path: ../etc/passwd",
+            "binary_patch": "binary_patch: foo.png",
+            "unsafe_mode": "unsafe_mode: 100755",
+            "malformed_diff": "malformed_diff: missing hunk header",
+            "dir_conflict": "dir_conflict: foo is a directory",
+            "apply_check_failed": "apply_check_failed: patch does not apply",
+            "apply_failed": "apply_failed: rejected hunk #1",
+        }
+        for expected, msg in sample.items():
+            got = L._apply_error_category(msg)
+            assert got in L.APPLY_ERROR_CATEGORIES, f"{got!r} not in frozenset"

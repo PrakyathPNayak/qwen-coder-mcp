@@ -1345,12 +1345,13 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
     with _PhaseTimer(phases, "apply_diff"):
         ok, msg = _apply_diff(diff_clean)
     if not ok:
+        category = _apply_error_category(msg)
         _write_history(
             f"{int(time.time())}-apply-failed.md",
             history_body + f"APPLY FAILED ({msg})\n",
         )
-        _append_state(f"- {_now()} `{rel}` — apply failed ({msg[:80]})\n")
-        return _finish(f"apply_failed:{rel}:{msg[:80]}")
+        _append_state(f"- {_now()} `{rel}` — apply failed [{category}] ({msg[:80]})\n")
+        return _finish(f"apply_failed:{category}:{rel}:{msg[:60]}")
 
     changed = _changed_paths()
     scope_ok, scope_msg = _diff_in_scope(changed, rel)

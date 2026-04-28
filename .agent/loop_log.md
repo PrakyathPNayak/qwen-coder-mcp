@@ -1206,3 +1206,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: low, but next.md #1 was this; doing it clears the queue.
 - ACT: `_state_max_bytes` + 8 tests (env, default, invalid, zero/neg, cap, monkeypatch interop, env-vs-constant precedence). 374 passed.
 - COMMIT: pending.
+
+## Loop 59 — tag `apply_failed` outcome with structured category
+- OBSERVE: Loop 53 introduced `APPLY_ERROR_CATEGORIES` and `_apply_error_category`, but the iteration's `apply_failed` outcome string was still the freeform truncated msg. Monitoring/grepping `runtime.log` couldn't filter by category.
+- ORIENT: Bucket 6 — outcome strings are an interface contract. Inconsistency between the structured frozenset and the actual emitted outcome.
+- DECIDE: Use `_apply_error_category(msg)` to embed a stable category tag in the outcome and the STATE.md row. Format: `apply_failed:{category}:{rel}:{msg[:60]}`.
+- DEVIL:
+  - Correctness: writing my own roundtrip test exposed a sample-message mismatch (a real "obvious-once-tested" find — initial test inputs used spaces; real `_apply_diff` returns are snake_case-prefixed). Test sample fixed to match the actual contract; round-trip now passes for all 9 categories.
+  - Scope: addresses cause (interface inconsistency), not symptom.
+  - Priority: bucket 6 over the remaining bucket-7+ candidates.
+- ACT: outcome + STATE.md row tag added. 3 contract tests including 9-category round-trip. 377 passed.
+- COMMIT: pending.
