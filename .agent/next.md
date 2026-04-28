@@ -1,8 +1,8 @@
 # Next Loop Candidates
 
-1. (P5) `_revert_changes` final-fallback to a known-good SHA when HEAD itself is broken.
-2. (P6) Document `_abort_rebase_if_any` as canonical recovery contract in module docstring.
-3. (P7) `_strip_fence` nested triple-backticks (low risk).
-4. (P5) `_RateLimitedSwallowLogger`: add a public `summary()` method so a future admin endpoint can query "still suppressed N=count - last_logged".
-5. (P6) Audit other callers of `_log` for similar spam potential — e.g. `_run_git` failure logs in `_commit_and_push` could go through a per-error-class rate limiter.
-6. (P5) Cache `iter_ts` is currently a string formed via `_now()` — for sub-second precision in future analytics, also capture `iter_ts_monotonic = time.monotonic()` and emit alongside in timing.log.
+1. (P6) Document `_abort_rebase_if_any` and `_revert_changes` cascade as the canonical recovery contract in module docstring.
+2. (P7) `_strip_fence` nested triple-backticks (low risk).
+3. (P5) `_RateLimitedSwallowLogger`: add `summary()` method ({label, count, last_logged_count, suppressed}) so a future admin endpoint can query suppression state.
+4. (P6) Audit other callers of `_log` for similar spam potential — `_run_git` failures, `_apply_diff` reject paths.
+5. (P5) `_revert_changes`: when origin/main resolution fails, log the *full* command stderr (not just first 200 chars) once at iteration boundary so a "stuck repo" diagnosis is possible from runtime.log alone.
+6. (P5) Cache `iter_ts_monotonic = time.monotonic()` in `_iteration` and emit alongside `iter_ts` in timing.log for sub-second analytics.

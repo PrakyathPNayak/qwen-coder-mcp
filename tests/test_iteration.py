@@ -613,6 +613,70 @@ class TestRevertChanges:
         assert calls == ["checkout", "clean"]
         assert "reset" not in calls
 
+    def test_recovers_via_origin_main_when_head_broken(self, monkeypatch):
+        """Loop 73: HEAD-broken final fallback uses origin/main."""
+        from agent import loop as L
+        import subprocess
+        calls = []
+
+        def fake_run(*a, **kw):
+            calls.append(a)
+            # checkout, clean, reset HEAD all fail; reset origin/main works.
+            if a[0] == "reset" and len(a) >= 3 and a[2] == "origin/main":
+                return subprocess.CompletedProcess(
+                    args=["git", *a], returncode=0, stdout="", stderr="",
+                )
+            return subprocess.CompletedProcess(
+                args=["git", *a], returncode=1, stdout="", stderr="broken",
+            )
+        monkeypatch.setattr(L, "_run_git", fake_run)
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        assert L._revert_changes() is True
+        # Verify origin/main reset was attempted as the FINAL fallback.
+        origin_resets = [c for c in calls if c[0] == "reset" and "origin/main" in c]
+        assert len(origin_resets) == 1
+        assert any("recovered via reset --hard origin/main" in l for l in log_lines)
+
+    def test_returns_false_when_origin_main_fallback_also_fails(self, monkeypatch):
+        """Loop 73: both HEAD and origin/main failures still return False."""
+        from agent import loop as L
+        import subprocess
+
+        def fake_run(*a, **kw):
+            return subprocess.CompletedProcess(
+                args=["git", *a], returncode=128, stdout="",
+                stderr="fatal: bad object",
+            )
+        monkeypatch.setattr(L, "_run_git", fake_run)
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        assert L._revert_changes() is False
+        # Both fallback failure logs must appear.
+        assert any("reset --hard fallback FAILED" in l for l in log_lines)
+        assert any("reset --hard origin/main FAILED" in l for l in log_lines)
+
+    def test_origin_main_fallback_skipped_when_head_reset_succeeds(self, monkeypatch):
+        """Loop 73: don't try origin/main if HEAD reset already worked."""
+        from agent import loop as L
+        import subprocess
+        calls = []
+
+        def fake_run(*a, **kw):
+            calls.append(a)
+            if a[0] in ("checkout", "clean"):
+                return subprocess.CompletedProcess(
+                    args=["git", *a], returncode=1, stdout="", stderr="busy",
+                )
+            return subprocess.CompletedProcess(
+                args=["git", *a], returncode=0, stdout="", stderr="",
+            )
+        monkeypatch.setattr(L, "_run_git", fake_run)
+        assert L._revert_changes() is True
+        # HEAD reset succeeded, so origin/main reset must NOT be attempted.
+        origin_calls = [c for c in calls if "origin/main" in c]
+        assert origin_calls == []
+
 
 class TestRevertFailedPropagation:
     """Loop 57: failed revert surfaces as a distinct outcome category."""

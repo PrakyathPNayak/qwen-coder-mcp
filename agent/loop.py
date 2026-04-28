@@ -1096,13 +1096,16 @@ def _revert_changes() -> bool:
     (e.g. a brand-new file produced by a model diff) survive it. We
     follow up with `git clean -fd` so the tree is identical to HEAD.
 
-    On any failure, attempts a `git reset --hard HEAD` fallback — a
-    dirty tree carried into the next iteration would silently corrupt
-    subsequent commits, so leaving cleanup partial is unacceptable.
+    On any failure, attempts a `git reset --hard HEAD` fallback. If
+    HEAD itself is broken (corrupted ref, missing object), tries one
+    more fallback to `git reset --hard origin/main` — the loop is
+    the only writer to that ref, so resetting to it can only ever
+    discard work this loop just produced and failed to commit, which
+    is exactly what `_revert_changes` is meant to do anyway.
 
-    Returns ``True`` on success, ``False`` if any subprocess call
-    returned non-zero (failure is logged but never raised, so the
-    outer loop keeps running).
+    Returns ``True`` on success, ``False`` if every fallback failed
+    (failure is logged but never raised, so the outer loop keeps
+    running).
     """
     ok = True
     co = _run_git("checkout", "--", ".", check=False)
@@ -1123,6 +1126,23 @@ def _revert_changes() -> bool:
                 "_revert_changes: reset --hard fallback FAILED rc="
                 f"{rs.returncode}: {rs.stderr.strip()[:200]}"
             )
+            # Final fallback: HEAD itself may be broken. Try the
+            # remote-tracking ref `origin/main` as the ground truth
+            # (this loop is the sole writer, so it represents the last
+            # known-good state).
+            rs2 = _run_git(
+                "reset", "--hard", "origin/main", check=False
+            )
+            if rs2.returncode == 0:
+                _log(
+                    "_revert_changes: recovered via reset --hard origin/main"
+                )
+                ok = True
+            else:
+                _log(
+                    "_revert_changes: reset --hard origin/main FAILED rc="
+                    f"{rs2.returncode}: {rs2.stderr.strip()[:200]}"
+                )
     return ok
 
 

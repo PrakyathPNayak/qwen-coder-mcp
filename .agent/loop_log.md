@@ -1360,3 +1360,15 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 5; was next.md #3.
 - ACT: 7 sites edited; 2 new tests using a sequenced fake `_now` to verify only the FIRST timestamp ever appears in state.md across rejected and apply_failed branches. 416 passed.
 - COMMIT: pending.
+
+## Loop 73 — `_revert_changes` final fallback to `origin/main`
+- OBSERVE: `_revert_changes` cascade was checkout → clean → reset HEAD. If HEAD itself is broken (corrupted ref, missing object) the reset fallback fails and the iteration limps on with a dirty tree. The next iteration's `_abort_rebase_if_any` won't recover from a broken HEAD either.
+- ORIENT: Cause: no recovery for broken-HEAD case. The loop is the SOLE writer to origin/main, so origin/main = ground truth. Reset to it = exactly the recovery semantic we want.
+- DECIDE: Add `git reset --hard origin/main` as final fallback after `git reset --hard HEAD` fails.
+- DEVIL:
+  - Correctness: `origin/main` discards anything between local-HEAD and origin/main. But the only thing local-HEAD could have past origin/main is the iteration's failed commit/push attempt — exactly what `_revert_changes` exists to discard. ✓
+  - Scope: addresses cause (broken HEAD).
+  - Priority: bucket 5; was next.md #1.
+  - Edge: if origin/main resolution fails (no remote, no fetch), we log and return False — same outcome as before, no regression.
+- ACT: Function extended; 3 new tests (HEAD-broken recovers via origin/main; both fallbacks fail; origin/main NOT attempted when HEAD reset succeeds). 419 passed.
+- COMMIT: pending.
