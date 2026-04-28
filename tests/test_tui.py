@@ -422,3 +422,67 @@ class TestChatTurnStream:
         history = [ChatMessage(role="system", content="custom")]
         list(tui.chat_turn_stream(history, "hi", client=client))
         assert history[0].content == "custom"
+
+
+class TestDiffSlash:
+    def test_usage(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.SlashCommand(name="diff"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+        )
+        assert "usage:" in text
+
+    def test_one_arg(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.SlashCommand(name="diff", args=["a.txt"], rest="a.txt"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+        )
+        assert "usage:" in text
+
+    def test_diff(self, tmp_path: Path) -> None:
+        (tmp_path / "a.txt").write_text("hello\nworld\n")
+        (tmp_path / "b.txt").write_text("hello\nthere\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.SlashCommand(name="diff", args=["a.txt", "b.txt"], rest="a.txt b.txt"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+        )
+        assert "-world" in text
+        assert "+there" in text
+        assert "--- a.txt" in text
+        assert "+++ b.txt" in text
+
+    def test_identical(self, tmp_path: Path) -> None:
+        (tmp_path / "a.txt").write_text("same\n")
+        (tmp_path / "b.txt").write_text("same\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.SlashCommand(name="diff", args=["a.txt", "b.txt"], rest=""),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+        )
+        assert "identical" in text
+
+    def test_missing(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.SlashCommand(name="diff", args=["nope.txt", "also.txt"], rest=""),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+        )
+        assert "diff error" in text
+
+    def test_escape(self, tmp_path: Path) -> None:
+        (tmp_path / "a.txt").write_text("x")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.SlashCommand(name="diff", args=["a.txt", "../etc/passwd"], rest=""),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+        )
+        assert "error" in text

@@ -42,8 +42,9 @@ qwen-coder-tui
 
 Slash commands: `/help`, `/search <q>`, `/fetch <url>`, `/read <path>`,
 `/ls [path]`, `/find_bugs <path>`, `/explain <path>`, `/apply`,
-`/history [n]`, `/quit`. Anything not starting with `/` is sent to Qwen
-as a chat message with multi-turn memory preserved within the session.
+`/history [n]`, `/diff <a> <b>`, `/quit`. Anything not starting with
+`/` is sent to Qwen as a chat message with multi-turn memory preserved
+within the session.
 
 `/apply` extracts the first unified diff from the assistant's last
 reply (looking for a ```diff or ```patch fence first, then a bare

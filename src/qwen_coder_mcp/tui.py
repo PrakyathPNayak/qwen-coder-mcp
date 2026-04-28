@@ -75,6 +75,7 @@ Slash commands:
   /explain <path>      Qwen explanation of a file
   /apply               Apply the last assistant reply as a unified diff
   /history [n]         Show the last N chat turns (default 10)
+  /diff <a> <b>        Show a unified diff between two files in the repo
   /quit                Exit
 
 Anything not starting with `/` is sent to Qwen as a chat message.
@@ -204,6 +205,27 @@ def _render_history(history: list[ChatMessage], n: int = 10) -> str:
     return "\n".join(out)
 
 
+def _render_diff(cfg: fs_tools.FsConfig, path_a: str, path_b: str) -> str:
+    """Return a unified diff between two files inside the repo root."""
+    import difflib
+
+    try:
+        a = fs_tools.read_file(cfg, path_a)
+        b = fs_tools.read_file(cfg, path_b)
+    except fs_tools.FsError as exc:
+        return f"diff error: {exc}"
+    a_lines = str(a["text"]).splitlines(keepends=True)
+    b_lines = str(b["text"]).splitlines(keepends=True)
+    out = list(
+        difflib.unified_diff(
+            a_lines, b_lines, fromfile=path_a, tofile=path_b, n=3
+        )
+    )
+    if not out:
+        return f"(files identical: {path_a} == {path_b})"
+    return "".join(out)
+
+
 def dispatch_slash(
     cmd: SlashCommand,
     *,
@@ -261,6 +283,10 @@ def dispatch_slash(
             except ValueError:
                 return "usage: /history [n]", False
         return _render_history(history, n), False
+    if name == "diff":
+        if len(cmd.args) < 2:
+            return "usage: /diff <pathA> <pathB>", False
+        return _render_diff(fs_cfg, cmd.args[0], cmd.args[1]), False
     return f"unknown command: /{name}  (try /help)", False
 
 

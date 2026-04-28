@@ -1952,3 +1952,11 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: no retries -- streaming is interactive, partial output is more useful than blocking. chat_turn_stream rolls back on error (no half-committed assistant message in history).
   - Priority: P3 user-requested (TUI live render).
 - ACT: chat_stream method (~80 lines) + chat_turn_stream helper + TUI App wiring + 12 new tests (9 client SSE + 3 TUI). 699 passed.
+
+## Loop 133 — /diff slash command
+- DECIDE: TUI needs file comparison. Add /diff <pathA> <pathB> using stdlib difflib.unified_diff via fs_tools.read_file (so sandboxing applies).
+- DEVIL:
+  - Correctness: identical files return a parseable note instead of empty string. fs_tools errors surface as "diff error: ..." with the same path-escape rejection as /read.
+  - Scope: stdlib only -- no new deps. n=3 context lines is the python diff default.
+  - Priority: P3 user-requested.
+- ACT: ~20 lines code + 6 tests. 705 passed.
