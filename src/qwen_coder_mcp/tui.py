@@ -957,12 +957,20 @@ def _render_runs_audit(cfg: fs_tools.FsConfig, args: list[str]) -> str:
             except ValueError:
                 pass
     path = _audit_run_path(cfg)
-    if not path.exists():
+    rotated = path.with_name(path.name + ".1")
+    sources: list[Path] = []
+    if rotated.exists():
+        sources.append(rotated)
+    if path.exists():
+        sources.append(path)
+    if not sources:
         return "(no /run audit records yet)"
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        return f"audit read error: {exc}"
+    lines: list[str] = []
+    for src in sources:
+        try:
+            lines.extend(src.read_text(encoding="utf-8").splitlines())
+        except OSError as exc:
+            return f"audit read error: {exc}"
     tail = [ln for ln in lines if ln.strip()][-n:]
     if want_json:
         return "\n".join(tail) if tail else "(no /run audit records yet)"

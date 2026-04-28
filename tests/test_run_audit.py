@@ -206,3 +206,55 @@ class TestDiscoverability:
     def test_completion_lists_runs(self):
         comps = tui.slash_completions("/run")
         assert "/runs" in comps
+
+
+class TestRotatedLogIncluded:
+    """Loop 259: /runs viewer also reads from rotated runs.log.1 so
+    history isn't lost the moment loop-257 rotation fires."""
+
+    def _cfg(self, tmp_path):
+        return fs_tools.FsConfig(root=tmp_path)
+
+    def test_only_rotated_log_present(self, tmp_path):
+        cfg = self._cfg(tmp_path)
+        path = tui._audit_run_path(cfg)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rec = '{"ts": 1.0, "cmd": "echo from-rotated", "approved": true, "source": "slash"}'
+        path.with_name("runs.log.1").write_text(rec + "\n", encoding="utf-8")
+        out = tui._render_runs_audit(cfg, [])
+        assert "from-rotated" in out
+
+    def test_rotated_and_live_concatenated(self, tmp_path):
+        cfg = self._cfg(tmp_path)
+        path = tui._audit_run_path(cfg)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        old = '{"ts": 1.0, "cmd": "echo OLD", "approved": true, "source": "slash"}'
+        new = '{"ts": 2.0, "cmd": "echo NEW", "approved": true, "source": "slash"}'
+        path.with_name("runs.log.1").write_text(old + "\n", encoding="utf-8")
+        path.write_text(new + "\n", encoding="utf-8")
+        out = tui._render_runs_audit(cfg, [])
+        assert "OLD" in out and "NEW" in out
+        # Rotated lines come before live lines (chronological).
+        assert out.index("OLD") < out.index("NEW")
+
+    def test_tail_n_spans_rotation_boundary(self, tmp_path):
+        cfg = self._cfg(tmp_path)
+        path = tui._audit_run_path(cfg)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rotated_recs = "\n".join(
+            f'{{"ts": {i}, "cmd": "rot{i}", "approved": true, "source": "s"}}'
+            for i in range(8)
+        )
+        live_recs = "\n".join(
+            f'{{"ts": {10 + i}, "cmd": "live{i}", "approved": true, "source": "s"}}'
+            for i in range(4)
+        )
+        path.with_name("runs.log.1").write_text(rotated_recs + "\n", encoding="utf-8")
+        path.write_text(live_recs + "\n", encoding="utf-8")
+        out = tui._render_runs_audit(cfg, ["10"])
+        # 10 most recent of 12 = rot6,rot7,live0..live3 + 4 from rotated
+        assert "live3" in out
+        assert "rot6" in out
+        assert "rot7" in out
+        assert "rot1" not in out
+

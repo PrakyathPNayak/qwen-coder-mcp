@@ -4297,3 +4297,23 @@ logic), Priority (P2 -- diagnostic only, not behavioural). Suite
 - *Priority*: README correction had been carried for ~6 loops; new commands need documentation the moment they ship. Suite 1855 -> 1888.
 
 **Suite**: 1888 passed, 7 skipped.
+
+---
+
+## Loop 259 — /runs viewer reads rotated audit log
+
+**Why**: loop 257 added size rotation for `.agent/runs.log` -> `runs.log.1`, but the viewer still only read the live file. The moment a rotation fired, operators lost visibility of recent commands until the new live log filled up. Documented as a known caveat at the time; now fixed.
+
+**Change** (src/qwen_coder_mcp/tui.py): `_render_runs_audit` now collects sources from `[runs.log.1, runs.log]` (in that order, so chronological) and concatenates their lines before applying the tail. Either file missing is fine; both missing yields the same "no audit records yet" message.
+
+**Tests** (3 new in tests/test_run_audit.py::TestRotatedLogIncluded):
+- viewer surfaces records when only the rotated log exists
+- rotated + live concatenated chronologically (rotated first)
+- tail N spans the rotation boundary correctly
+
+**Devil step** (Correctness/Scope/Priority):
+- *Correctness*: the chronological invariant relies on the rotation rule "rename live -> .1" — which is what loop 257 does. If a future rotation policy changes that order, this concat order would lie. Mitigation: the rotation helper is one function (`_maybe_rotate_runs_log`) and any future change there should ship test coverage that pins ordering. Not adding a runtime sort by ts because that would mask real bugs in audit emit-time ordering.
+- *Scope*: only handle one rotated generation (`runs.log.1`). Loop 257 explicitly chose single-generation rotation, so reading `runs.log.2/3/...` would surface nothing. If rotation later becomes multi-gen, this viewer needs a glob.
+- *Priority*: small, surgical, closes a 2-loop-old caveat. Worth shipping before tackling the bigger carry-overs (two-phase /run preview, real-tokenizer, fs_regex_edit).
+
+**Suite**: 1891 passed, 7 skipped.
