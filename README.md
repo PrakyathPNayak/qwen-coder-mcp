@@ -88,6 +88,9 @@ Copy `.env.example` to `.env` and adjust if needed:
 | `QWEN_TIMEOUT` | `120` | Request timeout (seconds) |
 | `QWEN_MAX_TOKENS` | `16384` | Default max output tokens. Bumped from 8192 (loop 236) so Qwen3-Next has room for its long `<think>...</think>` blocks before truncation. Capped client-side at `QWEN_SERVER_MAX_LEN` minus prompt tokens. When the cap is hit the client appends `[truncated: model hit max_tokens]` to the response and logs a warning. |
 | `QWEN_REPETITION_PENALTY` | `1.05` | Repetition penalty applied to every chat/stream request (loop 238). Qwen3-Next degenerates into n-gram loops at low temperature without one — symptom: the model "repeats itself and doesn't stop" until it hits `max_tokens`. Set `1.0` to disable; `1.10`–`1.20` for aggressive de-looping. |
+| `QWEN_AUTO_COMPRESS` | `1` | Loop 240: drop oldest non-protected messages when prompt + completion would overflow `QWEN_SERVER_MAX_LEN`. System messages and the last user message are always preserved. Set `0` to disable (request goes straight through to vLLM, which will 400 on overflow). |
+| `QWEN_CONTEXT_RESERVE` | `256` | Loop 240: tokens kept free of prompt + completion as headroom for chat-template overhead (per-message role tags, eot markers). Raise if you see vLLM still 400'ing on edge-case overflows. |
+| `QWEN_CHARS_PER_TOKEN` | `3.0` | Loop 240: estimator ratio used for client-side token counting. Code/markdown is ~3 chars/token on Qwen3-Next; English prose is closer to 4. Lower → tighter clamping, more aggressive compression. |
 | `QWEN_DISABLE_THINK_STRIP` | unset | Set `1` to disable stripping of `<think>...</think>` reasoning blocks from assistant content. |
 | `LOOP_INTERVAL_SECONDS` | `45` | Sleep between iterations |
 | `LOOP_MAX_FILE_BYTES` | `60000` | Skip files larger than this |

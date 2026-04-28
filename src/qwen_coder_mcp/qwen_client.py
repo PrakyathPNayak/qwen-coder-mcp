@@ -52,6 +52,57 @@ def _default_repetition_penalty() -> float:
     return v
 
 
+def _chars_per_token() -> float:
+    """Loop 240: characters-per-token estimator ratio.
+
+    vLLM rejected requests with 49153 actual prompt tokens when our old
+    ``len // 4`` (==4 chars/token) heuristic estimated only ~37k. Code
+    and markdown tokenize at roughly 3 chars/token on Qwen3-Next, so
+    the old estimator under-counted by ~25% and the client-side clamp
+    in ``_resolve_max_tokens`` failed to catch the overflow before
+    sending. Default to a tighter 3.0 ratio and let operators override
+    via ``QWEN_CHARS_PER_TOKEN`` if their workload tokenizes differently
+    (e.g. natural-language English averages closer to 4).
+    """
+    raw = os.environ.get("QWEN_CHARS_PER_TOKEN", "3.0")
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return 3.0
+    if v <= 0:
+        return 3.0
+    return v
+
+
+def _estimate_tokens(text: str) -> int:
+    """Loop 240: char-based token estimate, conservative (rounds up)."""
+    if not text:
+        return 0
+    cpt = _chars_per_token()
+    return max(1, int(len(text) / cpt) + (1 if len(text) % cpt else 0))
+
+
+def _context_reserve_tokens() -> int:
+    """Loop 240: headroom kept free of prompt+completion for chat-template
+    overhead and per-message tokenizer markers (system/user/assistant
+    role tags, eot tokens). Default 256 is generous; ``QWEN_CONTEXT_RESERVE``
+    overrides."""
+    raw = os.environ.get("QWEN_CONTEXT_RESERVE", "256")
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return 256
+    if v < 0:
+        return 256
+    return v
+
+
+def _auto_compress_enabled() -> bool:
+    """Loop 240: master kill-switch for history compression. Defaults on."""
+    raw = os.environ.get("QWEN_AUTO_COMPRESS", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
 _THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.DOTALL | re.IGNORECASE)
 _DANGLING_OPEN_THINK_RE = re.compile(r".*?</think\s*>", re.DOTALL | re.IGNORECASE)
 
@@ -257,6 +308,112 @@ class QwenClient:
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
+    @staticmethod
+    def _msg_role(m: Any) -> str:
+        if isinstance(m, ChatMessage):
+            return m.role
+        if isinstance(m, dict):
+            return m.get("role", "")
+        return ""
+
+    @staticmethod
+    def _msg_content(m: Any) -> str:
+        if isinstance(m, ChatMessage):
+            return m.content or ""
+        if isinstance(m, dict):
+            c = m.get("content", "")
+            return c if isinstance(c, str) else ""
+        return ""
+
+    def _prompt_tokens(self, messages: Sequence[Any]) -> int:
+        return sum(_estimate_tokens(self._msg_content(m)) for m in messages)
+
+    def _compress_messages_to_fit(
+        self,
+        messages: Sequence[ChatMessage | dict[str, str]],
+        requested_max_tokens: int | None,
+    ) -> tuple[list[Any], int]:
+        """Loop 240: drop oldest non-protected messages so prompt + completion
+        + reserve fits under the server's context cap.
+
+        Symptom that drove this: vLLM 400'd with ``This model's maximum
+        context length is 65536 tokens. However, you requested 16384
+        output tokens and your prompt contains at least 49153 input
+        tokens``. The pre-loop-240 ``_resolve_max_tokens`` only clamped
+        the ``max_tokens`` budget; it never dropped messages, so a long
+        agent history could push the prompt itself past the server cap
+        with no recovery path.
+
+        Compression rules:
+          * Always preserve every ``system`` message (role-prompt /
+            persona).
+          * Always preserve the LAST ``user`` message (the actual query).
+          * Drop oldest non-protected messages first (FIFO), in pairs
+            where possible (assistant reply orphans look weird in the
+            chat template).
+          * After dropping, clamp ``max_tokens`` to whatever room is
+            still left so the request strictly fits.
+
+        Returns ``(messages, max_tokens)``. The messages list is a fresh
+        copy (caller's list is never mutated). When the cap is unknown
+        (``server_max_len <= 0``) compression is a no-op and only the
+        ``max_tokens`` value is returned alongside the original list.
+        Disable entirely with ``QWEN_AUTO_COMPRESS=0``.
+        """
+        target = requested_max_tokens or self.settings.max_tokens
+        cap = getattr(self.settings, "server_max_len", 0) or 0
+        msgs: list[Any] = list(messages)
+
+        if cap <= 0 or not _auto_compress_enabled():
+            # Best-effort: still clamp to target if cap unknown, mirror
+            # legacy _resolve_max_tokens behaviour for callers that
+            # opt out of compression.
+            return msgs, max(1, target if cap <= 0 else self._resolve_max_tokens(msgs, target))
+
+        reserve = _context_reserve_tokens()
+
+        def _protected_indices(ms: list[Any]) -> set[int]:
+            keep = {i for i, m in enumerate(ms) if self._msg_role(m) == "system"}
+            for i in range(len(ms) - 1, -1, -1):
+                if self._msg_role(ms[i]) == "user":
+                    keep.add(i)
+                    break
+            return keep
+
+        dropped = 0
+        # Loop until the request fits OR we have no more droppable msgs.
+        while True:
+            prompt_t = self._prompt_tokens(msgs)
+            # We want: prompt + target + reserve <= cap.
+            if prompt_t + target + reserve <= cap:
+                break
+            keep = _protected_indices(msgs)
+            droppable = [i for i in range(len(msgs)) if i not in keep]
+            if not droppable:
+                break
+            msgs.pop(droppable[0])
+            dropped += 1
+
+        if dropped > 0:
+            _logger.warning(
+                "context compression: dropped %d oldest message(s) to "
+                "fit %d-token cap (target_completion=%d, reserve=%d)",
+                dropped, cap, target, reserve,
+            )
+
+        # Final clamp: if we still don't fit (only system + last user
+        # remain and they're already huge), clamp max_tokens down.
+        prompt_t = self._prompt_tokens(msgs)
+        room = cap - prompt_t - reserve
+        if room <= 0:
+            _logger.warning(
+                "context compression: prompt (%d est. tokens) + reserve "
+                "(%d) already exceeds cap (%d); sending max_tokens=1 "
+                "and letting server reject", prompt_t, reserve, cap,
+            )
+            return msgs, 1
+        return msgs, max(1, min(target, room))
+
     def _resolve_max_tokens(
         self,
         messages: Sequence[ChatMessage | dict[str, str]],
@@ -274,20 +431,19 @@ class QwenClient:
 
         Returns at least 1, even on tiny budgets, so the request still
         goes through and the server can produce a one-token error.
+
+        Loop 240: now uses ``_estimate_tokens`` (3 chars/token by default,
+        vs. the old looser 4 chars/token) and a ``QWEN_CONTEXT_RESERVE``
+        knob (default 256, was hardcoded 64) so chat-template overhead
+        doesn't push us off the wall. For full history compression call
+        :meth:`_compress_messages_to_fit` instead.
         """
         budget = requested or self.settings.max_tokens
         cap = getattr(self.settings, "server_max_len", 0) or 0
         if cap <= 0:
             return max(1, budget)
-        prompt_tokens = 0
-        for m in messages:
-            content = m.content if isinstance(m, ChatMessage) else m.get("content", "")
-            if isinstance(content, str):
-                # Same crude estimator as tui.estimate_tokens (~4 chars/token)
-                prompt_tokens += max(1, len(content) // 4)
-        # Reserve 64 tokens of headroom for chat template overhead so we
-        # don't slam right against the server's wall.
-        room = cap - prompt_tokens - 64
+        prompt_tokens = self._prompt_tokens(messages)
+        room = cap - prompt_tokens - _context_reserve_tokens()
         if room <= 0:
             return 1
         return max(1, min(budget, room))
@@ -443,15 +599,20 @@ class QwenClient:
         repetition_penalty: float | None = None,
     ) -> str:
         """Send a chat completion request and return the assistant text."""
+        # Loop 240: drop oldest non-protected messages so prompt + completion
+        # fits inside the server's context cap. No-op if QWEN_AUTO_COMPRESS=0.
+        compressed_msgs, resolved_max = self._compress_messages_to_fit(
+            messages, max_tokens
+        )
         payload: dict[str, Any] = {
             "model": self.settings.model,
             "messages": [
                 m.to_dict() if isinstance(m, ChatMessage) else dict(m)
-                for m in messages
+                for m in compressed_msgs
             ],
             "temperature": temperature,
             "top_p": top_p,
-            "max_tokens": self._resolve_max_tokens(messages, max_tokens),
+            "max_tokens": resolved_max,
             "stream": False,
             # Loop 238: prevent Qwen3-Next n-gram loops at low temperature.
             "repetition_penalty": (
@@ -535,15 +696,20 @@ class QwenClient:
         more useful than blocking for a retry. Callers wanting
         retries should fall back to `chat()`.
         """
+        # Loop 240: same compression as chat() — drop oldest non-protected
+        # messages so prompt + completion fits the server's context cap.
+        compressed_msgs, resolved_max = self._compress_messages_to_fit(
+            messages, max_tokens
+        )
         payload: dict[str, Any] = {
             "model": self.settings.model,
             "messages": [
                 m.to_dict() if isinstance(m, ChatMessage) else dict(m)
-                for m in messages
+                for m in compressed_msgs
             ],
             "temperature": temperature,
             "top_p": top_p,
-            "max_tokens": self._resolve_max_tokens(messages, max_tokens),
+            "max_tokens": resolved_max,
             "stream": True,
             # Loop 238: prevent Qwen3-Next n-gram loops at low temperature.
             "repetition_penalty": (

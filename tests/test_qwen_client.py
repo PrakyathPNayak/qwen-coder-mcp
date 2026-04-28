@@ -1019,3 +1019,343 @@ class TestReadmeKnobsLoop239:
     def test_readme_documents_disable_think_strip(self):
         text = self._readme()
         assert "`QWEN_DISABLE_THINK_STRIP`" in text
+
+    # Loop 240 readme drift coverage (kept in this class so the readme
+    # docs-pass tests stay co-located).
+    def test_readme_documents_auto_compress_knob(self):
+        text = self._readme()
+        assert "`QWEN_AUTO_COMPRESS`" in text
+
+    def test_readme_documents_context_reserve_knob(self):
+        text = self._readme()
+        assert "`QWEN_CONTEXT_RESERVE`" in text
+        assert "256" in text  # default value
+
+    def test_readme_documents_chars_per_token_knob(self):
+        text = self._readme()
+        assert "`QWEN_CHARS_PER_TOKEN`" in text
+
+
+# ============================================================ Loop 240
+# Context compression: drop oldest non-protected messages so prompt +
+# completion fits inside the server's context cap.
+class TestContextCompressionLoop240:
+    """Loop 240: user reported "context compression still don't seem to
+    be there" after vLLM rejected requests with::
+
+        This model's maximum context length is 65536 tokens. However,
+        you requested 16384 output tokens and your prompt contains at
+        least 49153 input tokens, for a total of at least 65537 tokens.
+
+    Two root causes:
+      1. Token estimator was 4 chars/token; reality is ~3 for code, so
+         we under-counted by ~25% and the client clamp let the request
+         through.
+      2. There was no message-history compression at all -- only the
+         max_tokens cap was clamped. With a long agent history the
+         prompt itself could exceed the server cap.
+
+    Fix: tighter estimator (3 chars/token by default), drop oldest
+    non-system / non-last-user messages until the request fits, then
+    final-clamp max_tokens to whatever room is left."""
+
+    @staticmethod
+    def _settings_with_cap(cap: int = 1000, max_tokens: int = 100):
+        return Settings(
+            base_url="http://test/v1",
+            api_key="EMPTY",
+            model="qwen3.6-27b",
+            timeout=5,
+            max_tokens=max_tokens,
+            server_max_len=cap,
+            loop_interval_seconds=1,
+            loop_max_file_bytes=1000,
+            loop_push=False,
+        )
+
+    @staticmethod
+    def _client(handler, settings) -> QwenClient:
+        c = QwenClient(settings=settings)
+        c._client = httpx.Client(
+            transport=httpx.MockTransport(handler),
+            base_url=settings.base_url,
+            timeout=settings.timeout,
+        )
+        return c
+
+    # ---------------------------------------------------- Estimator
+    def test_estimator_uses_three_chars_per_token_by_default(self):
+        from qwen_coder_mcp.qwen_client import _estimate_tokens
+
+        # 300 chars / 3 chars-per-token = 100 tokens.
+        assert _estimate_tokens("x" * 300) == 100
+
+    def test_estimator_rounds_up_for_partial_token(self):
+        from qwen_coder_mcp.qwen_client import _estimate_tokens
+
+        # 301 chars at 3 cpt is 100.33 -> ceil to 101.
+        assert _estimate_tokens("x" * 301) == 101
+
+    def test_estimator_empty_is_zero(self):
+        from qwen_coder_mcp.qwen_client import _estimate_tokens
+
+        assert _estimate_tokens("") == 0
+        assert _estimate_tokens(None) == 0  # type: ignore[arg-type]
+
+    def test_estimator_env_override(self, monkeypatch):
+        from qwen_coder_mcp.qwen_client import _estimate_tokens
+
+        monkeypatch.setenv("QWEN_CHARS_PER_TOKEN", "4")
+        # 400 chars / 4 cpt = 100.
+        assert _estimate_tokens("x" * 400) == 100
+
+    def test_estimator_env_invalid_falls_back(self, monkeypatch):
+        from qwen_coder_mcp.qwen_client import _chars_per_token
+
+        monkeypatch.setenv("QWEN_CHARS_PER_TOKEN", "not-a-number")
+        assert _chars_per_token() == pytest.approx(3.0)
+        monkeypatch.setenv("QWEN_CHARS_PER_TOKEN", "0")
+        assert _chars_per_token() == pytest.approx(3.0)
+        monkeypatch.setenv("QWEN_CHARS_PER_TOKEN", "-1")
+        assert _chars_per_token() == pytest.approx(3.0)
+
+    # ---------------------------------------------------- Reserve knob
+    def test_context_reserve_default_256(self):
+        from qwen_coder_mcp.qwen_client import _context_reserve_tokens
+
+        assert _context_reserve_tokens() == 256
+
+    def test_context_reserve_env_override(self, monkeypatch):
+        from qwen_coder_mcp.qwen_client import _context_reserve_tokens
+
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "512")
+        assert _context_reserve_tokens() == 512
+
+    def test_context_reserve_invalid_or_negative_falls_back(self, monkeypatch):
+        from qwen_coder_mcp.qwen_client import _context_reserve_tokens
+
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "junk")
+        assert _context_reserve_tokens() == 256
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "-5")
+        assert _context_reserve_tokens() == 256
+
+    # ---------------------------------------------------- Compression
+    def test_no_compression_when_under_budget(self):
+        c = self._client(lambda r: _ok_response("ok"), self._settings_with_cap(cap=10000))
+        msgs = [
+            ChatMessage("system", "you are helpful"),
+            ChatMessage("user", "hi"),
+            ChatMessage("assistant", "hello"),
+            ChatMessage("user", "bye"),
+        ]
+        out, mt = c._compress_messages_to_fit(msgs, requested_max_tokens=100)
+        assert len(out) == 4  # nothing dropped
+        assert mt == 100
+
+    def test_drops_oldest_non_protected_when_overflow(self, monkeypatch):
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        # cap=200 tokens, target completion=50, reserve=0.
+        # Each message content "x"*150 -> 50 tokens at 3 cpt.
+        c = self._client(
+            lambda r: _ok_response("ok"),
+            self._settings_with_cap(cap=200, max_tokens=50),
+        )
+        msgs = [
+            ChatMessage("system", "x" * 150),       # 50 tok protected
+            ChatMessage("user", "x" * 150),         # 50 tok droppable
+            ChatMessage("assistant", "x" * 150),    # 50 tok droppable
+            ChatMessage("user", "current query"),   # ~5 tok protected (last user)
+        ]
+        # Prompt total ~155 tok; +50 completion = 205 > 200 cap.
+        # Drop one droppable to get under.
+        out, _mt = c._compress_messages_to_fit(msgs, requested_max_tokens=50)
+        roles = [m.role if isinstance(m, ChatMessage) else m["role"] for m in out]
+        contents = [
+            m.content if isinstance(m, ChatMessage) else m["content"] for m in out
+        ]
+        # System and last user must survive.
+        assert "system" in roles
+        assert roles[-1] == "user"
+        assert contents[-1] == "current query"
+        # Some droppable must have been removed.
+        assert len(out) < len(msgs)
+
+    def test_preserves_all_system_messages(self, monkeypatch):
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        c = self._client(
+            lambda r: _ok_response("ok"),
+            self._settings_with_cap(cap=300, max_tokens=50),
+        )
+        # Two system messages (rare but valid).
+        msgs = [
+            ChatMessage("system", "x" * 90),  # 30 tok, protected
+            ChatMessage("user", "x" * 300),   # 100 tok, droppable
+            ChatMessage("assistant", "x" * 300),  # 100 tok, droppable
+            ChatMessage("system", "x" * 90),  # 30 tok, protected
+            ChatMessage("user", "now"),       # ~1 tok, protected (last user)
+        ]
+        out, _mt = c._compress_messages_to_fit(msgs, requested_max_tokens=50)
+        roles = [m.role if isinstance(m, ChatMessage) else m["role"] for m in out]
+        # Both system messages must survive.
+        assert roles.count("system") == 2
+
+    def test_preserves_last_user_even_if_oldest_was_user(self, monkeypatch):
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        c = self._client(
+            lambda r: _ok_response("ok"),
+            self._settings_with_cap(cap=200, max_tokens=20),
+        )
+        msgs = [
+            ChatMessage("user", "x" * 300),   # 100 tok, droppable (NOT last user)
+            ChatMessage("assistant", "x" * 300),
+            ChatMessage("user", "x" * 300),   # 100 tok, droppable
+            ChatMessage("assistant", "x" * 300),
+            ChatMessage("user", "tail"),      # ~1 tok, protected
+        ]
+        out, _ = c._compress_messages_to_fit(msgs, requested_max_tokens=20)
+        # Last user must survive even with no system at all.
+        last = out[-1]
+        last_role = last.role if isinstance(last, ChatMessage) else last["role"]
+        last_content = last.content if isinstance(last, ChatMessage) else last["content"]
+        assert last_role == "user"
+        assert last_content == "tail"
+
+    def test_clamps_max_tokens_when_protected_msgs_alone_overflow(self, monkeypatch):
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        c = self._client(
+            lambda r: _ok_response("ok"),
+            self._settings_with_cap(cap=100, max_tokens=80),
+        )
+        # System + last user already 90 tokens: target=80 -> can't fit;
+        # drop nothing (both protected); clamp max_tokens to room.
+        msgs = [
+            ChatMessage("system", "x" * 240),  # 80 tok
+            ChatMessage("user", "x" * 30),     # 10 tok
+        ]
+        out, mt = c._compress_messages_to_fit(msgs, requested_max_tokens=80)
+        assert len(out) == 2
+        # Room = 100 - 90 - 0 = 10. So max_tokens clamped to 10.
+        assert mt == 10
+
+    def test_returns_one_when_protected_msgs_alone_exceed_cap(self, monkeypatch):
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        c = self._client(
+            lambda r: _ok_response("ok"),
+            self._settings_with_cap(cap=50, max_tokens=80),
+        )
+        # System alone is already bigger than cap.
+        msgs = [
+            ChatMessage("system", "x" * 300),  # 100 tok > cap
+            ChatMessage("user", "hi"),
+        ]
+        out, mt = c._compress_messages_to_fit(msgs, requested_max_tokens=80)
+        assert mt == 1  # degenerate, server may still 400 but at least we tried.
+
+    def test_disabled_via_env(self, monkeypatch):
+        monkeypatch.setenv("QWEN_AUTO_COMPRESS", "0")
+        c = self._client(
+            lambda r: _ok_response("ok"),
+            self._settings_with_cap(cap=200, max_tokens=50),
+        )
+        msgs = [
+            ChatMessage("system", "x" * 150),
+            ChatMessage("user", "x" * 150),
+            ChatMessage("assistant", "x" * 150),
+            ChatMessage("user", "now"),
+        ]
+        out, _mt = c._compress_messages_to_fit(msgs, requested_max_tokens=50)
+        # Compression disabled -> no messages dropped.
+        assert len(out) == len(msgs)
+
+    def test_caller_messages_list_not_mutated(self, monkeypatch):
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        c = self._client(
+            lambda r: _ok_response("ok"),
+            self._settings_with_cap(cap=200, max_tokens=20),
+        )
+        msgs = [
+            ChatMessage("user", "x" * 300),
+            ChatMessage("assistant", "x" * 300),
+            ChatMessage("user", "tail"),
+        ]
+        original_len = len(msgs)
+        c._compress_messages_to_fit(msgs, requested_max_tokens=20)
+        # Caller's list must be untouched (we work on a copy).
+        assert len(msgs) == original_len
+
+    # ---------------------------------------------------- Wired into chat
+    def test_chat_sends_compressed_messages_to_server(self, monkeypatch):
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        seen: dict = {}
+
+        def handler(req):
+            seen.update(json.loads(req.content.decode("utf-8")))
+            return _ok_response("ok")
+
+        c = self._client(handler, self._settings_with_cap(cap=200, max_tokens=20))
+        msgs = [
+            ChatMessage("system", "x" * 90),       # 30 tok, protected
+            ChatMessage("user", "x" * 300),        # 100 tok, droppable (1st)
+            ChatMessage("assistant", "x" * 300),   # 100 tok, droppable (2nd)
+            ChatMessage("user", "tail"),           # ~1 tok, protected
+        ]
+        c.chat(msgs, max_tokens=20)
+        sent_roles = [m["role"] for m in seen["messages"]]
+        # Some droppable was removed from the wire payload.
+        assert len(seen["messages"]) < len(msgs)
+        assert "system" in sent_roles
+        assert sent_roles[-1] == "user"
+
+    def test_chat_stream_also_compresses(self, monkeypatch):
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        seen: dict = {}
+
+        def handler(req):
+            seen.update(json.loads(req.content.decode("utf-8")))
+            return httpx.Response(
+                200,
+                text='data: {"choices":[{"delta":{"content":"x"},"finish_reason":"stop"}]}\ndata: [DONE]\n',
+                headers={"content-type": "text/event-stream"},
+            )
+
+        c = self._client(handler, self._settings_with_cap(cap=200, max_tokens=20))
+        msgs = [
+            ChatMessage("system", "x" * 90),
+            ChatMessage("user", "x" * 300),
+            ChatMessage("assistant", "x" * 300),
+            ChatMessage("user", "tail"),
+        ]
+        list(c.chat_stream(msgs, max_tokens=20))
+        assert len(seen["messages"]) < len(msgs)
+
+    def test_realistic_overflow_repro(self, monkeypatch):
+        """Reproduce the user's bug report: 49k-token prompt + 16k
+        max_tokens vs 65k cap. With compression the request must fit;
+        without it (the pre-loop-240 codepath) the server would 400."""
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "256")
+        seen: dict = {}
+
+        def handler(req):
+            seen.update(json.loads(req.content.decode("utf-8")))
+            return _ok_response("ok")
+
+        c = self._client(handler, self._settings_with_cap(cap=65536, max_tokens=16384))
+        # 49k tokens at 3 cpt -> 147k chars of history
+        big_assistant = "x" * 147000
+        msgs = [
+            ChatMessage("system", "you are helpful"),
+            ChatMessage("user", "earlier question"),
+            ChatMessage("assistant", big_assistant),  # 49k tok
+            ChatMessage("user", "now answer this"),
+        ]
+        c.chat(msgs, max_tokens=16384)
+        # Verify what actually went on the wire fits.
+        from qwen_coder_mcp.qwen_client import _estimate_tokens
+
+        sent_prompt_tokens = sum(
+            _estimate_tokens(m["content"]) for m in seen["messages"]
+        )
+        sent_max = seen["max_tokens"]
+        # 65536 - sent_prompt - sent_max must be >= reserve(256)
+        # to satisfy the server's cap.
+        assert sent_prompt_tokens + sent_max + 256 <= 65536

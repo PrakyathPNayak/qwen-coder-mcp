@@ -4054,3 +4054,36 @@ loops at low temp without rep penalty). Added repetition_penalty
 default to chat + chat_stream + system_user. QWEN_REPETITION_PENALTY
 env override; per-call kwarg; extra-dict still wins. +8 tests.
 Suite 1536 green.
+
+## Loop 239 — README docs pass + drift tests for loops 236-238
+Suite green. README env-knob table now documents QWEN_MAX_TOKENS=16384
+(corrected from stale 4096), QWEN_REPETITION_PENALTY=1.05, the literal
+"[truncated: model hit max_tokens]" marker, and QWEN_DISABLE_THINK_STRIP.
++4 drift tests reading README.md to keep the docs alive.
+
+## Loop 240 — client-side history compression keeps context under cap
+User pasted vLLM 400: "maximum context length is 65536 tokens. However,
+you requested 16384 output tokens and your prompt contains at least
+49153 input tokens" -- two consecutive rejections. Said context
+compression "still don't seem to be there". Two root causes:
+  1) Old estimator was len//4 (4 chars/token); reality is ~3 for code
+     so we under-counted by 25% and the client clamp didn't trigger.
+  2) Even with a tighter estimator, only max_tokens was being clamped
+     -- a long agent history could push the prompt itself past the cap
+     with no recovery path.
+Fix: new _estimate_tokens (3 chars/token, env-overridable), new
+_compress_messages_to_fit() that drops oldest non-system / non-last-user
+messages until prompt + completion + reserve fits under server_max_len,
+then final-clamps max_tokens to remaining room. Wired into both chat()
+and chat_stream() before payload build. New env knobs: QWEN_AUTO_COMPRESS
+(default 1, kill-switch), QWEN_CONTEXT_RESERVE (default 256, was
+hardcoded 64), QWEN_CHARS_PER_TOKEN (default 3.0). README documented.
++11 unit tests (estimator, env overrides, compression rules, system+
+last-user preservation, max_tokens clamp on minimal-prompt overflow,
+no-mutation guarantee, wire-payload assertions for both chat and
+chat_stream, realistic 49k+16k overflow repro) +3 README drift tests.
+Devil step: Correctness (system+last-user always preserved -- verified;
+oldest-first FIFO not pair-aware but assistant-orphan is allowed by
+chat templates), Scope (compression only -- streaming filter, retry
+logic, server config untouched), Priority (P0; was the active user-
+reported regression). Suite ~1.5k green.
