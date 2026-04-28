@@ -2060,3 +2060,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P5 polish.
 - ACT: _render_export helper plus dispatcher branch plus SLASH_COMMANDS entry plus help text. Five new tests cover basic round trip, no args, no history, empty history, and a path escape attempt. Eight hundred twenty passed.
 
+
+## Loop 145 — /pin and /unpin file-to-system-prompt
+- DECIDE: claude code lets you pin a spec or contract file so the model rereads it every turn without the user re-attaching. Add slash pin and slash unpin.
+- DEVIL:
+  - Correctness: read goes through fs_tools so the sandbox applies and a path escape leaves the system prompt untouched. The pinned files marker is inserted once and subsequent pins append under the same marker so unpin can strip everything in one shot. Files larger than eight kilobytes get the same truncation marker as the at-mention helper.
+  - Scope: distinct from at-mention which is a one shot inline expansion. Pin survives across turns by mutating the system prompt.
+  - Priority: P3 user requested parity.
+- ACT: _render_pin and _render_unpin helpers, dispatcher branches, SLASH_COMMANDS entries, help text. Seven new tests cover pin attaching content pin inserting system message when missing pin appending a second file with one marker pin path escape leaving system unchanged unpin clearing the block unpin when nothing pinned and pin truncating a large file. Eight hundred twenty seven passed.
+

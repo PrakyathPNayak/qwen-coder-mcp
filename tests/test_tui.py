@@ -1405,3 +1405,109 @@ class TestExportSlash:
             history=[ChatMessage(role="user", content="x")],
         )
         assert "error" in text.lower()
+
+
+# ----------------------------------------------------------- Loop 145
+class TestPinSlash:
+    def test_pin_attaches_to_system_prompt(self, tmp_path: Path) -> None:
+        (tmp_path / "spec.md").write_text("read this every turn\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = [ChatMessage(role="system", content="base")]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/pin spec.md"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "pinned spec.md" in text
+        assert "read this every turn" in history[0].content
+        assert "pinned files" in history[0].content
+
+    def test_pin_inserts_system_when_missing(self, tmp_path: Path) -> None:
+        (tmp_path / "spec.md").write_text("hi\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = []
+        tui.dispatch_slash(
+            tui.parse_slash("/pin spec.md"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert history[0].role == "system"
+
+    def test_pin_appends_second_file(self, tmp_path: Path) -> None:
+        (tmp_path / "a.md").write_text("alpha\n")
+        (tmp_path / "b.md").write_text("beta\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = [ChatMessage(role="system", content="base")]
+        tui.dispatch_slash(
+            tui.parse_slash("/pin a.md"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        tui.dispatch_slash(
+            tui.parse_slash("/pin b.md"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "alpha" in history[0].content
+        assert "beta" in history[0].content
+        # Marker only appears once even with two pinned files.
+        assert history[0].content.count("--- pinned files ---") == 1
+
+    def test_pin_path_escape(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = [ChatMessage(role="system", content="base")]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/pin ../../etc/passwd"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "error" in text.lower()
+        # System prompt must be unchanged on failure.
+        assert history[0].content == "base"
+
+    def test_unpin_clears_block(self, tmp_path: Path) -> None:
+        (tmp_path / "a.md").write_text("alpha\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = [ChatMessage(role="system", content="base")]
+        tui.dispatch_slash(
+            tui.parse_slash("/pin a.md"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/unpin"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "cleared" in text
+        assert history[0].content == "base"
+
+    def test_unpin_when_nothing_pinned(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = [ChatMessage(role="system", content="base")]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/unpin"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "nothing pinned" in text
+
+    def test_pin_truncates_large_file(self, tmp_path: Path) -> None:
+        (tmp_path / "big.txt").write_text("z" * 20000)
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history: list[ChatMessage] = [ChatMessage(role="system", content="base")]
+        tui.dispatch_slash(
+            tui.parse_slash("/pin big.txt"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "[truncated]" in history[0].content

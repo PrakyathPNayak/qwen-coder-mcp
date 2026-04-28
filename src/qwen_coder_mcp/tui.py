@@ -90,6 +90,8 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/retry",
     "/sysinfo",
     "/export",
+    "/pin",
+    "/unpin",
     "/quit",
 )
 
@@ -133,6 +135,8 @@ Slash commands:
   /retry               Re-send the last user message
   /sysinfo             Snapshot of backend health, model, root, history
   /export <path>       Export full chat as Markdown
+  /pin <path>          Attach file to system prompt for the rest of the session
+  /unpin               Clear all pinned files from the system prompt
   /quit                Exit
 
 @<path> tokens in plain chat are expanded inline as file contents.
@@ -434,6 +438,52 @@ def _render_export(
     return f"exported {msgs} turns as markdown to {path}"
 
 
+_PIN_MARKER = "\n\n--- pinned files ---\n"
+
+
+def _render_pin(
+    cfg: fs_tools.FsConfig, history: list[ChatMessage], path: str
+) -> str:
+    """Append a file's contents to the system prompt under a pinned block.
+
+    The content is appended to (or attached to) the system message at
+    history index zero so the model sees the file on every subsequent
+    turn without the user having to re-attach it via the @file mention.
+    Existing pinned blocks are preserved; files are appended in pin order.
+    The file is read through fs_tools so the sandbox applies, and a
+    failure leaves the system prompt untouched.
+    """
+    try:
+        info = fs_tools.read_file(cfg, path)
+    except fs_tools.FsError as exc:
+        return f"pin error: {exc}"
+    body = str(info["text"])
+    snippet = body[:8000]
+    truncated = "\n[truncated]\n" if len(body) > 8000 else ""
+    block = f"\n# {path}\n```\n{snippet}{truncated}\n```\n"
+    if not history or history[0].role != "system":
+        history.insert(0, ChatMessage(role="system", content=prompts.CODER_SYSTEM))
+    sys_msg = history[0]
+    if _PIN_MARKER in sys_msg.content:
+        new_content = sys_msg.content + block
+    else:
+        new_content = sys_msg.content + _PIN_MARKER + block
+    history[0] = ChatMessage(role="system", content=new_content)
+    return f"(pinned {path}, {len(snippet)} bytes)"
+
+
+def _render_unpin(history: list[ChatMessage]) -> str:
+    """Strip the pinned-files block from the system prompt."""
+    if not history or history[0].role != "system":
+        return "(no system prompt)"
+    sys_msg = history[0]
+    if _PIN_MARKER not in sys_msg.content:
+        return "(nothing pinned)"
+    head = sys_msg.content.split(_PIN_MARKER, 1)[0]
+    history[0] = ChatMessage(role="system", content=head)
+    return "(pinned files cleared)"
+
+
 _GIT_ALLOWED = {"status", "log", "diff", "show", "branch", "remote", "rev-parse"}
 
 
@@ -692,6 +742,16 @@ def dispatch_slash(
         if not cmd.args:
             return "usage: /export <path>", False
         return _render_export(fs_cfg, history, cmd.args[0]), False
+    if name == "pin":
+        if history is None:
+            return "no history available", False
+        if not cmd.args:
+            return "usage: /pin <path>", False
+        return _render_pin(fs_cfg, history, cmd.args[0]), False
+    if name == "unpin":
+        if history is None:
+            return "no history available", False
+        return _render_unpin(history), False
     return f"unknown command: /{name}  (try /help)", False
 
 
