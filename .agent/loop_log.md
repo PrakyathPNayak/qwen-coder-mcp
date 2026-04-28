@@ -2974,3 +2974,20 @@ read-only operation, no state changes.
 **Act.** Single `if as_json:` branch in the `tokens` handler; flag check via `cmd.args` membership. Per-message list with `{index, role, tokens_estimated}`. HELP_TEXT updated. 6 new tests in `test_tokens_json.py`: parses, per-message shape & sum-invariant, `--format=json` alias, empty history, None history still returns text, no flag keeps human path.
 
 **Verify.** All 6 pass. Full suite ~1.26k passed, 1 skipped.
+
+## Loop 202 — `format_turn_profile` honours TTY width
+
+**Observe.** The `summary:` line was a hard-coded one-liner — long agent summaries (12+ tool calls, error counts, retry tallies) overflowed narrow terminals and broke the visual layout. The tool-name column was capped at 20 with no narrow-terminal escape valve either.
+
+**Orient.** Two related fixes: wrap the summary line via `textwrap.fill` with a hanging indent that lines up under the colon, and trim/ellipsis-truncate over-long tool names when the terminal is too narrow to fit a 20-char column with a latency suffix.
+
+**Decide.** New `width: int | None = None` kwarg on `format_turn_profile` (and forwarded through `format_turn_profiles`). `None` means "look at the actual terminal via shutil.get_terminal_size" with fallback to 80, then floor at 40 so we never emit a waterfall. Tests pin behaviour by passing explicit widths, eliminating env dependency.
+
+**Devil.**
+- *Correctness:* Could the wrap break the JSON path (loop 198 `--json`)? No — `turn_profiles_as_json` does its own serialisation and never calls `format_turn_profile`. Width is irrelevant there. ✅ Could `textwrap` mangle words with hyphens or path separators? Disabled both `break_long_words` and `break_on_hyphens` so a long path stays on one line even if it overflows. ✅
+- *Scope:* Should this also wrap the per-tool rows? No — those are aligned columns; wrapping would lose the alignment. Truncation with `…` is the correct narrow-terminal compromise. ✅
+- *Priority:* This was the one carried-forward UX gap in the candidate pool. Real-world long summaries from the agent loop motivated it. ✅
+
+**Act.** `format_turn_profile` and `format_turn_profiles` both accept `width: int | None`. Width resolution: explicit > terminal > 80, floored at 40. Tool-name col now `min(20, max_name_len, width-budget)` with mid-string ellipsis truncation when a name exceeds the col. Summary wrapped via textwrap with 11-char hanging indent. 8 new tests in `test_turn_profile_width.py`: wide=one-liner, narrow=wraps, indent-aligns-under-colon, long-name-truncated, normal-name-unchanged, default-uses-terminal-size, width-floored-at-40, stacked-profiles-propagate.
+
+**Verify.** All 8 pass. Full suite ~1.27k passed, 1 skipped. Existing 43 /lat tests still green — the kwarg defaults preserve old behaviour.

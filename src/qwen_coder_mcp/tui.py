@@ -1796,7 +1796,9 @@ class TurnProfile:
         return self.ended_at - self.started_at
 
 
-def format_turn_profile(profile: TurnProfile | None) -> str:
+def format_turn_profile(
+    profile: TurnProfile | None, *, width: int | None = None
+) -> str:
     """Render a ``TurnProfile`` as a human-readable timing breakdown.
 
     Layout::
@@ -1816,6 +1818,17 @@ def format_turn_profile(profile: TurnProfile | None) -> str:
     """
     if profile is None:
         return "no agent turn has run yet"
+    # Effective width: explicit kwarg wins, else current terminal,
+    # else 80 as a long-standing safe default. Floor at 40 so the
+    # tool-name column (capped at 20 + " 1. " + " (1.2s)") still fits.
+    if width is None:
+        import shutil
+
+        try:
+            width = shutil.get_terminal_size((80, 24)).columns
+        except Exception:  # noqa: BLE001
+            width = 80
+    width = max(40, int(width))
     lines: list[str] = ["last turn:"]
     total = profile.total_s()
     if total is not None:
@@ -1826,15 +1839,35 @@ def format_turn_profile(profile: TurnProfile | None) -> str:
         )
     if profile.tool_calls:
         lines.append(f"  tools ({len(profile.tool_calls)}):")
-        # Width of the tool-name column = longest name, capped at 20.
-        width = min(20, max(len(name) for name, _ in profile.tool_calls))
+        # Width of the tool-name column = longest name, capped at 20,
+        # but shrunk further on truly narrow terminals so the latency
+        # column still has room. Reserve 6 for "    1." prefix, 1 for
+        # space, 8 for "(123ms)" / "(1m23s)".
+        budget = max(8, width - 6 - 1 - 8)
+        name_cap = min(20, budget)
+        col_w = min(name_cap, max(len(name) for name, _ in profile.tool_calls))
         for idx, (name, lat) in enumerate(profile.tool_calls, start=1):
             lat_str = format_tool_latency(lat) if lat is not None else "(?)"
-            lines.append(f"    {idx}. {name:<{width}} {lat_str}")
+            disp = name if len(name) <= col_w else name[: col_w - 1] + "…"
+            lines.append(f"    {idx}. {disp:<{col_w}} {lat_str}")
     else:
         lines.append("  tools (0): (no tool calls)")
     if profile.summary_text:
-        lines.append(f"  summary: {profile.summary_text}")
+        # Wrap the summary across the available terminal width with a
+        # hanging indent that lines up under the colon, so on narrow
+        # terminals long summaries don't overflow.
+        import textwrap
+
+        prefix = "  summary: "
+        wrapped = textwrap.fill(
+            profile.summary_text,
+            width=max(20, width),
+            initial_indent=prefix,
+            subsequent_indent=" " * len(prefix),
+            break_long_words=False,
+            break_on_hyphens=False,
+        )
+        lines.append(wrapped)
     return "\n".join(lines)
 
 
@@ -1842,7 +1875,7 @@ DEFAULT_TURN_PROFILE_HISTORY = 20
 
 
 def format_turn_profiles(
-    profiles: list[TurnProfile], n: int = 1
+    profiles: list[TurnProfile], n: int = 1, *, width: int | None = None
 ) -> str:
     """Render the last ``n`` ``TurnProfile``s as a stacked listing.
 
@@ -1854,17 +1887,17 @@ def format_turn_profiles(
     matches the single-turn API.
     """
     if not profiles:
-        return format_turn_profile(None)
+        return format_turn_profile(None, width=width)
     if n <= 0:
         n = 1
     n = min(n, len(profiles))
     selected = profiles[-n:]
     if n == 1:
-        return format_turn_profile(selected[-1])
+        return format_turn_profile(selected[-1], width=width)
     blocks: list[str] = []
     for offset, prof in enumerate(reversed(selected), start=1):
         blocks.append(f"=== turn -{offset} ===")
-        blocks.append(format_turn_profile(prof))
+        blocks.append(format_turn_profile(prof, width=width))
     return "\n".join(blocks)
 
 
