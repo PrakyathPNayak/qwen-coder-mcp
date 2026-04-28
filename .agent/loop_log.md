@@ -1685,3 +1685,13 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: `missing_plus_header`, `missing_minus_header`, `dir_path_conflict` are also sub-errors returned by validation helpers and are also NOT in OUTER_OUTCOME_CATEGORIES (correctly). The fix restores symmetry.
   - Risk: a tighter audit catches real bugs but rejects the laissez-faire "any string-literal mention counts as emission". Pre-loop-102 behaviour relied on that laxity to paper over `no_hunks`. New behaviour requires categories to be actually emitted as outer outcomes.
 - ACT: AST-literal scan replacing substring scan; remove `no_hunks` from frozenset and expected set. 519 passed.
+
+## Loop 103 — validation_failed outcome dropped the sub-rule, killing analytics breakdown
+- OBSERVE: From loop 102's next.md candidate 5: `_finish(f"validation_failed:{rel}")` was the only path that didn't embed its sub-error in the outcome string. `apply_failed`, `rejected`, `out_of_scope` all do (`apply_failed:{category}:{rel}:{msg}`, `rejected:{rel}:{reason}`, `out_of_scope:{rel}:{scope_msg}`). The validation path put `syn_msg` in history-md and STATE.md but stripped it from the timing.log outcome -- so analytics could count validation_failed iterations but couldn't tell whether py_invalid, py_syntax_warning, or a yaml.safe_load failure was the proximate cause.
+- ORIENT: P3 (observability gap on a critical correctness path). Same shape as loop 99's gap, different surface.
+- DECIDE: Change `validation_failed:{rel}` -> `validation_failed:{rel}:{syn_msg.split(':', 1)[0]}`. Use the leading sub-token only because syn_msg can be `py_invalid: <multiline compile output>`; we want a clean third segment, not the full output. Same for `revert_failed:{rel}:after_validation` -> `revert_failed:{rel}:after_validation:{rule}`.
+- DEVIL:
+  - Correctness: `_outer_outcome_category` splits once on `:` so the leading token is preserved (still `validation_failed` / `revert_failed`). Verified via new test.
+  - Scope: Why not embed the full syn_msg? Because syn_msg can be hundreds of bytes of compile output -- timing.log records would balloon and category dashboards would explode the cardinality. Leading token is the right granularity.
+  - Symmetry: The other paths embed `[:60]`-truncated detail, not just leading token. Inconsistent with this fix. But syn_msg's sub-token IS clean (py_invalid / py_syntax_warning / json_invalid / etc.) -- it's already the right granularity by construction. Keeping it as leading-token only.
+- ACT: Two-line change in `_iteration` + 3 tests asserting source format and category preservation. 522 passed.

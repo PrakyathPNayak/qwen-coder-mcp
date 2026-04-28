@@ -1795,8 +1795,8 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
         )
         _append_state(f"- {iter_ts} `{rel}` — reverted ({syn_msg[:60]})\n")
         if not rev_ok:
-            return _finish(f"revert_failed:{rel}:after_validation")
-        return _finish(f"validation_failed:{rel}")
+            return _finish(f"revert_failed:{rel}:after_validation:{syn_msg.split(':', 1)[0]}")
+        return _finish(f"validation_failed:{rel}:{syn_msg.split(':', 1)[0]}")
 
     summary_line = issue.splitlines()[0][:72]
     commit_msg = f"fix({rel.as_posix()}): {summary_line}"

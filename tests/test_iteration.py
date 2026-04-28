@@ -3014,3 +3014,34 @@ class TestNoRedundantSwallowResetsInTests:
             f"redundant in-test swallow-state resets at lines {offenders}; "
             f"the conftest autouse fixture already handles this"
         )
+
+
+class TestValidationFailedOutcomeIncludesRule:
+    """Loop 103: `validation_failed` outcome previously was just
+    `validation_failed:{rel}` -- the syn_msg sub-error (e.g.,
+    `py_invalid`, `py_syntax_warning`) was recorded in history-md and
+    STATE.md but dropped from the outer outcome string, so timing.log
+    analytics could see how often validation failed but not WHICH
+    rule fired. Fix: append `syn_msg.split(':', 1)[0]` as a third
+    segment so `_outer_outcome_category` still returns
+    `validation_failed` while analytics get rule-level breakdown."""
+
+    def test_validation_failed_outcome_format_in_source(self):
+        from agent import loop as L
+        src = Path(L.__file__).read_text(encoding="utf-8")
+        assert 'f"validation_failed:{rel}:{syn_msg.split' in src
+
+    def test_revert_failed_after_validation_includes_rule(self):
+        from agent import loop as L
+        src = Path(L.__file__).read_text(encoding="utf-8")
+        assert 'f"revert_failed:{rel}:after_validation:{syn_msg.split' in src
+
+    def test_outer_category_unchanged_for_extended_outcome(self):
+        """`_outer_outcome_category` must still return `validation_failed`
+        regardless of how many `:` segments the outcome has."""
+        from agent import loop as L
+        assert L._outer_outcome_category("validation_failed:foo.py:py_invalid") == "validation_failed"
+        assert L._outer_outcome_category("validation_failed:foo.py:py_syntax_warning") == "validation_failed"
+        assert L._outer_outcome_category(
+            "revert_failed:foo.py:after_validation:py_invalid"
+        ) == "revert_failed"
