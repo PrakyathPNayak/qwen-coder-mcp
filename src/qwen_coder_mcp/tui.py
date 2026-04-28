@@ -1631,8 +1631,9 @@ def dispatch_slash(
         if history is None:
             return "no history available", False
         as_json = "--json" in cmd.args or "--format=json" in cmd.args
-        # Parse optional --top K (or --top=K) for the JSON payload.
+        # Parse optional --top K (or --top=K) and --by-role.
         top_k: int | None = None
+        by_role = False
         rest = [a for a in cmd.args if a not in {"--json", "--format=json"}]
         i = 0
         while i < len(rest):
@@ -1653,11 +1654,19 @@ def dispatch_slash(
                     return f"--top: not an integer: {tok!r}", False
                 i += 1
                 continue
+            if tok == "--by-role":
+                by_role = True
+                i += 1
+                continue
             return f"/tokens: unknown argument: {tok!r}", False
         if top_k is not None and top_k < 0:
             return "--top: must be non-negative", False
         if top_k is not None and not as_json:
             return "--top requires --json", False
+        if by_role and not as_json:
+            return "--by-role requires --json", False
+        if by_role and top_k is None:
+            return "--by-role requires --top", False
         per_message = [estimate_tokens(m.content) for m in history]
         total = sum(per_message)
         msgs = len(history)
@@ -1675,12 +1684,27 @@ def dispatch_slash(
                 "per_message": entries,
             }
             if top_k is not None:
-                # Stable sort: highest tokens first, original index breaks ties.
-                top = sorted(
-                    entries, key=lambda e: (-e["tokens_estimated"], e["index"])
-                )[:top_k]
-                payload["top"] = top
-                payload["top_k"] = top_k
+                if by_role:
+                    # Bucket entries by role, take top-K per bucket.
+                    by: dict[str, list[dict]] = {}
+                    for e in entries:
+                        by.setdefault(str(e["role"]), []).append(e)
+                    top_by_role = {
+                        role: sorted(
+                            items,
+                            key=lambda x: (-x["tokens_estimated"], x["index"]),
+                        )[:top_k]
+                        for role, items in by.items()
+                    }
+                    payload["top_by_role"] = top_by_role
+                    payload["top_k"] = top_k
+                else:
+                    # Stable sort: highest tokens first, original index breaks ties.
+                    top = sorted(
+                        entries, key=lambda e: (-e["tokens_estimated"], e["index"])
+                    )[:top_k]
+                    payload["top"] = top
+                    payload["top_k"] = top_k
             return _json.dumps(payload, indent=2), False
         return (
             f"~{total} tokens across {msgs} messages "

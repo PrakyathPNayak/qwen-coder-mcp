@@ -3105,3 +3105,18 @@ Despite ~1.28k tests passing. Root cause: vLLM 0.11 removed `--swap-space` (repl
 **Act.** Dispatcher accepts `--regex` anywhere among args; uses `re.IGNORECASE`; falls back to substring path otherwise. Eleven new tests in `test_help_regex.py` covering basics, errors, flag-position, backwards-compat (plain substring path with special chars *not* regex'd).
 
 **Verify.** 11 new + all 1324 prior tests green. Test count around 1.32k → 1.33k.
+
+## Loop 210 — `/tokens --json --top K --by-role` buckets per role
+
+**Observe.** Loop 207 added flat `--top K`. The natural next refinement: per-role buckets so an operator can see "heaviest user message AND heaviest assistant message AND heaviest system message" separately. (Originally planned as an audit of `qwen_client.py` for httpx 0.28+ drift; that audit ran first and found nothing to fix — `base_url`/`timeout`/`headers` are all stable kwargs in httpx 0.28.)
+
+**Orient.** Bolt onto loop-207's parser; emit `top_by_role` instead of `top` when `--by-role` is set. Mutually exclusive with the flat top field to avoid double-encoding.
+
+**Devil.**
+- *Correctness:* What if a role appears zero times? It simply doesn't appear in `top_by_role`'s key set — no empty list, no KeyError. Tested implicitly via the role-set assertions. ✅
+- *Scope:* Should `--by-role` work without `--top`? No — without K there's no truncation, just role-grouping; users wanting that can post-process `per_message`. Pinned by `test_by_role_without_top`. ✅
+- *Priority:* QoL extension; no bug. After three priority-1-or-2 loops earlier this session (vLLM regression, terminal-width arc finish, JSON-export trio finish) the bug-priority queue is empty. Acceptable. ✅
+
+**Act.** Dispatcher gains `--by-role` flag; rejects when `--json` or `--top` missing. Bucket-build is dict-of-lists; per-bucket sort identical to loop 207's `top` sort. Nine new tests in `test_tokens_json_by_role.py` covering basics, errors, mutual-exclusivity, backwards compat (plain `--top` and bare `--json` paths regression-pinned).
+
+**Verify.** 9 new + all 1335 prior tests green. Test count around 1.33k → 1.34k.

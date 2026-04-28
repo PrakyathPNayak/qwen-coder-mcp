@@ -1,9 +1,9 @@
-# Loop 210 candidates
+# Loop 211 candidates
 
-1. **End-to-end TUI smoke test** (carried 3x) — drive App against `httpx.MockTransport`, walk slash commands and a chat turn, assert no exceptions.
+1. **End-to-end TUI smoke test** (carried 4x) — drive App against `httpx.MockTransport`, walk slash commands and a chat turn, assert no exceptions. **Now top priority** — JSON-export work has effectively saturated; the next big leverage is closing the dry-run-vs-reality gap at the TUI level.
 2. **`/checkpoints export N <path> --gzip`** — compressed archive variant.
-3. **`/sysinfo --json --probe`** — actively check vLLM `/health` endpoint.
-4. **Audit `qwen_client.py` for httpx 0.28+ deprecations** — same drift class as the vLLM regression.
-5. **`/tokens --json --top K --by-role`** — bucket top-K per role.
+3. **`/sysinfo --json --probe`** — actively check vLLM `/health`.
+4. **`/lat --json --top K --by-role`** — extend the by-role pattern to latency tool-call buckets.
+5. **Live vLLM smoke test** — env-dependent, defer.
 
-**Recommended:** (4) — quick audit, mirrors loop 205's drift-prevention pattern. The TUI E2E (1) is the bigger win but warrants a fresh session.
+**Recommended:** (1) — finally tackle the TUI E2E. The JSON-export pattern arc (lat/tokens/sysinfo + top/by-role) is now mature; further tweaks have diminishing returns.
