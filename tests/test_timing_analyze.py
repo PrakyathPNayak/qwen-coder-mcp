@@ -149,3 +149,54 @@ class TestCli:
         assert len(recs) == 2
         rc = main(["--file", str(log)])
         assert rc == 0
+
+
+class TestWallSDeltaPhasesAnalysis:
+    """Loop 113: analyze() collects `wall_s_delta_phases` across all
+    records that emit it -- high p95 flags iterations where
+    unaccounted-for time dominates."""
+
+    def test_collects_delta_phases_field(self):
+        from agent.timing_analyze import analyze
+        recs = [
+            {"category": "applied", "wall_s": 10.0, "phases": {"find_bugs": 5.0}, "wall_s_delta_phases": 0.5},
+            {"category": "applied", "wall_s": 12.0, "phases": {"find_bugs": 6.0}, "wall_s_delta_phases": 1.5},
+            {"category": "clean", "wall_s": 8.0, "phases": {}, "wall_s_delta_phases": 8.0},
+        ]
+        out = analyze(recs)
+        d = out["wall_s_delta_phases"]
+        assert d["count"] == 3
+        assert d["total"] == 10.0
+        assert d["p95"] >= 1.5
+
+    def test_records_without_delta_phases_excluded(self):
+        from agent.timing_analyze import analyze
+        recs = [
+            {"category": "no_candidate_files", "phases": {}},
+            {"category": "applied", "wall_s": 5.0, "phases": {"find_bugs": 1.0}, "wall_s_delta_phases": 0.2},
+        ]
+        out = analyze(recs)
+        assert out["wall_s_delta_phases"]["count"] == 1
+
+    def test_empty_input_returns_zero_delta_summary(self):
+        from agent.timing_analyze import analyze
+        out = analyze([])
+        d = out["wall_s_delta_phases"]
+        assert d == {"count": 0, "total": 0.0, "mean": 0.0, "p50": 0.0, "p95": 0.0}
+
+    def test_format_report_mentions_delta_when_present(self):
+        from agent.timing_analyze import analyze, format_report
+        recs = [
+            {"category": "applied", "wall_s": 10.0, "phases": {"find_bugs": 5.0}, "wall_s_delta_phases": 0.5},
+        ]
+        text = format_report(analyze(recs))
+        assert "wall_s_delta_phases" in text
+        assert "p95" in text
+
+    def test_format_report_says_no_records_when_absent(self):
+        from agent.timing_analyze import analyze, format_report
+        recs = [
+            {"category": "no_candidate_files", "phases": {}},
+        ]
+        text = format_report(analyze(recs))
+        assert "wall_s_delta_phases: no records emit this field" in text

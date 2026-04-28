@@ -66,10 +66,16 @@ def _summarize(values: list[float]) -> dict[str, float]:
 def analyze(records: list[dict]) -> dict:
     """Group `wall_s` by `category` and per-phase wall-clock by phase
     name. Records without `wall_s` (early-exit, `crashed`, etc) still
-    count toward category counts but contribute 0.0 to wall_s totals."""
+    count toward category counts but contribute 0.0 to wall_s totals.
+
+    Also collects `wall_s_delta_phases` across all records that emit
+    it -- a high p95 here flags iterations where unaccounted-for time
+    (work outside the named phases) is dominating, which signals
+    either filesystem-level slowness or a missing `_PhaseTimer`."""
     by_cat: dict[str, list[float]] = {}
     by_phase: dict[str, list[float]] = {}
     cat_counts: dict[str, int] = {}
+    deltas: list[float] = []
     for rec in records:
         cat = rec.get("category")
         if isinstance(cat, str):
@@ -82,11 +88,15 @@ def analyze(records: list[dict]) -> dict:
             for name, val in phases.items():
                 if isinstance(val, (int, float)):
                     by_phase.setdefault(name, []).append(float(val))
+        delta = rec.get("wall_s_delta_phases")
+        if isinstance(delta, (int, float)):
+            deltas.append(float(delta))
     return {
         "total_records": len(records),
         "category_counts": cat_counts,
         "category_wall_s": {k: _summarize(v) for k, v in by_cat.items()},
         "phase_wall_s": {k: _summarize(v) for k, v in by_phase.items()},
+        "wall_s_delta_phases": _summarize(deltas),
     }
 
 
@@ -113,6 +123,18 @@ def format_report(report: dict) -> str:
             f"  {ph:20s} count={s['count']:4d}  total={s['total']:.2f}s  "
             f"mean={s['mean']:.3f} p50={s['p50']:.3f} p95={s['p95']:.3f}"
         )
+    lines.append("")
+    d = report.get("wall_s_delta_phases", {"count": 0})
+    if d.get("count"):
+        lines.append(
+            "wall_s_delta_phases (unaccounted time outside named phases):"
+        )
+        lines.append(
+            f"  count={d['count']:4d}  total={d['total']:.2f}s  "
+            f"mean={d['mean']:.3f} p50={d['p50']:.3f} p95={d['p95']:.3f}"
+        )
+    else:
+        lines.append("wall_s_delta_phases: no records emit this field")
     return "\n".join(lines) + "\n"
 
 

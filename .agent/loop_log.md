@@ -1789,3 +1789,13 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: This is OBSERVABILITY of an OBSERVABILITY tool. Not directly fixing a bug. But it pays back next time the agent introduces a regression and the analytics catch it.
   - Priority: Lower than fixing live bugs but higher than cosmetic cleanup. The phase audit (loop 109) hard-codes a set of 8 phases -- if I miss documenting a new phase, the analytics still ingest it correctly since it walks `phases.keys()` dynamically.
 - ACT: New module + 15 tests + README "Analysing timing.log" section. 558 passed.
+
+## Loop 113 — wall_s_delta_phases p95 in analytics
+- OBSERVE: Loop 112 shipped per-category and per-phase summaries but ignored `wall_s_delta_phases` -- the field that flags time spent OUTSIDE named phases. Without surfacing this, an operator looking at the analytics can't tell whether p95 wall_s is dominated by named phases (Qwen calls) or unaccounted-for time (filesystem, git, scheduling jitter).
+- ORIENT: P5 observability gap, completes the analytics surface.
+- DECIDE: Extend `analyze()` to collect `wall_s_delta_phases` across all records emitting it, return as a `_summarize` dict. `format_report` adds a section. If no records emit the field, say so explicitly (don't print zeros which would imply 0 wall time, not "unmeasured").
+- DEVIL:
+  - Correctness: Records emit `wall_s_delta_phases` only when `iter_monotonic` was provided (so wall_s was computed). Early-exit and crashed records via `_finish_no_file` don't get it. The collector has to skip non-numeric values (already implemented). Tested.
+  - Scope: Should I also break down delta by category? Possible -- a high delta on `applied` is more concerning than on `no_candidate_files`. Punted -- caller can grep the JSON output. Adding it would clutter the text report.
+  - Priority: Useful complement to the per-phase view, low risk.
+- ACT: Extended `analyze` + `format_report`. 5 new tests. 563 passed.
