@@ -1160,3 +1160,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 5; combined with loop 52 closes the inode-leak class for `.loop/`.
 - ACT: 8 new tests including end-to-end rotation+prune. Required patching `_REPO` in the e2e test for `archive.relative_to(_REPO)` to work. 358 passed, 1 skipped.
 - COMMIT: pending.
+
+## Loop 55 — DRY `_prune_dir_oldest`
+- OBSERVE: `_prune_history` (loop 52) and `_prune_state_archive` (loop 54) are byte-identical except for the directory and log message. Future drift risk — bucket 8.
+- ORIENT: cheap canonicalize before a 3rd call site appears (e.g. eventual `.loop/timing` archive folder).
+- DECIDE: extract `_prune_dir_oldest(directory, max_files)`; both prior helpers delegate.
+- DEVIL:
+  - Correctness: pure refactor; all 358 prior tests stay green.
+  - Scope: zero behavior change.
+  - Priority: bucket 8 but cheap.
+- ACT: 3 new tests on the canonical helper. 361 passed, 1 skipped.
+- COMMIT: pending.

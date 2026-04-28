@@ -1033,21 +1033,14 @@ def _rotate_state_if_needed() -> Path | None:
         return None
 
 
-def _state_archive_max_files() -> int:
-    """Cap on retained `.loop/state_archive/*.md` files."""
-    return _env_int_capped(
-        "QWEN_STATE_ARCHIVE_MAX_FILES",
-        _STATE_ARCHIVE_MAX_FILES_DEFAULT,
-        _STATE_ARCHIVE_MAX_FILES_CAP,
-    )
-
-
-def _prune_state_archive(max_files: int) -> int:
-    """Delete oldest STATE archive files until at most ``max_files`` remain."""
+def _prune_dir_oldest(directory: Path, max_files: int) -> int:
+    """Delete oldest regular files in ``directory`` until at most
+    ``max_files`` remain. Order is by mtime ascending. Subdirectories
+    are skipped. Returns count deleted. Never raises."""
     try:
-        if not STATE_ARCHIVE_DIR.exists():
+        if not directory.exists():
             return 0
-        entries = [p for p in STATE_ARCHIVE_DIR.iterdir() if p.is_file()]
+        entries = [p for p in directory.iterdir() if p.is_file()]
         if len(entries) <= max_files:
             return 0
         entries.sort(key=lambda p: p.stat().st_mtime)
@@ -1061,8 +1054,22 @@ def _prune_state_archive(max_files: int) -> int:
                 pass
         return deleted
     except Exception as exc:  # never break the loop on cleanup
-        _log(f"_prune_state_archive failed: {exc}")
+        _log(f"_prune_dir_oldest({directory}) failed: {exc}")
         return 0
+
+
+def _state_archive_max_files() -> int:
+    """Cap on retained `.loop/state_archive/*.md` files."""
+    return _env_int_capped(
+        "QWEN_STATE_ARCHIVE_MAX_FILES",
+        _STATE_ARCHIVE_MAX_FILES_DEFAULT,
+        _STATE_ARCHIVE_MAX_FILES_CAP,
+    )
+
+
+def _prune_state_archive(max_files: int) -> int:
+    """Delete oldest STATE archive files until at most ``max_files`` remain."""
+    return _prune_dir_oldest(STATE_ARCHIVE_DIR, max_files)
 
 
 def _append_state(entry: str) -> None:
@@ -1088,30 +1095,8 @@ def _history_max_files() -> int:
 
 
 def _prune_history(max_files: int) -> int:
-    """Delete oldest history files until at most ``max_files`` remain.
-
-    Order is by mtime ascending — the oldest go first. Returns the
-    number of files deleted. Never raises; pruning is best-effort.
-    """
-    try:
-        if not HISTORY_DIR.exists():
-            return 0
-        entries = [p for p in HISTORY_DIR.iterdir() if p.is_file()]
-        if len(entries) <= max_files:
-            return 0
-        entries.sort(key=lambda p: p.stat().st_mtime)
-        excess = len(entries) - max_files
-        deleted = 0
-        for old in entries[:excess]:
-            try:
-                old.unlink()
-                deleted += 1
-            except OSError:
-                pass
-        return deleted
-    except Exception as exc:  # never break the loop on cleanup
-        _log(f"_prune_history failed: {exc}")
-        return 0
+    """Delete oldest history files until at most ``max_files`` remain."""
+    return _prune_dir_oldest(HISTORY_DIR, max_files)
 
 
 def _write_history(name: str, body: str) -> Path:

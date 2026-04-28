@@ -525,3 +525,29 @@ class TestHistoryRetention:
         (tmp_path / "b.md").write_text("b")
         L._prune_history(1)
         assert (tmp_path / "subdir").exists()
+
+
+class TestPruneDirOldest:
+    """Loop 55: canonical prune helper."""
+
+    def test_prune_dir_oldest_basic(self, tmp_path):
+        from agent import loop as L
+        for i in range(4):
+            f = tmp_path / f"{i}.x"
+            f.write_text(str(i))
+            os.utime(f, (1000 + i, 1000 + i))
+        deleted = L._prune_dir_oldest(tmp_path, 2)
+        assert deleted == 2
+        survivors = sorted(p.name for p in tmp_path.iterdir())
+        assert survivors == ["2.x", "3.x"]
+
+    def test_prune_dir_oldest_missing(self, tmp_path):
+        from agent import loop as L
+        assert L._prune_dir_oldest(tmp_path / "nope", 5) == 0
+
+    def test_prune_dir_oldest_skips_subdirs(self, tmp_path):
+        from agent import loop as L
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "a").write_text("a")
+        L._prune_dir_oldest(tmp_path, 0)
+        assert (tmp_path / "sub").exists()
