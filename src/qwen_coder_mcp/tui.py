@@ -2052,6 +2052,12 @@ def _build_app(
                                 self._agent_status,
                                 f"[dim]· {ev.text}[/dim]",
                             )
+                        elif ev.kind == "ttft":
+                            if ev.latency_s is not None:
+                                self.call_from_thread(
+                                    self._agent_status,
+                                    f"[dim]· first token in {format_tool_latency(ev.latency_s)}[/dim]",
+                                )
                 except Exception as exc:  # noqa: BLE001
                     final_text = f"[agent error: {type(exc).__name__}: {exc}]"
                 self.call_from_thread(

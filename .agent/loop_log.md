@@ -2569,3 +2569,20 @@ read-only operation, no state changes.
 **Act.** Added `tool_count`, `tool_time_total`, and `_summary_text()` in `run_agent`. Emit `summary` in the no-tool branch and the max-steps branch. Updated the docstring's event-sequence list. Wired the TUI's runner to render `[dim]· {ev.text}[/dim]` on `summary`. Updated 3 existing assertions in `test_agent_loop.py` and 1 in `test_agent_event_latency.py`. Added `tests/test_agent_summary_event.py` with 6 cases covering: position before final, zero-tools text, singular vs plural phrasing, running total across multiple tools, position before limit at max_steps, exactly-once emission.
 
 **Verify.** `pytest -x -q` → ~1k passed, 1 skipped.
+
+## Loop 178 — emit time-to-first-token event on streaming model turns
+
+**Observe.** With per-tool latency (loop 175/176) and tool aggregate (loop 177) both shipped, the only major timing dimension still hidden was model-side latency. On a long prompt the model can take 3–10 seconds to emit its first token; users had no way to distinguish "model is slow to start replying" from "tool ran for 8 seconds" in transcript review. Initial plan was to surface the loop 177 summary in the MCP server response, but inspection of `serve/` (empty) and `server.py` there's no agent-streaming MCP endpoint to plumb it into  showed that candidate was misframed in `next.md`. Pivoted to the next candidate: TTFT.
+
+**Orient.** Cleanest place for TTFT is right around the existing `chat_stream` loop in `run_agent`: stamp `time.monotonic()` before the iterator opens, emit `AgentEvent(kind="ttft", latency_s=...)` exactly once when the first non-empty chunk arrives. Skipping empty chunks matters — some clients yield `""` keep-alives. Non-streaming path emits no ttft (the round-trip is opaque).
+
+**Decide.** Add `ttft` to the AgentEvent kind doc-list and to the streaming branch only. TUI: render `[dim]· first token in 0.4s[/dim]` on the new event. Tests: 6 cases — emitted before first chunk, exactly one per model turn (so two on a tool round-trip), reflects induced first-chunk delay, blocking client emits none, `stream=False` emits none, all-empty chunks emit none.
+
+**Devil.**
+- *Correctness:* What if the model emits a chunk then errors? TTFT still fired before the error; subsequent retry would re-stamp on the next iteration. Fine — TTFT is per-turn, not per-stream-attempt. ✅
+- *Scope:* Should we include the *prompt token count* alongside TTFT? That'd require tokenizing the history (heavy) or adding a server hook. Defer; the current crude estimator in `tui.py` already serves /tokens. ✅
+- *Priority:* Higher impact than `/checkpoints`? Yes — TTFT closes the timing-coverage triad (tool-side, aggregate, model-side), which is the most-asked perf question. `/checkpoints` is UI sugar on a feature only one user (the dev) has a use case for. ✅
+
+**Act.** New 5-line block in `run_agent`'s streaming branch: ttft sentinel + monotonic stamp + first-non-empty-chunk emit. Doc-list updated. TUI runner gets a `ttft` branch rendering via `format_tool_latency`. New `tests/test_agent_ttft.py` with 6 cases as above. Updated docstring's event-list ordering.
+
+**Verify.** `pytest -x -q` → ~1k passed, 1 skipped.

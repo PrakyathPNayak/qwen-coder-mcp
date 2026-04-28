@@ -463,6 +463,7 @@ def run_agent(
     one user message containing the tool results.
 
     Yields:
+      AgentEvent(kind="ttft", latency_s=...)         time-to-first-token (streaming only, once per model turn)
       AgentEvent(kind="chunk", text=...)             token-by-token
       AgentEvent(kind="assistant", text=...)         each model turn (full)
       AgentEvent(kind="tool_call", tool=..., args=...)
@@ -511,9 +512,17 @@ def run_agent(
         try:
             if use_stream:
                 buf: list[str] = []
+                _turn_started_at = time.monotonic()
+                _ttft_emitted = False
                 for chunk in client.chat_stream(history):
                     if not chunk:
                         continue
+                    if not _ttft_emitted:
+                        yield AgentEvent(
+                            kind="ttft",
+                            latency_s=time.monotonic() - _turn_started_at,
+                        )
+                        _ttft_emitted = True
                     buf.append(chunk)
                     yield AgentEvent(kind="chunk", text=chunk)
                 reply = "".join(buf)
