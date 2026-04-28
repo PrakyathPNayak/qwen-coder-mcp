@@ -316,7 +316,7 @@ def format_history_diff(
     snapshot: list[ChatMessage],
     *,
     snapshot_label: str = "snapshot",
-    preview_chars: int = 60,
+    preview_chars: int | None = 60,
     inline_diff: bool = False,
     inline_diff_max_lines: int = 12,
 ) -> str:
@@ -333,7 +333,22 @@ def format_history_diff(
     The header line summarises totals. Pure: no I/O, deterministic
     output for a given pair, callers preview characters at a fixed
     cap to keep the rendering compact in the TUI log.
+
+    ``preview_chars=None`` derives the cap from the current terminal
+    width (via ``shutil.get_terminal_size``) so wide terminals get
+    longer previews and narrow ones don't overflow. Floored at 20 and
+    capped at 200 so neither extreme breaks the layout.
     """
+    if preview_chars is None:
+        import shutil
+
+        try:
+            cols = shutil.get_terminal_size((80, 24)).columns
+        except Exception:  # noqa: BLE001
+            cols = 80
+        # Row prefix "~  999. assistant  (" + ")" is ~22 chars.
+        # Reserve that and pad a few more for safety.
+        preview_chars = max(20, min(200, cols - 28))
 
     def _preview(text: str) -> str:
         flat = text.replace("\n", " ").strip()

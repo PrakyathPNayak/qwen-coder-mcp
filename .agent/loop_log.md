@@ -2991,3 +2991,18 @@ read-only operation, no state changes.
 **Act.** `format_turn_profile` and `format_turn_profiles` both accept `width: int | None`. Width resolution: explicit > terminal > 80, floored at 40. Tool-name col now `min(20, max_name_len, width-budget)` with mid-string ellipsis truncation when a name exceeds the col. Summary wrapped via textwrap with 11-char hanging indent. 8 new tests in `test_turn_profile_width.py`: wide=one-liner, narrow=wraps, indent-aligns-under-colon, long-name-truncated, normal-name-unchanged, default-uses-terminal-size, width-floored-at-40, stacked-profiles-propagate.
 
 **Verify.** All 8 pass. Full suite ~1.27k passed, 1 skipped. Existing 43 /lat tests still green — the kwarg defaults preserve old behaviour.
+
+## Loop 203 — `format_history_diff` derives preview width from terminal
+
+**Observe.** `preview_chars` is hardcoded to 60 — fine on 80-col terminals, leaves wide terminals (160+) wasting horizontal space, and on narrow terminals the row prefix + 60-char preview already overflows. Loop 202 just established the `shutil.get_terminal_size` pattern; reuse it.
+
+**Orient.** Make `preview_chars=None` mean "auto" (compute from terminal width minus the row-prefix overhead). Keep the existing default `60` as-is for backwards compat — every test using the default literal still passes without modification.
+
+**Devil.**
+- *Correctness:* Could clamping break existing tests that count specific characters? Default is still 60, so no. The auto path only fires on `preview_chars=None`. Pinned by `test_default_60_unchanged`. ✅
+- *Scope:* Should the inline-diff path also derive its line-cap from height? Tempting, but it's height not width and the default of 12 is already short enough that wide-terminal users don't lose anything. Out of scope. ✅
+- *Priority:* Mirror of loop 202 in another renderer; very small surface; cumulative UX win. 
+
+**Act.** Signature change: `preview_chars: int | None = 60`. Auto path inside the function body computes `max(20, min(200, cols - 28))` to floor and ceiling sanely. 5 new tests in `test_history_diff_width.py`: explicit-None-uses-terminal (monkeypatched 200 cols → row >100 chars), narrow-terminal-clamp-with-ellipsis, explicit-int-still-works, default-60-unchanged (regression pin), short-messages-not-affected.
+
+**Verify.** All 5 pass. Existing 40 diff/inline/since-resume/preview tests still green. Full suite ~1.28k passed, 1 skipped.
