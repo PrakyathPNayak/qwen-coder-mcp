@@ -1,28 +1,24 @@
-Loop 4 candidates (priority-ordered):
+Loop 5 candidates (priority-ordered):
 
-1. **`_iteration` doesn't validate diff scope (P6).** The model is asked
-   to fix `rel`, but its diff might touch other files. Fix: after
-   `_apply_diff` succeeds, call `_changed_paths()` and revert+reject if
-   any path is outside `{rel}` (or, more permissively, outside the
-   ancestor dirs of `rel`). Add a test that simulates a multi-file diff
-   and asserts the loop reverts.
+1. **`_strip_fence` only handles whole-input fences (P4 robustness).**
+   Anchored `^...$` regex falls through whenever the model prepends
+   prose like "Here is the diff:". Fix: locate first ```…``` block and
+   return its inner text.
 
-2. **`_strip_fence` only handles whole-input fences (P4).** Anchored
-   regex requires the entire input to match; prose-around-fence falls
-   through. Fix: scan for the first ```…``` block and return its inner
-   text.
+2. **`_load_cursor` has no error handling (P4).** Malformed
+   `.loop/cursor.json` crashes the loop on the next iteration.
 
-3. **`_load_cursor` is fragile (P8).** No tests; if `.loop/cursor.json`
-   contains malformed JSON the loop crashes.
+3. **`STATE.md` grows unbounded (P8).** No rotation / cap.
 
-4. **`STATE.md` grows unbounded (P8).** No rotation.
+4. **`server.py` instantiates `QwenClient` at import time (P6).** If
+   `.env` is missing or endpoint is unreachable, MCP server import
+   crashes — should lazy-init.
 
-5. **`_iteration` no-op-diff guard (P8).** Currently `_apply_diff` would
-   succeed with an empty diff but `git status --porcelain` would be
-   empty so `_commit_and_push` returns False — already handled. Lower.
+5. **`qwen_client.py` retries on 4xx (P4).** 4xx errors won't succeed
+   on retry; should fail fast.
 
-Pick #1 — diff-scope validation. P6 (interface inconsistency / silent
-trust violation), but it's the next clearest correctness gap with a
-contained, testable fix.
+Pick #1 — `_strip_fence`. Highest model-output-robustness leverage and
+already has a partial test scaffold.
+
 
 

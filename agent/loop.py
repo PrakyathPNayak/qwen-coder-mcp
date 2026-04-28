@@ -235,6 +235,20 @@ def _python_syntax_ok(paths: Iterable[Path]) -> tuple[bool, str]:
     return _validate_changed_files(paths)
 
 
+def _diff_in_scope(changed: Iterable[Path], target: Path) -> tuple[bool, str]:
+    """The loop asks the model to fix one specific file. Reject diffs that
+    touch any file other than `target` so a misbehaving model cannot
+    silently rewrite the rest of the repo."""
+    target_norm = Path(target).as_posix()
+    out_of_scope = [
+        Path(p).as_posix() for p in changed
+        if Path(p).as_posix() != target_norm
+    ]
+    if out_of_scope:
+        return False, f"out_of_scope:{','.join(out_of_scope[:3])}"
+    return True, "ok"
+
+
 def _changed_paths() -> list[Path]:
     proc = _run_git("diff", "--name-only", check=False)
     return [Path(line) for line in proc.stdout.splitlines() if line.strip()]
@@ -376,6 +390,16 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
         return f"apply_failed:{rel}:{msg[:80]}"
 
     changed = _changed_paths()
+    scope_ok, scope_msg = _diff_in_scope(changed, rel)
+    if not scope_ok:
+        _revert_changes()
+        _write_history(
+            f"{int(time.time())}-out-of-scope.md",
+            history_body + f"OUT OF SCOPE ({scope_msg})\n",
+        )
+        _append_state(f"- {_now()} `{rel}` — reverted ({scope_msg[:60]})\n")
+        return f"out_of_scope:{rel}:{scope_msg[:80]}"
+
     syn_ok, syn_msg = _validate_changed_files(changed)
     if not syn_ok:
         _revert_changes()

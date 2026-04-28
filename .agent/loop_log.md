@@ -119,5 +119,37 @@ never wedges`.
 **Revealed**: `_iteration` still has no scope check on the diff — model
 could rewrite an unrelated file. Next loop.
 
+---
+
+## Loop 4 — diff-scope guard against silent multi-file rewrites
+
+**OBSERVE**: `_iteration` calls `_apply_diff` then `_validate_changed_files`
+then commits — never asserted the diff only touched the file the loop
+asked the model to fix.
+
+**ORIENT**: silent-trust violation; defeats the loop's "one file, one
+fix" contract. Defensive code beats prompt constraints.
+
+**DECIDE**: add `_diff_in_scope(changed, target)` and wire it into
+`_iteration` between apply and validation; revert + emit
+`out_of_scope:<path>` on failure (max 3 offenders in the message).
+
+**DEVIL**: (correctness) some legit fixes need cross-file changes →
+strict scope is safer; cross-file fixes can be a follow-up loop.
+(scope) is the cause prompts? — partially, but defensive validation is
+more reliable. (priority) just coverage? — no, it's correctness.
+Plan stood.
+
+**ACT**: 6 unit tests for `_diff_in_scope` covering single-target,
+empty, foreign-file, posix/Path equivalence, and message truncation
+on >3 offenders. Wired into `_iteration`. 42/42 green. compileall clean.
+
+**COMMIT**: pending — `feat(loop): reject diffs that touch files outside
+the targeted scope`.
+
+**Revealed next**: `_strip_fence`'s anchored regex still requires
+whole-input match; prose-around-fence will fall through.
+
+
 
 
