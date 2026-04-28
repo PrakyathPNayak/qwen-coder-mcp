@@ -2443,3 +2443,65 @@ class TestNoDirectModuleAssignmentInTests:
             "monkeypatch.setattr instead so state is auto-restored):\n"
             + "\n".join(violations)
         )
+
+
+class TestWallSecondsInvariant:
+    """Loop 90: `wall_s` should be >= sum(phases) for healthy iterations
+    because phases are sub-intervals of the full iteration. A regression
+    where wall_s comes from the wrong clock source would silently break
+    cost analytics; lock the invariant down."""
+
+    def test_wall_s_geq_sum_of_phases(self, env, monkeypatch):
+        from agent import loop as L
+        import json
+
+        # Drive monotonic so phases visibly fit inside wall_s.
+        # Sequence:
+        #   t0: iter_monotonic captured at iteration start
+        #   ...later phase deltas accumulate to sum_phases
+        #   tN: _write_timing reads monotonic, wall_s = tN - t0
+        # We don't directly mock time.monotonic for the iteration body
+        # (too fragile); instead inject a synthetic phases dict and read
+        # wall_s from _write_timing call directly.
+        monkeypatch.setattr(L.time, "monotonic", lambda: 200.0)
+        from pathlib import Path
+        L._write_timing(
+            Path("f.py"), "ok",
+            {"a": 1.0, "b": 2.0, "c": 0.5},
+            iter_monotonic=100.0,
+        )
+        rec = json.loads(L.TIMING_FILE.read_text().splitlines()[-1])
+        phases_sum = sum(rec["phases"].values())
+        assert rec["wall_s"] >= phases_sum, (
+            f"wall_s={rec['wall_s']} should be >= sum(phases)={phases_sum}"
+        )
+        # And specifically: wall_s = 200 - 100 = 100, phases sum = 3.5.
+        assert rec["wall_s"] == 100.0
+        assert phases_sum == 3.5
+
+    def test_wall_s_is_nonnegative_when_phases_empty(self, env, monkeypatch):
+        from agent import loop as L
+        import json
+        monkeypatch.setattr(L.time, "monotonic", lambda: 50.5)
+        from pathlib import Path
+        L._write_timing(Path("f.py"), "ok", {}, iter_monotonic=50.0)
+        rec = json.loads(L.TIMING_FILE.read_text().splitlines()[-1])
+        assert rec["wall_s"] == 0.5
+        assert rec["phases"] == {}
+
+    def test_real_iteration_wall_s_geq_phases(self, env):
+        """End-to-end: a real (no-issue) iteration produces a record where
+        wall_s >= sum(phases). The 'find_bugs' phase is the only one that
+        runs when the model returns no findings."""
+        from agent import loop as L
+        import json
+        client = _ScriptedClient(["\n   \n"])  # empty issue
+        L._iteration(client, max_bytes=10_000, push=False)
+        rec = json.loads(L.TIMING_FILE.read_text().splitlines()[-1])
+        if "wall_s" not in rec:
+            return  # iter_monotonic path not taken; skip.
+        phases_sum = sum(rec.get("phases", {}).values())
+        # Allow zero-tolerance equality when phases sum is exactly the wall.
+        assert rec["wall_s"] >= phases_sum - 1e-9, (
+            f"wall_s={rec['wall_s']} < sum(phases)={phases_sum}"
+        )

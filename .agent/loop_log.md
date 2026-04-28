@@ -1554,3 +1554,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Migrated loop 87's `L._CURRENT_ITERATION = 0` to `monkeypatch.setattr` first to make the new test pass clean.
 - ACT: 1 new test (drift audit) + 1 fix in loop-87 test. 487 passed.
 - COMMIT: pending.
+
+## Loop 90 — wall_s invariant: wall_s >= sum(phases)
+- OBSERVE: wall_s emitted in loop 83 has no test guarding the semantic invariant. A future change that wires wall_s to a different clock source (e.g., per-phase delta sum or wall-clock from start of file) would silently break analytics that depend on wall_s being the "outermost" measurement.
+- ORIENT: Three cases. (1) Direct write_timing call with synthetic phases asserts wall_s == 100, phases sum = 3.5, invariant holds. (2) Empty phases dict still yields nonneg wall_s. (3) End-to-end iteration produces a record where wall_s >= sum(phases) modulo float epsilon.
+- DECIDE: Use direct _write_timing for the deterministic case (mocking time.monotonic for full _iteration is fragile). Skip the e2e check when wall_s field absent (defensive against future tests that mock _write_timing itself).
+- DEVIL:
+  - Correctness: 1e-9 epsilon catches float rounding without masking real regressions (e.g., negative drift from clock source mixing).
+  - Scope: Could also assert wall_s <= sum(phases) + small_epsilon when no scaffolding is expected, but in practice scaffolding (file IO, history.md write, state.md append) easily takes 10ms+. Skipping that direction.
+  - Edge: empty phases dict test confirms wall_s alone is meaningful.
+- ACT: 3 new tests, no production code change. 490 passed.
+- COMMIT: pending.
