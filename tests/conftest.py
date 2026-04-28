@@ -38,3 +38,14 @@ def _reset_swallow_loggers():
         L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
     except Exception:
         pass
+
+
+@pytest.fixture
+def make_qwen_client():
+    """Factory fixture wrapping `tests._helpers.make_mock_qwen_client`.
+
+    Provided as a fixture so new tests can request `make_qwen_client`
+    by name; existing tests import the helper directly.
+    """
+    from tests._helpers import make_mock_qwen_client
+    return make_mock_qwen_client

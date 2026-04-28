@@ -3190,3 +3190,24 @@ The loop-205 `--help=all` validator only checks flag *existence* — it cannot c
 - `src/qwen_coder_mcp/tui.py::_friendly_chat_error`: lowercase the substring matchers. Now correctly recognises retry-wrapped ConnectError messages and surfaces the actionable serve_qwen.sh hint.
 
 **Verify.** 11/11 in the new file. Full suite 1364 passed, 2 skipped (was 1353/2). Test count around 1.35k → 1.36k.
+
+## Loop 214 — case-sensitive matcher sweep + dedupe MockTransport recipe
+
+**Observe.** Loop 213 caught one case-sensitive error-substring matcher in `_friendly_chat_error`. Sibling check: grep for similar patterns across `src/qwen_coder_mcp/`. Result: clean. The only `"X" in <var>` matchers in error-handling code are the ones already fixed (lines 2187-2190 of tui.py) and structural checks ("text" in block, "@" in text) that are not class-of-bug. Sweep complete.
+
+Pivoted to a leftover loop-213 follow-up: the `_make_client(handler)` MockTransport recipe was duplicated across `test_chat_stream.py` and `test_tui_chat_turn_e2e.py` with subtly different shapes (the chat_stream copy did NOT set the Authorization header at construction time, which would have caused future tests to silently miss auth-header bugs). Drift between fixtures is itself a bug class — same as the loop-205 lesson at the toolchain level.
+
+**Orient.** Three options: (a) shared module helper imported by both files; (b) pytest fixture; (c) class-based shared base. Picked (a)+(b) hybrid: a plain `tests/_helpers.py::make_mock_qwen_client(handler, **overrides)` is the source of truth; `conftest.py` exposes a `make_qwen_client` fixture that delegates to it. Existing tests don't need to change their method signatures (still call `_make_client(handler)` via a one-line import alias). New tests can request `make_qwen_client` by name.
+
+**Devil.**
+- *Correctness:* Did the dedupe lose any behaviour? The chat_stream copy was MISSING the Authorization header on construction; the new shared helper always sets it. That's a strict improvement (more tests now exercise the auth path). Existing chat_stream tests don't assert on the header so no test churn. ✅
+- *Scope:* Should I also dedupe the inline MockTransport assemblies in test_qwen_client.py (lines 42, 572, 645)? Those use a different shape (test-specific Settings, no closing of the default client). They fall outside this scope; flagged for a future loop if they actually drift. ✅
+- *Priority:* P2 — preventative housekeeping; the "cost of drift" was small but real (chat_stream's missing auth header). ✅
+
+**Act.**
+- New `tests/_helpers.py::make_mock_qwen_client` — single source of truth.
+- `tests/conftest.py`: `make_qwen_client` fixture delegates to the helper.
+- `tests/test_chat_stream.py`: replaced 18-line `_make_client` with a one-line aliased import; cleaned the now-unused `httpx`/`Settings`/`QwenClient` symbols (kept `httpx` because tests use it for handler construction).
+- `tests/test_tui_chat_turn_e2e.py`: same replacement; removed the unused `Settings`/`QwenClient` imports.
+
+**Verify.** Full suite 1364 passed, 2 skipped (unchanged from loop 213). No test count change — refactor only.

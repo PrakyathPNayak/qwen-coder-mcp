@@ -6,32 +6,12 @@ import pytest
 
 from qwen_coder_mcp.qwen_client import (
     ChatMessage,
-    QwenClient,
     QwenError,
     QwenFatalError,
 )
-from qwen_coder_mcp.config import Settings
 
 
-def _make_client(handler) -> QwenClient:
-    transport = httpx.MockTransport(handler)
-    settings = Settings(
-        base_url="http://x/v1",
-        api_key="k",
-        model="qwen",
-        timeout=10.0,
-        max_tokens=128,
-        server_max_len=2048,
-        loop_interval_seconds=60,
-        loop_max_file_bytes=200_000,
-        loop_push=False,
-    )
-    c = QwenClient(settings)
-    c._client.close()
-    c._client = httpx.Client(
-        base_url=settings.base_url, transport=transport, timeout=10.0
-    )
-    return c
+from tests._helpers import make_mock_qwen_client as _make_client  # noqa: E402
 
 
 def _sse_body(chunks: list[str], done: bool = True) -> bytes:
