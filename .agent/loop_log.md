@@ -1283,3 +1283,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 8 — but the audit is the safety rail for bucket 6 work in loops 53/60/63. Worth hardening.
 - ACT: Replaced regex with AST walker; added recognised-shape guard so a future syntax change (e.g., kwarg, *args) fails the audit instead of silently passing. 393 passed; verified false-negative case manually.
 - COMMIT: pending.
+
+## Loop 66 — `APPLY_ERROR_CATEGORIES` AST drift audit
+- OBSERVE: Loop 53 added `APPLY_ERROR_CATEGORIES`; loop 60 added the AST drift audit for outer outcomes; the symmetric audit for `_apply_diff`'s error returns was missing.
+- ORIENT: Bucket 6/8 — same drift surface. If a future fix adds a new error message in `_apply_diff` without updating the frozenset, both `_apply_error_category` and the `apply_failed:{category}:` outcome (loop 59) silently emit a non-canonical token.
+- DECIDE: AST visitor that locates `_apply_diff`'s FunctionDef and walks every `return False, "<msg>"` / `return False, f"<msg>..."`. Bidirectional audit: tokens-in-source ⊆ frozenset, frozenset ⊆ tokens-in-source.
+- DEVIL:
+  - Correctness: handles both `Constant` and `JoinedStr` (f-string) message shapes; raises on unrecognised shapes (kwarg, computed string, etc.) so future syntax changes can't silently bypass the check.
+  - Scope: this is the symmetric guard rail to loop 65, not a bandaid.
+  - Priority: bucket 6/8 — close the second drift surface before moving on.
+- ACT: 2 tests in `TestApplyDiffErrorCategoryDriftAudit`. 395 passed.
+- COMMIT: pending.

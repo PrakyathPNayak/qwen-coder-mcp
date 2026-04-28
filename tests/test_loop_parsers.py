@@ -669,3 +669,75 @@ class TestApplyErrorCategory:
 
     def test_ok_category(self):
         assert L.APPLY_OK_CATEGORY == "applied"
+
+
+class TestApplyDiffErrorCategoryDriftAudit:
+    """Loop 66: AST audit of `_apply_diff` — every `return False, "<msg>"`
+    must have a leading category token in APPLY_ERROR_CATEGORIES.
+
+    Mirror of loop 65's audit for OUTER_OUTCOME_CATEGORIES."""
+
+    def test_every_apply_diff_error_uses_known_category(self):
+        from agent import loop as L
+        import ast
+        src = (Path(L.__file__)).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+
+        # Find the _apply_diff function definition.
+        apply_fn: ast.FunctionDef | None = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_apply_diff":
+                apply_fn = node
+                break
+        assert apply_fn is not None, "_apply_diff function not found"
+
+        tokens: set[str] = set()
+        unrecognised: list[str] = []
+        for node in ast.walk(apply_fn):
+            if not isinstance(node, ast.Return):
+                continue
+            v = node.value
+            # Looking for `return False, "<msg>"` or `return False, f"<msg>:..."`
+            if not (isinstance(v, ast.Tuple) and len(v.elts) == 2):
+                continue
+            ok_node, msg_node = v.elts
+            if not (isinstance(ok_node, ast.Constant) and ok_node.value is False):
+                # Skip success returns (True, "...")
+                continue
+            if isinstance(msg_node, ast.Constant) and isinstance(msg_node.value, str):
+                tok = msg_node.value.split(":", 1)[0].strip()
+            elif isinstance(msg_node, ast.JoinedStr) and msg_node.values:
+                first = msg_node.values[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    tok = first.value.split(":", 1)[0].strip()
+                else:
+                    unrecognised.append(
+                        f"_apply_diff: f-string starting with non-literal at line {node.lineno}"
+                    )
+                    continue
+            else:
+                unrecognised.append(
+                    f"_apply_diff: return-False message of type {type(msg_node).__name__} at line {node.lineno}"
+                )
+                continue
+            tokens.add(tok)
+
+        assert not unrecognised, (
+            f"_apply_diff has return-False message shapes the audit doesn't recognise: {unrecognised}"
+        )
+        unknown = tokens - L.APPLY_ERROR_CATEGORIES
+        assert not unknown, (
+            f"_apply_diff returns categories not in APPLY_ERROR_CATEGORIES: {sorted(unknown)}"
+        )
+
+    def test_every_category_in_frozenset_appears_in_apply_diff(self):
+        """Inverse: every entry in APPLY_ERROR_CATEGORIES is actually
+        emitted by _apply_diff (or a helper it calls). Prevents stale
+        tokens lingering in the contract."""
+        from agent import loop as L
+        src = (Path(L.__file__)).read_text(encoding="utf-8")
+        for cat in L.APPLY_ERROR_CATEGORIES:
+            # We accept either a literal "<cat>" or "<cat>:" anywhere in
+            # the source — broad enough to cover both no-detail and
+            # detail-suffix returns.
+            assert cat in src, f"{cat!r} declared but never emitted in source"
