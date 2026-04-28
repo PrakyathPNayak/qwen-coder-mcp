@@ -4017,3 +4017,23 @@ pid} key set and the composite (pid, iteration_count) join key.
 
 Six new tests + one updated. Verify: full suite 1508 passed, 7
 skipped (was 1502 + 6).
+
+## Loop 235 — web_search anomaly fallback to DDG IA
+Commit: f53b702. User reported web searches return no results. Live test
+confirmed DDG html.duckduckgo.com returns 202 challenge page (form to
+anomaly.js?cc=botnet) on bot-fingerprinted callers. Our regex matched
+nothing → silent []. Added _is_ddg_anomaly() detection + _ddg_ia_search()
+fallback via api.duckduckgo.com Instant Answer JSON. Empty parse on
+non-anomaly page also falls through. +9 tests (anomaly detection case
+folding, max_results clamp, nested Topics walker, missing-url skip).
+Suite 1517 green.
+
+## Loop 236 — finish_reason=length truncation marker + max_tokens bump
+Commit: 908fde0. User reported "queries stop prematurely". _extract_text
+now reads choice.finish_reason; on "length" it appends TRUNCATION_MARKER
+and logs a warning. Special-cased: if _strip_think_blocks empties the
+text (unclosed <think> from Qwen3-Next mid-budget), return marker alone
+instead of raising QwenError (which would burn retries on same cap).
+QWEN_MAX_TOKENS default bumped 8192->16384 (well under 65536 serve max).
++6 tests (length+stop+unclosed-think+closed-think+idempotent+legacy).
+Suite 1523 green.
