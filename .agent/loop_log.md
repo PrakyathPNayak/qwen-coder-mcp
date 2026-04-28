@@ -614,3 +614,34 @@ for both markers, ignore-in-content (+ line, - line, context line),
 re-arm after second file.
 
 **Result**: 187/187 green.
+
+## Loop 21 — `_has_unsafe_path` ignored rename/copy headers
+**Bug**: `_DIFF_PATH_HEADER_RE` only matched `diff --git a/X b/Y`,
+`--- a/X`, `+++ b/X`. But `git apply` honours `rename from <path>`,
+`rename to <path>`, `copy from <path>`, `copy to <path>` headers
+(unprefixed paths). A diff with safe `--- a/foo.py` / `+++ b/bar.py`
+plus `rename to ../../etc/passwd` would slip past the path check
+even though `git apply` would happily perform the rename to the
+traversal target. CVE-class.
+
+**Devil**: (a) Correctness — does the new regex match content lines?
+The pattern is anchored with `^` + multiline; `rename from` /
+`rename to` / `copy from` / `copy to` strings *do* appear in some
+prose, but a content line begins with `+`/`-`/space, so the literal
+"rename" at column 0 only happens in headers. (b) Scope — could
+there be other rename-form headers? `similarity index N%`,
+`dissimilarity index N%`, `index <sha>..<sha>` don't carry paths.
+`old mode`/`new mode` are mode lines (already covered). The set
+{rename from, rename to, copy from, copy to} is closed. (c) Priority
+ write-out-of-tree is the biggest threat the path check exists to
+defend against; closing this gap is essential.
+
+**Fix**: New `_DIFF_RENAME_COPY_RE`; `_diff_paths` iterates both
+regexes; `_has_unsafe_path` now sees rename/copy paths and applies
+the same absolute / traversal / backslash rejection.
+
+**Tests**: 5 new — `_diff_paths` includes rename-to path,
+traversal/absolute/backslash all rejected via `unsafe_path:`, and a
+safe rename still passes.
+
+**Result**: 192/192 green.

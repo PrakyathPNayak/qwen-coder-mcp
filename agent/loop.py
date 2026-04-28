@@ -255,15 +255,32 @@ _DIFF_PATH_HEADER_RE = re.compile(
     re.MULTILINE,
 )
 
+# `rename from <path>` / `rename to <path>` / `copy from <path>` /
+# `copy to <path>` — git-apply consumes these and writes to the named
+# destination path. They are NOT prefixed with `a/` or `b/`. Without
+# this, a rename-to traversal path could slip through `_has_unsafe_path`.
+_DIFF_RENAME_COPY_RE = re.compile(
+    r"^(?:rename from|rename to|copy from|copy to)\s+(?P<p>\S.*?)\s*$",
+    re.MULTILINE,
+)
+
 
 def _diff_paths(diff: str) -> list[str]:
-    """Return every repo-relative path mentioned in `--- a/`/`+++ b/`/`diff --git` headers."""
+    """Return every repo-relative path mentioned in diff headers.
+
+    Covers `--- a/`, `+++ b/`, `diff --git a/X b/Y`, plus
+    `rename from`/`rename to`/`copy from`/`copy to`.
+    """
     paths: list[str] = []
     for m in _DIFF_PATH_HEADER_RE.finditer(diff):
         for g in ("a1", "b1", "a2", "b2"):
             v = m.group(g)
             if v and v != "/dev/null":
                 paths.append(v)
+    for m in _DIFF_RENAME_COPY_RE.finditer(diff):
+        v = m.group("p")
+        if v and v != "/dev/null":
+            paths.append(v)
     return paths
 
 

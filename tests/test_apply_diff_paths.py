@@ -284,3 +284,65 @@ def test_has_binary_patch_resumes_header_check_in_next_file():
         "Binary files a/img.png and b/img.png differ\n"
     )
     assert loop._has_binary_patch(diff) == "binary_files_marker"
+
+
+# ----------------------------------------------------- rename/copy header tests
+def test_diff_paths_includes_rename_to_path():
+    diff = (
+        "diff --git a/foo.py b/bar.py\n"
+        "similarity index 100%\n"
+        "rename from foo.py\n"
+        "rename to ../../etc/passwd\n"
+    )
+    paths = loop._diff_paths(diff)
+    assert "foo.py" in paths
+    assert "../../etc/passwd" in paths
+
+
+def test_apply_diff_rejects_rename_to_traversal():
+    diff = (
+        "diff --git a/foo.py b/bar.py\n"
+        "similarity index 100%\n"
+        "rename from foo.py\n"
+        "rename to ../../etc/passwd\n"
+    )
+    ok, msg = loop._apply_diff(diff)
+    assert ok is False
+    assert msg.startswith("unsafe_path:")
+    assert "path_traversal" in msg
+
+
+def test_apply_diff_rejects_copy_to_absolute():
+    diff = (
+        "diff --git a/foo.py b/bar.py\n"
+        "similarity index 50%\n"
+        "copy from foo.py\n"
+        "copy to /etc/passwd\n"
+    )
+    ok, msg = loop._apply_diff(diff)
+    assert ok is False
+    assert msg.startswith("unsafe_path:")
+    assert "absolute_path" in msg
+
+
+def test_apply_diff_rejects_rename_from_with_backslash():
+    diff = (
+        "diff --git a/foo.py b/bar.py\n"
+        "similarity index 100%\n"
+        "rename from src\\foo.py\n"
+        "rename to bar.py\n"
+    )
+    ok, msg = loop._apply_diff(diff)
+    assert ok is False
+    assert msg.startswith("unsafe_path:")
+    assert "backslash_in_path" in msg
+
+
+def test_diff_paths_safe_rename_passes_path_check():
+    diff = (
+        "diff --git a/foo.py b/bar.py\n"
+        "similarity index 100%\n"
+        "rename from foo.py\n"
+        "rename to bar.py\n"
+    )
+    assert loop._has_unsafe_path(diff) is None
