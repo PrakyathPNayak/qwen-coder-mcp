@@ -1075,3 +1075,11 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: high — matches priority bucket 1 (silent data corruption).
 - ACT: rewrote .json branch; 3 new tests for top-level dup, nested dup, unique-keys-pass. 304 passed, 1 skipped.
 - COMMIT: pending.
+
+## Loop 47 — TOML duplicate-table/key regression lock-in
+- OBSERVE: After loop 46 added JSON dup-key detection, the TOML branch was unchanged. Verified tomllib already raises on duplicate sections AND duplicate keys within a section.
+- ORIENT: no bug — but locking the property as a regression test prevents a future swap to a permissive parser (e.g. `tomli-w` round-trip lib) from silently weakening validation.
+- DECIDE: 2 regression tests only; no production change.
+- DEVIL: pure regression coverage; cost ~zero.
+- ACT: 306 passed, 1 skipped.
+- COMMIT: pending.

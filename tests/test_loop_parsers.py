@@ -580,3 +580,22 @@ class TestValidateChangedFilesJsonDupKeys:
         monkeypatch.setattr(L, "_REPO", tmp_path)
         ok, _ = L._validate_changed_files([Path("p.json")])
         assert ok is True
+
+
+class TestValidateChangedFilesTomlDupSemantics:
+    """Loop 47: lock in tomllib's own duplicate-section/key rejection so
+    a future migration to a permissive parser doesn't regress silently."""
+
+    def test_duplicate_section_rejected(self, tmp_path, monkeypatch):
+        (tmp_path / "p.toml").write_text("[a]\nx=1\n[a]\ny=2\n")
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, msg = L._validate_changed_files([Path("p.toml")])
+        assert ok is False
+        assert msg.startswith("toml_invalid")
+
+    def test_duplicate_key_in_section_rejected(self, tmp_path, monkeypatch):
+        (tmp_path / "p.toml").write_text("[a]\nx=1\nx=2\n")
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, msg = L._validate_changed_files([Path("p.toml")])
+        assert ok is False
+        assert msg.startswith("toml_invalid")
