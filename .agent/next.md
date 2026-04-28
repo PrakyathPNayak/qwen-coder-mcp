@@ -1,18 +1,15 @@
-# Loop 166 candidates
+# Loop 167 candidates
 
-1. **Confirmation prompt for write tools.** `apply_patch` and `fs_write`
-   currently fire silently. Add a TUI confirmation modal (or at minimum a
-   one-key Y/N prompt) before any write tool runs in interactive mode.
-2. **`/agent --max <n>`** to override the hardcoded 6-step cap.
-3. **Token meter accounting**: include tool_result body bytes in the
-   status footer's input-token estimate so users see why their context is
-   filling up.
-4. **`run_shell` tool** (sandboxed via existing `shell_tools`) so the
-   agent can run tests, lint, etc. Highest risk — must be write-mode-gated
-   AND have an allow-list.
-5. **Auto-checkpoint every N agent turns** (write `.agent/agent_state.json`)
-   so a crash mid-loop doesn't lose context.
+1. **Blocking interactive y/n modal** for destructive tool calls. The
+   confirm hook is now in place; TUI just needs a `threading.Event`
+   round-trip: worker pushes the request, UI pops a Confirm widget,
+   resolves the event, worker continues. Bind y/n keys + a 30s
+   default-deny timeout.
+2. **`run_shell` tool** behind write-mode + confirm + allow-list.
+3. **`/agent --max <n>`** -- override hardcoded 6-step cap from CLI.
+4. **Token meter accounting** for tool_result body bytes in the status
+   footer.
+5. **Auto-checkpoint every N agent turns** to `.agent/agent_state.json`.
 
-Empirical question still open: does Qwen3.6-27B reliably emit
-`<tool_call>` blocks given TOOL_PROTOCOL_DOC? Need a manual smoke test
-against the live vLLM server.
+Empirical question still open: live vLLM smoke test of the
+`<tool_call>` protocol with Qwen3.6-27B.

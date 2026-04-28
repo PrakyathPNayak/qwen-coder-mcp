@@ -2305,3 +2305,35 @@ and an `ALL_TOOLS` union; gate them behind a `/agent --write` flag, an
 - tests: 7 new tests across streaming (3) + write tools (4).
 
 **Result**: 984 passed, 1 skipped.
+
+## Loop 166 — confirm hook for destructive tools
+
+**Observe**: 984 green from loop 165. Write tools fired silently; users had
+no audit trail of what the agent was changing. next.md flagged this #1.
+
+**Decide**: add a `confirm: ConfirmFn | None` callback to `run_tool` and
+`run_agent`. Define `DESTRUCTIVE_TOOLS = frozenset(WRITE_TOOLS.keys())`.
+For destructive calls, consult the hook; if it returns False, synthesise
+a `denied:` tool result the model can read. Read-only tools bypass the
+hook entirely. TUI passes a `_confirm_write` hook that logs the call to
+the agent status pane and returns True (audit + auto-approve). A future
+loop will promote this to a blocking y/n modal.
+
+**Devil's advocate**:
+- Correctness: hook is consulted *only* for `DESTRUCTIVE_TOOLS`; test
+  confirms a read tool with a denying hook still runs unhindered.
+- Scope: real fix is a blocking modal -- but the audit trail addresses
+  the user-visible gap today and the infrastructure for a modal lands
+  with this commit (caller just needs to wire its own `confirm` to a
+  threading.Event).
+- Priority: #1 in next.md; nothing higher-impact than guarding a tool
+  family that can rewrite the workspace.
+
+**Act**: agent_loop.py +`ConfirmFn`, `always_allow`, `DESTRUCTIVE_TOOLS`,
+confirm gate in `run_tool`, kwarg threaded through `run_agent`.
+tui.py: `_confirm_write` audit hook in `_start_agent_turn`.
+tests/test_agent_loop.py: `TestConfirmHook` with 5 tests covering
+default-allow, deny, read-tool bypass, hook propagation through
+`run_agent`, and the destructive-set invariant.
+
+**Result**: 989 passed (+5), 1 skipped.

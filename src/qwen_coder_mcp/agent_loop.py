@@ -187,6 +187,20 @@ WRITE_TOOLS: dict[str, ToolFn] = {
 
 ALL_TOOLS: dict[str, ToolFn] = {**DEFAULT_TOOLS, **WRITE_TOOLS}
 
+# Tools that mutate the workspace -- the loop driver routes calls to
+# these through an optional confirmation hook so a TUI/CLI can prompt
+# the user before the write actually happens.
+DESTRUCTIVE_TOOLS: frozenset[str] = frozenset(WRITE_TOOLS.keys())
+
+
+ConfirmFn = Callable[["ToolCall"], bool]
+
+
+def always_allow(call: "ToolCall") -> bool:  # noqa: ARG001
+    """Default confirm hook: every tool runs without prompting. Suitable
+    for non-interactive use and unit tests."""
+    return True
+
 
 TOOL_PROTOCOL_DOC = """\
 You have access to the following tools. To use one, emit a tool_call
@@ -258,10 +272,16 @@ def run_tool(
     *,
     fs_cfg: fs_tools.FsConfig,
     tools: dict[str, ToolFn] | None = None,
+    confirm: ConfirmFn | None = None,
 ) -> ToolResult:
     """Dispatch a single tool call to the registry. Catches every
     exception so the agent loop is never broken by a tool failure --
-    the error becomes the tool result and the model can react."""
+    the error becomes the tool result and the model can react.
+
+    ``confirm`` is consulted for tools listed in ``DESTRUCTIVE_TOOLS``;
+    if it returns False, the call is rejected with a friendly message
+    that the model can read and adapt to.
+    """
     registry = tools if tools is not None else DEFAULT_TOOLS
     fn = registry.get(call.name)
     if fn is None:
@@ -271,6 +291,23 @@ def run_tool(
             output=f"error: unknown tool {call.name!r}. Available: {avail}",
             error=True,
         )
+    if call.name in DESTRUCTIVE_TOOLS and confirm is not None:
+        try:
+            if not confirm(call):
+                return ToolResult(
+                    name=call.name,
+                    output=(
+                        f"denied: user rejected {call.name} call. "
+                        "Try a different approach or ask the user first."
+                    ),
+                    error=True,
+                )
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult(
+                name=call.name,
+                output=f"error: confirm hook raised {type(exc).__name__}: {exc}",
+                error=True,
+            )
     try:
         out = fn(call.args, fs_cfg)
     except Exception as exc:  # noqa: BLE001
@@ -316,6 +353,7 @@ def run_agent(
     max_steps: int = 6,
     tools: dict[str, ToolFn] | None = None,
     stream: bool = True,
+    confirm: ConfirmFn | None = None,
 ) -> Iterator[AgentEvent]:
     """Run an agentic turn against ``client``, yielding events as they
     happen.
@@ -386,7 +424,7 @@ def run_agent(
             yield AgentEvent(
                 kind="tool_call", tool=call.name, args=dict(call.args)
             )
-            result = run_tool(call, fs_cfg=fs_cfg, tools=tools)
+            result = run_tool(call, fs_cfg=fs_cfg, tools=tools, confirm=confirm)
             results.append(result)
             yield AgentEvent(
                 kind="tool_result", tool=result.name, text=result.output

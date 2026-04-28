@@ -1677,6 +1677,28 @@ def _build_app(
             self._refresh_status(streaming=True)
             tools = agent_loop.ALL_TOOLS if write else agent_loop.DEFAULT_TOOLS
 
+            # Audit-trail hook: every destructive call gets logged before
+            # it fires so the user always sees what the agent is changing.
+            # A future loop can promote this to a blocking y/n prompt.
+            def _confirm_write(call: agent_loop.ToolCall) -> bool:
+                summary = ""
+                if call.name == "fs_write":
+                    p = call.args.get("path", "?")
+                    n = len(str(call.args.get("content", "")))
+                    summary = f"path={p!r} bytes={n}"
+                elif call.name == "apply_patch":
+                    diff = str(call.args.get("diff", ""))
+                    lines = diff.count("\n")
+                    check = call.args.get("check_only", False)
+                    summary = f"diff_lines={lines} check_only={check}"
+                else:
+                    summary = repr(call.args)[:120]
+                self.call_from_thread(
+                    self._agent_status,
+                    f"[yellow]✎ write[/yellow] {call.name} {summary}",
+                )
+                return True
+
             def runner() -> None:
                 final_text = ""
                 live_buf: list[str] = []
@@ -1687,6 +1709,7 @@ def _build_app(
                         client=self.client,
                         fs_cfg=self.fs_cfg,
                         tools=tools,
+                        confirm=_confirm_write,
                     ):
                         if ev.kind == "chunk":
                             live_buf.append(ev.text)

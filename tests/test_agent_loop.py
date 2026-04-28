@@ -470,3 +470,90 @@ class TestWriteTools:
         assert "ok" in out.lower() or "check" in out.lower()
         # File unchanged because check_only=True
         assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "one\n"
+
+
+# ----------------------------------------------------------- confirm hook
+class TestConfirmHook:
+    def test_destructive_set_matches_write_tools(self) -> None:
+        assert agent_loop.DESTRUCTIVE_TOOLS == frozenset(
+            agent_loop.WRITE_TOOLS.keys()
+        )
+
+    def test_default_confirm_allows(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        call = agent_loop.ToolCall(
+            name="fs_write", args={"path": "a.txt", "content": "hi"}, raw=""
+        )
+        # No confirm passed -> destructive call still runs.
+        res = agent_loop.run_tool(call, fs_cfg=cfg, tools=agent_loop.ALL_TOOLS)
+        assert not res.error
+        assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "hi"
+
+    def test_confirm_can_deny(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        seen: list[str] = []
+
+        def deny(call: agent_loop.ToolCall) -> bool:
+            seen.append(call.name)
+            return False
+
+        call = agent_loop.ToolCall(
+            name="fs_write", args={"path": "x.txt", "content": "y"}, raw=""
+        )
+        res = agent_loop.run_tool(
+            call, fs_cfg=cfg, tools=agent_loop.ALL_TOOLS, confirm=deny
+        )
+        assert res.error
+        assert "denied" in res.output.lower()
+        assert seen == ["fs_write"]
+        assert not (tmp_path / "x.txt").exists()
+
+    def test_confirm_skipped_for_readonly_tools(self, tmp_path: Path) -> None:
+        (tmp_path / "r.txt").write_text("data", encoding="utf-8")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        seen: list[str] = []
+
+        def watch(call: agent_loop.ToolCall) -> bool:
+            seen.append(call.name)
+            return False  # would deny if asked
+
+        call = agent_loop.ToolCall(
+            name="fs_read", args={"path": "r.txt"}, raw=""
+        )
+        res = agent_loop.run_tool(
+            call, fs_cfg=cfg, tools=agent_loop.ALL_TOOLS, confirm=watch
+        )
+        # Read tool was not destructive, confirm not consulted.
+        assert seen == []
+        assert not res.error
+        assert "data" in res.output
+
+    def test_confirm_propagates_through_run_agent(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        client = _ScriptedClient(
+            [
+                '<tool_call>{"name":"fs_write","args":{"path":"z.txt","content":"q"}}</tool_call>',
+                "noted",
+            ]
+        )
+        seen: list[str] = []
+
+        def watch(call: agent_loop.ToolCall) -> bool:
+            seen.append(call.name)
+            return False
+
+        events = list(
+            agent_loop.run_agent(
+                [],
+                "write z",
+                client=client,
+                fs_cfg=cfg,
+                tools=agent_loop.ALL_TOOLS,
+                confirm=watch,
+                stream=False,
+            )
+        )
+        results = [e for e in events if e.kind == "tool_result"]
+        assert results and "denied" in results[0].text.lower()
+        assert seen == ["fs_write"]
+        assert not (tmp_path / "z.txt").exists()
