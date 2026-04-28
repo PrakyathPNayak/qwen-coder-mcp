@@ -697,19 +697,61 @@ class TestOuterOutcomeCategories:
         assert expected.issubset(L.OUTER_OUTCOME_CATEGORIES)
 
     def test_every_finish_call_in_source_uses_known_category(self):
-        """Source-level audit: every `_finish(f"X:..."` must have X in
-        OUTER_OUTCOME_CATEGORIES. Guards against drift when new outcomes
-        are added without updating the frozenset."""
+        """AST-level audit: every `_finish(...)` call's first arg must
+        start with a known category. Guards against drift when new
+        outcomes are added without updating the frozenset.
+
+        Implemented via AST so that calls split across lines, with
+        comments, or wrapped in parentheses are still seen.
+        """
         from agent import loop as L
-        import re as _re
+        import ast
         src = Path(L.__file__).read_text(encoding="utf-8")
-        # Match: return _finish(f"<token>...") or return _finish("<token>...")
-        # token = leading run of non-: non-{ non-" chars
-        pattern = _re.compile(
-            r'return\s+_finish\(\s*f?"([a-z_][a-z0-9_]*)[":]'
+        tree = ast.parse(src)
+        tokens: set[str] = set()
+        unrecognised_shapes: list[str] = []
+
+        def _leading_token_from_constant(value: str) -> str | None:
+            return value.split(":", 1)[0] if value else None
+
+        def _leading_token_from_joinedstr(node: ast.JoinedStr) -> str | None:
+            # First value MUST be a literal Constant for the contract to
+            # hold; record otherwise so the test fails loudly.
+            if not node.values:
+                return None
+            first = node.values[0]
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                return _leading_token_from_constant(first.value)
+            return None
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Name) and func.id == "_finish"):
+                continue
+            if not node.args:
+                unrecognised_shapes.append(f"_finish() with no args at line {node.lineno}")
+                continue
+            arg = node.args[0]
+            tok: str | None
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                tok = _leading_token_from_constant(arg.value)
+            elif isinstance(arg, ast.JoinedStr):
+                tok = _leading_token_from_joinedstr(arg)
+            else:
+                unrecognised_shapes.append(
+                    f"_finish(<{type(arg).__name__}>) at line {node.lineno}"
+                )
+                continue
+            if tok is None:
+                unrecognised_shapes.append(f"_finish empty-string at line {node.lineno}")
+                continue
+            tokens.add(tok)
+
+        assert not unrecognised_shapes, (
+            f"_finish call shapes the audit doesn't recognise: {unrecognised_shapes}"
         )
-        tokens = set(pattern.findall(src))
-        # Strip off any tokens that came from the helper itself or comments.
         unknown = tokens - L.OUTER_OUTCOME_CATEGORIES
         assert not unknown, (
             f"_iteration emits outcome categories not in "
