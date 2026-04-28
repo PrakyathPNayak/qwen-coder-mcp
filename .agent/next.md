@@ -1,9 +1,9 @@
-# Loop 182 candidates
+# Loop 183 candidates
 
-1. **`/lat` slash command** — last-turn timing breakdown (TTFT + per-tool list + summary) using events from loops 175-178.
-2. **`/agent --resume`** — start an agentic turn with the latest checkpoint pre-loaded.
-3. **Configurable `keep` for rotation** — env-var or config setting; currently hardcoded to 5.
-4. **Atomic write of audit log** — same `.tmp + os.replace` treatment we gave checkpoints.
+1. **`/agent --resume`** — start an agentic turn with the latest checkpoint pre-loaded.
+2. **Configurable rotation `keep`** — env var `QWEN_AGENT_ROTATION_KEEP`; currently hardcoded to 5.
+3. **Auto-load latest checkpoint on TUI boot** — currently the user has to type `/resume` after a crash.
+4. **`/lat n`** — show the n most recent turns, not just the last one (TurnProfile history ring buffer).
 5. **Live vLLM smoke test** of `<tool_call>` protocol (opt-in, `pytest -m live`).
 
-(1) is the natural pick — observability events have been emitted since loop 175 but there's no command to inspect a single turn's profile.
+(3) is the natural follow-up to loop 181's fallback helper — the helper exists, just isn't wired into boot.

@@ -87,6 +87,7 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/git",
     "/tests",
     "/tokens",
+    "/lat",
     "/sysprompt",
     "/model",
     "/undo",
@@ -149,6 +150,8 @@ Slash commands:
   /git <subcmd>        Read-only git status / log / diff / show / branch
   /tests [args]        Run pytest in the repo
   /tokens              Estimate total tokens in current chat history
+  /lat                 Show the last agent turn's timing breakdown
+                       (TTFT, per-tool latencies, summary)
   /sysprompt [text]    Show or replace the system prompt
   /model [id]          Show or switch the served model id
   /undo                Pop the last user/assistant exchange
@@ -886,6 +889,7 @@ def dispatch_slash(
     client: QwenClient,
     fs_cfg: fs_tools.FsConfig,
     history: list[ChatMessage] | None = None,
+    app: Any = None,
 ) -> tuple[str, bool]:
     """Run a slash command. Returns `(rendered_text, should_quit)`.
 
@@ -1180,6 +1184,9 @@ def dispatch_slash(
             f"~{total} tokens across {msgs} messages "
             f"(rough estimate, four characters per token)"
         ), False
+    if name == "lat":
+        profile = getattr(app, "last_turn_profile", None) if app is not None else None
+        return format_turn_profile(profile), False
     if name == "sysprompt":
         if history is None:
             return "no history available", False
@@ -1317,6 +1324,71 @@ def render_stream_tail(accum: str, budget: int = 2000) -> str:
         if accum[i].isspace():
             return accum[i + 1 :]
     return accum[cut:]
+
+
+@dataclass
+class TurnProfile:
+    """Timing profile of a single agent turn — drives ``/lat``.
+
+    Captures the data that loops 175-178 emit as ``AgentEvent``s
+    (per-tool latency, TTFT, aggregate summary) plus the wall-clock
+    span of the whole turn. ``tool_calls`` is ordered by call site so
+    the rendered breakdown reads top-to-bottom like the transcript.
+    """
+
+    started_at: float = 0.0
+    ended_at: float | None = None
+    ttft_s: float | None = None
+    tool_calls: list[tuple[str, float | None]] = field(default_factory=list)
+    summary_text: str | None = None
+    summary_total_s: float | None = None
+
+    def total_s(self) -> float | None:
+        if self.ended_at is None:
+            return None
+        return self.ended_at - self.started_at
+
+
+def format_turn_profile(profile: TurnProfile | None) -> str:
+    """Render a ``TurnProfile`` as a human-readable timing breakdown.
+
+    Layout::
+
+        last turn:
+          total:       2.3s
+          first token: 0.4s
+          tools (3):
+            1. fs_read           (12ms)
+            2. fs_grep           (45ms)
+            3. shell_run         (1.8s)
+          summary: 3 tool calls, 1.857s total
+
+    ``None`` and "no calls yet" both render as a single status line so
+    callers don't have to special-case the empty path. Pure so unit
+    tests can pin behaviour without booting the App.
+    """
+    if profile is None:
+        return "no agent turn has run yet"
+    lines: list[str] = ["last turn:"]
+    total = profile.total_s()
+    if total is not None:
+        lines.append(f"  total:       {format_tool_latency(total)[1:-1]}")
+    if profile.ttft_s is not None:
+        lines.append(
+            f"  first token: {format_tool_latency(profile.ttft_s)[1:-1]}"
+        )
+    if profile.tool_calls:
+        lines.append(f"  tools ({len(profile.tool_calls)}):")
+        # Width of the tool-name column = longest name, capped at 20.
+        width = min(20, max(len(name) for name, _ in profile.tool_calls))
+        for idx, (name, lat) in enumerate(profile.tool_calls, start=1):
+            lat_str = format_tool_latency(lat) if lat is not None else "(?)"
+            lines.append(f"    {idx}. {name:<{width}} {lat_str}")
+    else:
+        lines.append("  tools (0): (no tool calls)")
+    if profile.summary_text:
+        lines.append(f"  summary: {profile.summary_text}")
+    return "\n".join(lines)
 
 
 def format_tool_latency(elapsed_s: float) -> str:
@@ -1679,6 +1751,7 @@ def _build_app(
             self.fs_cfg = cfg
             self.last_turn_tokens: int = 0
             self.last_turn_seconds: float = 0.0
+            self.last_turn_profile: TurnProfile | None = None
             self.total_tokens: int = 0
             self.total_turns: int = 0
             self._streaming: bool = False
@@ -1818,6 +1891,7 @@ def _build_app(
                     client=self.client,
                     fs_cfg=self.fs_cfg,
                     history=self.history,
+                    app=self,
                 )
                 if isinstance(text, str) and text.startswith("__RETRY__"):
                     line = text[len("__RETRY__"):]
@@ -2069,11 +2143,13 @@ def _build_app(
             def runner() -> None:
                 final_text = ""
                 live_buf: list[str] = []
+                profile = TurnProfile(started_at=t0)
                 # Track the wall-clock start of the most recent tool_call
                 # so we can render a (123ms) suffix once its tool_result
                 # lands. Calls are sequential in run_agent so a single
                 # slot is enough.
                 tool_started_at: float | None = None
+                pending_tool_name: str | None = None
                 kwargs: dict[str, Any] = {
                     "client": self.client,
                     "fs_cfg": self.fs_cfg,
@@ -2110,6 +2186,7 @@ def _build_app(
                                     bits.append(f"{k}={s!r}")
                                 args_repr = " " + ", ".join(bits)
                             tool_started_at = time.monotonic()
+                            pending_tool_name = ev.tool or "?"
                             self.call_from_thread(
                                 self._agent_status,
                                 f"[cyan]→ tool[/cyan] {ev.tool}{args_repr}",
@@ -2122,14 +2199,17 @@ def _build_app(
                             # run_agent; fall back to wall-clock delta
                             # when an older client emits no field.
                             if ev.latency_s is not None:
-                                lat = format_tool_latency(ev.latency_s)
+                                lat_s: float | None = ev.latency_s
                             elif tool_started_at is not None:
-                                lat = format_tool_latency(
-                                    time.monotonic() - tool_started_at
-                                )
+                                lat_s = time.monotonic() - tool_started_at
                             else:
-                                lat = ""
+                                lat_s = None
+                            lat = format_tool_latency(lat_s) if lat_s is not None else ""
+                            profile.tool_calls.append(
+                                (pending_tool_name or (ev.tool or "?"), lat_s)
+                            )
                             tool_started_at = None
+                            pending_tool_name = None
                             suffix = f" {lat}" if lat else ""
                             self.call_from_thread(
                                 self._agent_status,
@@ -2140,18 +2220,24 @@ def _build_app(
                         elif ev.kind == "limit":
                             final_text = ev.text
                         elif ev.kind == "summary":
+                            profile.summary_text = ev.text
+                            profile.summary_total_s = ev.latency_s
                             self.call_from_thread(
                                 self._agent_status,
                                 f"[dim]· {ev.text}[/dim]",
                             )
                         elif ev.kind == "ttft":
                             if ev.latency_s is not None:
+                                if profile.ttft_s is None:
+                                    profile.ttft_s = ev.latency_s
                                 self.call_from_thread(
                                     self._agent_status,
                                     f"[dim]· first token in {format_tool_latency(ev.latency_s)}[/dim]",
                                 )
                 except Exception as exc:  # noqa: BLE001
                     final_text = f"[agent error: {type(exc).__name__}: {exc}]"
+                profile.ended_at = time.monotonic()
+                self.last_turn_profile = profile
                 self.call_from_thread(
                     self._finalize_agent, task, final_text, time.monotonic() - t0
                 )

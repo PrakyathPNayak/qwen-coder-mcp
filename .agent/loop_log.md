@@ -2637,3 +2637,20 @@ read-only operation, no state changes.
 **Act.** Added `load_latest_checkpoint` to `agent_loop.py`. Updated `/resume` dispatcher branch to use it; status line reports the source filename so fallbacks are visible. Seven new tests in `test_load_latest_checkpoint.py` covering primary-present, fall-through-to-newest, all-empty, corrupt-primary, corrupt-newest-rotation, all-corrupt, and empty-primary.
 
 **Verify.** `pytest -x -q` → ~1.1k passed, 1 skipped. Existing `test_resume_slash.py` still green.
+
+## Loop 182 — `/lat` slash command (last-turn timing breakdown)
+
+**Observe.** Loops 175-178 emitted `tool_result.latency_s`, `summary`, and `ttft` events. The TUI rendered them as ephemeral status lines that scrolled away the moment the next chunk landed. There was no way after the fact to ask "what just happened, and where did the time go?"
+
+**Orient.** A single command, `/lat`, that prints the most recent turn's profile is a high-leverage observability primitive — it costs ~50 lines of code, makes performance regressions discoverable, and uses data that's already being computed. The natural shape: capture events into a `TurnProfile` dataclass during the runner's event loop, store the latest one on the App, render with a pure formatter.
+
+**Decide.** Add `TurnProfile` (started_at, ended_at, ttft_s, tool_calls, summary_text, summary_total_s) and `format_turn_profile()` next to `format_tool_latency`. App stores `last_turn_profile`. Runner builds the profile alongside the existing status-line rendering. `dispatch_slash` gains an `app=None` kwarg so the `/lat` branch can read the App's attribute; falls back to "no agent turn has run yet" gracefully.
+
+**Devil.**
+- *Correctness:* What if a tool_result arrives without a corresponding tool_call (replay/race)? `pending_tool_name` falls back to `ev.tool or "?"` so the row still renders. ✅
+- *Scope:* Should `/lat` show *all* recent turns, not just the last? No — that's a different feature (history). Keep `/lat` to one turn, defer the multi-turn view if requested. ✅
+- *Priority:* `/agent --resume` is also queued. But `/lat` directly leverages four loops of observability work that's currently invisible after the status line scrolls. Higher leverage. ✅
+
+**Act.** New `TurnProfile` dataclass + `format_turn_profile` in `tui.py`. App `__init__` initialises `self.last_turn_profile = None`. Runner builds the profile in-place: `pending_tool_name` on `tool_call`, latency tuple appended on `tool_result`, summary fields on `summary`, ttft (only the first one per turn) on `ttft`. `app=None` kwarg on `dispatch_slash`; App's submit handler passes `app=self`. `/lat` registered in `SLASH_COMMANDS` and `HELP_TEXT`. Twelve tests in `test_lat_slash.py` covering the renderer (None, total/ttft, no tools, numbered tools, unknown latency, summary, unfinished turn) and the dispatcher (no-app, populated app, app missing attribute, registry wiring).
+
+**Verify.** `pytest -x -q` → ~1.1k passed, 1 skipped.
