@@ -763,7 +763,7 @@ class TestOuterOutcomeCategories:
             "qwen_error_find_bugs", "qwen_error_propose_fix",
             "qwen_error_devils_advocate",
             "budget_exceeded",
-            "no_candidate_files", "no_hunks",
+            "no_candidate_files",
         }
         assert expected.issubset(L.OUTER_OUTCOME_CATEGORIES)
 
@@ -831,11 +831,36 @@ class TestOuterOutcomeCategories:
 
     def test_no_extras_beyond_emitted(self):
         """Inverse audit: every category in the frozenset is actually
-        emitted somewhere in the source. Prevents stale tokens."""
+        emitted somewhere as the leading token of a string literal that
+        is the first arg of `_finish` or `_finish_no_file`. Tightened
+        from a substring scan (which gave false positives if the token
+        appeared in a comment, docstring, or a different string literal
+        context) to an AST literal scan -- so a stale category that
+        only survives in a comment will fail the audit."""
         from agent import loop as L
+        import ast
         src = Path(L.__file__).read_text(encoding="utf-8")
-        for cat in L.OUTER_OUTCOME_CATEGORIES:
-            assert cat in src, f"{cat!r} declared but never emitted"
+        tree = ast.parse(src)
+        emitted: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            f = node.func
+            if not (isinstance(f, ast.Name) and f.id in {"_finish", "_finish_no_file"}):
+                continue
+            if not node.args:
+                continue
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                emitted.add(arg.value.split(":", 1)[0])
+            elif isinstance(arg, ast.JoinedStr) and arg.values:
+                first = arg.values[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    emitted.add(first.value.split(":", 1)[0])
+        unused = L.OUTER_OUTCOME_CATEGORIES - emitted
+        assert not unused, (
+            f"OUTER_OUTCOME_CATEGORIES has stale tokens never emitted: {sorted(unused)}"
+        )
 
 
 class TestTimingLogCategoryField:

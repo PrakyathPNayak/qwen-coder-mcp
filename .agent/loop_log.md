@@ -1675,3 +1675,13 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: the audit test catches future drift but doesn't catch the inverse: someone adding a state mutation that DOES need a reset. That's correctly out of scope -- the autouse fixture covers the general case.
   - Risk: blindly running sed left a `finally:` block empty and broke pytest collection. Hand-audited the structural-context pass.
 - ACT: Custom Python script preserves block-only resets via `pass` substitution. 38 calls removed. New `TestNoRedundantSwallowResetsInTests` audits via AST. 519 passed.
+
+## Loop 102 — Tightened audit caught real stale token: `no_hunks` was wrongly in OUTER_OUTCOME_CATEGORIES
+- OBSERVE: `test_no_extras_beyond_emitted` previously did `cat in src` (substring scan), which would match a category name that survived only in a comment, docstring, or unrelated string literal. Tightened to an AST literal scan over `_finish`/`_finish_no_file` first-arg leading tokens.
+- ORIENT: P3 -- the tightened audit immediately failed on `no_hunks`. That's a REAL drift bug, not a test artefact: `no_hunks` is returned by `_has_structural_defect`, a diff-validation helper, which gets wrapped into `validation_failed:{rel}` -- so the LEADING outer outcome token is `validation_failed`, never `no_hunks`. The frozenset's purpose is to enumerate leading-token categories, so `no_hunks` was a contract violation that the old substring audit happily passed because the literal "no_hunks" string appears in `_has_structural_defect` source.
+- DECIDE: Tighten the audit AND fix the underlying drift -- remove `no_hunks` from `OUTER_OUTCOME_CATEGORIES` AND from `test_required_categories_present`'s expected set.
+- DEVIL:
+  - Correctness: removing `no_hunks` from the frozenset doesn't break anything because no `_finish` call ever had `no_hunks` as its leading token. The validation helper still returns "no_hunks" -- but that's an internal sub-error, opaque to the outer category contract.
+  - Scope: `missing_plus_header`, `missing_minus_header`, `dir_path_conflict` are also sub-errors returned by validation helpers and are also NOT in OUTER_OUTCOME_CATEGORIES (correctly). The fix restores symmetry.
+  - Risk: a tighter audit catches real bugs but rejects the laissez-faire "any string-literal mention counts as emission". Pre-loop-102 behaviour relied on that laxity to paper over `no_hunks`. New behaviour requires categories to be actually emitted as outer outcomes.
+- ACT: AST-literal scan replacing substring scan; remove `no_hunks` from frozenset and expected set. 519 passed.

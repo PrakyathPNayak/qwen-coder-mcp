@@ -942,7 +942,6 @@ OUTER_OUTCOME_CATEGORIES: frozenset[str] = frozenset({
     "qwen_error_devils_advocate",
     "budget_exceeded",
     "no_candidate_files",
-    "no_hunks",
 })
 
 
