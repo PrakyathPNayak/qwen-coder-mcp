@@ -169,6 +169,7 @@ is `OUTER_OUTCOME_CATEGORIES` in `agent/loop.py`. The categories are:
 | `budget_exceeded` | Per-iteration wall-clock budget (`QWEN_LOOP_ITER_BUDGET_S`) was exceeded between phases. |
 | `no_candidate_files` | `_candidate_files()` returned an empty list (no eligible files). |
 | `crashed` | `_iteration` raised an unhandled exception; the main loop's crash branch synthesized this record. |
+| `exit` | Synthetic shutdown record emitted by `_write_timing_exit` when the autonomous loop terminates (loop 226). The full outcome string is `exit:<reason>` where `<reason>` is one of `sigterm`, `keyboard-interrupt`, `system-exit`, or `unhandled-exception`. The record carries an `iteration_count` field that joins to the `loop exit ... iter=N` line in `runtime.log`. Records `phases: {}` because no phase ran on the shutdown path. |
 
 Each record in `.loop/timing.log` is a JSON line with:
 

@@ -1017,6 +1017,13 @@ OUTER_OUTCOME_CATEGORIES: frozenset[str] = frozenset({
     "budget_exceeded",
     "no_candidate_files",
     "crashed",
+    # Loop 226: synthetic shutdown records emitted by
+    # _write_timing_exit so analytics never undercount the final
+    # iteration. The full outcome string is "exit:<reason>"; the
+    # reason is one of {sigterm, keyboard-interrupt, system-exit,
+    # unhandled-exception}, encoded in the outcome tail rather
+    # than the category so the category set stays bounded.
+    "exit",
 })
 
 
@@ -1657,6 +1664,7 @@ def _write_timing(
     phases: dict[str, float],
     *,
     iter_monotonic: float | None = None,
+    extras: dict[str, object] | None = None,
 ) -> None:
     """Append one JSON line per iteration capturing per-phase wallclock.
 
@@ -1675,6 +1683,12 @@ def _write_timing(
     in every analytics consumer; the floor at 0 protects against
     sub-millisecond float dust where the rounded ``wall_s`` could be
     fractionally below the unrounded phase sum.
+
+    When ``extras`` is provided, its keys are merged into the record.
+    Used by the loop-226 shutdown path to attach ``iteration_count`` to
+    the synthetic ``exit:*`` record without abusing the ``phases`` dict
+    for non-phase data. Existing callers pass nothing and get the
+    pre-loop-226 shape unchanged.
 
     Failure logging is rate-limited via `_RateLimitedSwallowLogger` so a
     persistent fault (disk full, permission denied) doesn't fill
@@ -1700,6 +1714,14 @@ def _write_timing(
             record["wall_s_delta_phases"] = round(
                 max(0.0, wall_s - phase_sum), 4
             )
+        if extras:
+            for k, v in extras.items():
+                # Don't let extras silently overwrite the load-bearing
+                # ts/file/outcome/category/phases keys -- a future
+                # caller bug would otherwise corrupt analytics.
+                if k in {"ts", "file", "outcome", "category", "phases"}:
+                    continue
+                record[k] = v
         with TIMING_FILE.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
     except Exception as exc:  # never break the loop on logging
@@ -2083,6 +2105,32 @@ def _log_exit(
         pass
 
 
+def _write_timing_exit(reason: str, iteration: int) -> None:
+    """Append a synthetic ``exit:<reason>`` record to ``timing.log``.
+
+    Loop 105 added a synthetic ``crashed`` record so analytics
+    counting outcomes per category never undercount iterations.
+    Loop 226 extends the same pattern to the shutdown path: without
+    this, timing.log analytics undercount the final iteration and
+    can't tell SIGTERM from KeyboardInterrupt from an unhandled
+    crash. The ``iteration_count`` extra lets dashboards correlate
+    the shutdown to the runtime.log ``loop exit ... iter=N`` line.
+
+    Like every other timing.log writer, this never raises -- it
+    delegates to the rate-limited swallow logger inside
+    ``_write_timing``.
+    """
+    try:
+        _write_timing(
+            Path("."),
+            f"exit:{reason}",
+            {},
+            extras={"iteration_count": iteration},
+        )
+    except Exception:
+        pass
+
+
 class _ShutdownRequested(SystemExit):
     """Raised from the SIGTERM handler so the main loop's
     structured shutdown path runs (logging + client.close())
@@ -2179,19 +2227,23 @@ def main() -> None:
     except _ShutdownRequested as exc:
         # SIGTERM converted by _install_sigterm_handler. Graceful.
         _log_exit("sigterm", iteration_count, exc=None if exc.code == 0 else exc)
+        _write_timing_exit("sigterm", iteration_count)
         raise
     except KeyboardInterrupt:
         # Operator pressed Ctrl-C in the foreground. Graceful.
         _log_exit("keyboard-interrupt", iteration_count)
+        _write_timing_exit("keyboard-interrupt", iteration_count)
         raise
     except SystemExit as exc:
         # Some other code called sys.exit(); preserve the code.
         _log_exit("system-exit", iteration_count, exc=exc if exc.code else None)
+        _write_timing_exit("system-exit", iteration_count)
         raise
     except BaseException as exc:  # pragma: no cover - defensive
         # Anything else is an unhandled crash escaping the inner
         # try/except. Surface it loudly before re-raising.
         _log_exit("unhandled-exception", iteration_count, exc=exc)
+        _write_timing_exit("unhandled-exception", iteration_count)
         raise
     finally:
         client.close()

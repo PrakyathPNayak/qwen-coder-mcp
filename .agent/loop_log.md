@@ -3624,3 +3624,44 @@ signal.raise_signal), and _log_exit observability guarantees (2 -
 swallows _log failures, calls _log with the formatted line).
 
 Verify: full suite 1469 passed, 6 skipped (was 1456 + 13).
+
+## Loop 226 - timing.log exit records (analytics symmetry)
+
+Loop 105 added a synthetic crashed record to timing.log so analytics
+counting outcomes per category never undercount iterations when the
+inner try/except fired. Loop 226 extends the same pattern to the
+shutdown path established in loop 225: without this, timing.log
+analytics undercount the final iteration and cannot disambiguate
+SIGTERM from KeyboardInterrupt from an unhandled crash.
+
+Three pieces:
+1. _write_timing now accepts extras kwarg that merges arbitrary
+   keys into the JSON record. Reserved keys (ts/file/outcome/category/
+   phases) cannot be overwritten; protects analytics consumers from
+   caller-bug corruption.
+2. _write_timing_exit(reason, iteration) - thin helper that calls
+   _write_timing with outcome="exit:<reason>", phases={}, and
+   extras={"iteration_count": iteration}. Never raises (matches
+   every other timing helper).
+3. main() shutdown branches now call _write_timing_exit alongside
+   _log_exit, so both runtime.log and timing.log get the breadcrumb.
+
+Also added "exit" to OUTER_OUTCOME_CATEGORIES (caught by the
+loop-106 contract test) and documented the new category in
+README.md (caught by the loop-106 README schema drift test). Both
+test failures during this loop are exactly the loop-106 design at
+work: the moment a new category goes in the frozenset, the
+contract tests force the docs to follow.
+
+Devil step. Why iteration_count and not iter (matching runtime.log)?
+Because timing.log is JSON: snake_case is conventional and len-3
+keys read worse in jq filters than fully-spelled. The runtime.log
+line uses iter=N because that channel is human-readable text.
+Cross-channel join still trivial: same number, different label.
+
+Eight tests across two classes pin extras semantics (merge,
+reserved-key protection, backwards-compat default-None) and
+_write_timing_exit semantics (record shape, iteration_count, all
+four reasons, zero-iter edge case, swallow-on-error).
+
+Verify: full suite 1477 passed, 6 skipped (was 1469 + 8).
