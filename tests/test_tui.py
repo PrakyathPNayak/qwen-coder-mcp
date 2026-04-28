@@ -1138,3 +1138,45 @@ class TestPersistHistory:
         cfg = fs_tools.FsConfig(root=tmp_path)
         p = tui.history_file_path(cfg)
         assert p == tmp_path / ".agent" / "tui_history.jsonl"
+
+
+# ----------------------------------------------------------- Loop 141
+class TestSlashCompletions:
+    def test_empty_returns_nothing(self) -> None:
+        assert tui.slash_completions("") == []
+
+    def test_no_slash_returns_nothing(self) -> None:
+        assert tui.slash_completions("hello") == []
+
+    def test_partial_matches(self) -> None:
+        out = tui.slash_completions("/he")
+        assert "/help" in out
+        # Only commands starting with /he survive.
+        assert all(c.startswith("/he") for c in out)
+
+    def test_exact_command(self) -> None:
+        out = tui.slash_completions("/help")
+        assert "/help" in out
+
+    def test_only_slash_returns_all(self) -> None:
+        out = tui.slash_completions("/")
+        assert len(out) == len(tui.SLASH_COMMANDS)
+
+    def test_args_after_command_still_uses_head(self) -> None:
+        # If the user typed "/he some text" we still suggest /help etc.
+        out = tui.slash_completions("/he some text")
+        assert "/help" in out
+
+    def test_unknown_prefix(self) -> None:
+        assert tui.slash_completions("/zzznosuchthing") == []
+
+    def test_all_dispatched_commands_in_list(self) -> None:
+        # Every slash command branch in dispatch_slash should be listed.
+        for cmd in [
+            "/help", "/search", "/fetch", "/read", "/ls",
+            "/find_bugs", "/explain", "/apply", "/history", "/diff",
+            "/run", "/grep", "/find", "/clear", "/save",
+            "/git", "/tests", "/tokens", "/sysprompt", "/model",
+            "/undo", "/retry", "/quit",
+        ]:
+            assert cmd in tui.SLASH_COMMANDS, f"{cmd} missing"

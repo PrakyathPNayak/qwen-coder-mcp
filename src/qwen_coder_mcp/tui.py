@@ -65,6 +65,46 @@ def parse_slash(line: str) -> SlashCommand | None:
     return SlashCommand(name=name, args=args, rest=rest)
 
 
+SLASH_COMMANDS: tuple[str, ...] = (
+    "/help",
+    "/search",
+    "/fetch",
+    "/read",
+    "/ls",
+    "/find_bugs",
+    "/explain",
+    "/apply",
+    "/history",
+    "/diff",
+    "/run",
+    "/grep",
+    "/find",
+    "/clear",
+    "/save",
+    "/git",
+    "/tests",
+    "/tokens",
+    "/sysprompt",
+    "/model",
+    "/undo",
+    "/retry",
+    "/quit",
+)
+
+
+def slash_completions(prefix: str) -> list[str]:
+    """Return slash-command names whose name starts with `prefix`.
+
+    Empty input or input without a leading slash returns []. Used by the
+    Textual Input suggester to drive tab completion. Pure so unit tests
+    can pin behaviour without booting the App.
+    """
+    if not prefix or not prefix.startswith("/"):
+        return []
+    head = prefix.split()[0] if prefix else prefix
+    return [name for name in SLASH_COMMANDS if name.startswith(head)]
+
+
 HELP_TEXT = """\
 Slash commands:
   /help                Show this help
@@ -738,6 +778,11 @@ def _build_app(
     from textual.app import App, ComposeResult
     from textual.containers import Vertical
     from textual.widgets import Footer, Header, Input, RichLog
+    try:
+        from textual.suggester import SuggestFromList  # type: ignore
+        _suggester: object | None = SuggestFromList(SLASH_COMMANDS, case_sensitive=False)
+    except ImportError:
+        _suggester = None
 
     cfg = fs_cfg or _default_fs_cfg()
     factory = client_factory or QwenClient
@@ -764,7 +809,14 @@ def _build_app(
             yield Header()
             with Vertical():
                 yield RichLog(id="log", highlight=True, markup=True)
-            yield Input(placeholder="message or /help", id="entry")
+            if _suggester is not None:
+                yield Input(
+                    placeholder="message or /help",
+                    id="entry",
+                    suggester=_suggester,  # type: ignore[arg-type]
+                )
+            else:
+                yield Input(placeholder="message or /help", id="entry")
             yield Footer()
 
         def on_mount(self) -> None:  # type: ignore[override]

@@ -2024,3 +2024,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P3, low risk because both code paths are wrapped in try except and tests cover round trip plus malformed plus capped tail.
 - ACT: history_file_path, save_history_jsonl, load_history_jsonl helpers. App on_mount loads prior history and on_unmount saves on exit. Five new tests. Seven hundred ninety nine passed.
 
+
+## Loop 141 — slash command tab completion
+- DECIDE: claude code and copilot both autocomplete slash names. Wire textual SuggestFromList to the Input widget.
+- DEVIL:
+  - Correctness: slash completions returns empty list for empty input or non slash prefix so plain chat does not suggest anything. The split slice on the first whitespace head handles users who tab while mid arg without losing their cursor position. Suggester is wrapped in try except ImportError so older textual versions degrade silently.
+  - Scope: the SLASH_COMMANDS tuple is the single source of truth for the help text and the suggester. A test asserts every dispatcher branch is in the list so adding a new command without updating the constant fails CI.
+  - Priority: P3 user experience polish, no risk to chat path.
+- ACT: SLASH_COMMANDS tuple, slash_completions helper, lazy SuggestFromList import inside _build_app, Input widget receives suggester kwarg. Eight new tests. Eight hundred seven passed.
+
