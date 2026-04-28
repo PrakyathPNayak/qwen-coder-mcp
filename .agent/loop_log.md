@@ -3497,3 +3497,23 @@ synonym; explicit `KV_OFFLOAD_GIB=0` still wins; default off; `=0`
 also off; loud stderr breadcrumb pinned.
 
 **Verify.** Full suite 1431 passed, 6 skipped (was 1424 + 7).
+
+## Loop 222 - stop script regression pinning
+
+scripts/stop_qwen.sh had zero pytest pins. Loop 205 pattern applied:
+sandbox copy of the script in tmp_path with .loop/ alongside, drive
+real child processes, assert observable behaviour. Seven tests:
+shebang/syntax/strict-mode invariants, missing pidfile branch (exit 1,
+stderr message), stale pidfile cleanup branch, live-process SIGTERM
+branch (sleep 30 child), and the slow SIGKILL escalation branch (Python
+child trapping SIGTERM with SIG_IGN, asserting child.returncode ==
+-signal.SIGKILL to prove escalation actually fired).
+
+Devil step. The SIGKILL test is bounded by the scripts own 30s poll
+loop, deterministic, no race. The assertion on returncode is unambig
+because the trapped signal cannot reap the child. Sandbox fixture is
+load-bearing: it isolates tests from the real repo /.loop/ which would
+otherwise be catastrophic on the autonomous-loop host where a real
+serve may be running. Priority P2; symmetry with the loop-205 surface.
+
+Verify: full suite 1438 passed, 6 skipped (was 1431 + 7). Total ~87s.
