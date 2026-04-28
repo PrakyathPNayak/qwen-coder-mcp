@@ -684,6 +684,47 @@ def _audit_run_path(cfg: fs_tools.FsConfig) -> Path:
     return Path(cfg.root) / ".agent" / "runs.log"
 
 
+def _audit_run_max_bytes() -> int:
+    """Loop 257: size cap before rotating ``.agent/runs.log``.
+
+    Default 1 MiB. When the live log exceeds this it's renamed to
+    ``runs.log.1`` (overwriting any prior rotation), and a fresh
+    ``runs.log`` is started. Set to 0 to disable rotation. Override
+    via ``QWEN_RUNS_LOG_MAX_BYTES``.
+    """
+    raw = os.environ.get("QWEN_RUNS_LOG_MAX_BYTES", str(1024 * 1024))
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return 1024 * 1024
+    return max(0, v)
+
+
+def _maybe_rotate_runs_log(path: Path, cap: int) -> None:
+    """Loop 257: best-effort size-based rotation. Renames the current
+    log to ``<name>.1`` when its size exceeds ``cap``. Failures are
+    swallowed -- audit must never crash the chat session."""
+    if cap <= 0:
+        return
+    try:
+        if not path.exists():
+            return
+        if path.stat().st_size <= cap:
+            return
+        backup = path.with_name(path.name + ".1")
+        try:
+            if backup.exists():
+                backup.unlink()
+        except OSError:
+            return
+        try:
+            path.rename(backup)
+        except OSError:
+            pass
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _audit_run(
     cfg: fs_tools.FsConfig,
     *,
@@ -696,12 +737,14 @@ def _audit_run(
 
     Loop 251 added this to give operators a forensic trail of every
     command execution (or denial) that traversed the slash dispatcher.
-    Best-effort: any IO failure is swallowed because audit logging
-    must never break the operator's chat session.
+    Loop 257 added size-based rotation so the log can't grow unbounded
+    on long-lived sessions. Best-effort: any IO failure is swallowed
+    because audit logging must never break the operator's chat session.
     """
     try:
         path = _audit_run_path(cfg)
         path.parent.mkdir(parents=True, exist_ok=True)
+        _maybe_rotate_runs_log(path, _audit_run_max_bytes())
         record = {
             "ts": time.time(),
             "cmd": cmd,
