@@ -1509,3 +1509,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: SIGUSR1 itself cannot be tested without spawning a process; the test verifies install succeeds on POSIX. Acceptable.
 - ACT: 2 helpers + 5 tests + 2 pre-existing bug fixes. 473 passed.
 - COMMIT: pending.
+
+## Loop 86 — main() aggregate cadence test coverage
+- OBSERVE: _log_aggregate_swallow_summary is invoked from main() but no test exercised the cadence logic. Off-by-one or modulo mistakes would be silent.
+- ORIENT: Test the boundary explicitly. main() loops forever; break out via sleep stub raising KeyboardInterrupt after N iterations.
+- DECIDE: 4 cases: correct cadence boundaries, every=0 disables, every=large never fires within window, exception path still increments count.
+- DEVIL:
+  - Correctness: iteration_count++ happens unconditionally before cadence check. Even on _iteration crash. Test_aggregate_fires_on_iteration_crash_too verifies. Good.
+  - Scope: KeyboardInterrupt is the right interrupt to use because main()'s try/except catches Exception only, not BaseException.
+  - Edge: every=0 path is the disable knob (verified). Negative would also be disabled by `if aggregate_every > 0`.
+- ACT: 4 new tests, no production code changes. 477 passed.
+- COMMIT: pending.

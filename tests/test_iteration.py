@@ -2080,3 +2080,121 @@ class TestDumpLoggerState:
             assert L._install_sigusr1_handler() is False
         else:
             assert L._install_sigusr1_handler() is True
+
+
+class TestMainAggregateCadence:
+    """Loop 86: end-to-end cadence test for `main()` calling
+    `_log_aggregate_swallow_summary` exactly once per `aggregate_every`
+    iterations and never on iterations that don't cleanly divide."""
+
+    def _run_main_for_n_iterations(self, monkeypatch, n: int, every: int):
+        from agent import loop as L
+
+        # Stub the heavy bits.
+        agg_calls: list[int] = []
+        monkeypatch.setattr(
+            L, "_log_aggregate_swallow_summary",
+            lambda i: agg_calls.append(i),
+        )
+        monkeypatch.setattr(L, "_aggregate_summary_every", lambda: every)
+        monkeypatch.setattr(L, "_iteration", lambda *a, **kw: "ok:noop")
+        monkeypatch.setattr(L, "_install_sigusr1_handler", lambda: True)
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        # Settings stub.
+        from types import SimpleNamespace
+        fake_settings = SimpleNamespace(
+            model="x", base_url="y", loop_interval_seconds=0,
+            loop_max_file_bytes=10_000, loop_push=False,
+        )
+        import sys as _sys
+        config_mod = _sys.modules.get("qwen_coder_mcp.config")
+        if config_mod is None:
+            import types
+            config_mod = types.ModuleType("qwen_coder_mcp.config")
+            _sys.modules["qwen_coder_mcp"] = types.ModuleType("qwen_coder_mcp")
+            _sys.modules["qwen_coder_mcp.config"] = config_mod
+        monkeypatch.setattr(
+            config_mod, "load_settings", lambda: fake_settings, raising=False
+        )
+
+        class _StubClient:
+            def __init__(self, *a, **kw): pass
+            def close(self): pass
+        monkeypatch.setattr(L, "QwenClient", _StubClient)
+
+        # Break out after n iterations by raising from time.sleep.
+        sleep_calls = {"n": 0}
+        def _stop_after_n(_s):
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= n:
+                raise KeyboardInterrupt()
+        monkeypatch.setattr(L.time, "sleep", _stop_after_n)
+        try:
+            L.main()
+        except KeyboardInterrupt:
+            pass
+        return agg_calls
+
+    def test_aggregate_called_at_correct_cadence(self, monkeypatch):
+        # every=3 over 9 iterations: should fire at iter 3, 6, 9.
+        agg = self._run_main_for_n_iterations(monkeypatch, n=9, every=3)
+        assert agg == [3, 6, 9]
+
+    def test_aggregate_not_called_when_every_is_zero(self, monkeypatch):
+        # every<=0 disables aggregate emission entirely.
+        agg = self._run_main_for_n_iterations(monkeypatch, n=5, every=0)
+        assert agg == []
+
+    def test_aggregate_not_called_before_first_cadence_boundary(
+        self, monkeypatch
+    ):
+        # every=10 over 7 iterations: never fires.
+        agg = self._run_main_for_n_iterations(monkeypatch, n=7, every=10)
+        assert agg == []
+
+    def test_aggregate_fires_on_iteration_crash_too(self, monkeypatch):
+        # Even when _iteration raises, the count still advances and
+        # the cadence boundary still fires.
+        from agent import loop as L
+
+        agg_calls: list[int] = []
+        monkeypatch.setattr(
+            L, "_log_aggregate_swallow_summary",
+            lambda i: agg_calls.append(i),
+        )
+        monkeypatch.setattr(L, "_aggregate_summary_every", lambda: 2)
+
+        def _boom(*a, **kw):
+            raise RuntimeError("boom")
+        monkeypatch.setattr(L, "_iteration", _boom)
+        monkeypatch.setattr(L, "_install_sigusr1_handler", lambda: True)
+        monkeypatch.setattr(L, "_log", lambda m: None)
+
+        from types import SimpleNamespace
+        fake_settings = SimpleNamespace(
+            model="x", base_url="y", loop_interval_seconds=0,
+            loop_max_file_bytes=10_000, loop_push=False,
+        )
+        import sys as _sys
+        config_mod = _sys.modules.get("qwen_coder_mcp.config")
+        monkeypatch.setattr(
+            config_mod, "load_settings", lambda: fake_settings, raising=False
+        )
+
+        class _StubClient:
+            def __init__(self, *a, **kw): pass
+            def close(self): pass
+        monkeypatch.setattr(L, "QwenClient", _StubClient)
+
+        sleep_calls = {"n": 0}
+        def _stop_after_n(_s):
+            sleep_calls["n"] += 1
+            if sleep_calls["n"] >= 4:
+                raise KeyboardInterrupt()
+        monkeypatch.setattr(L.time, "sleep", _stop_after_n)
+        try:
+            L.main()
+        except KeyboardInterrupt:
+            pass
+        # 4 iterations, cadence=2 -> fires at 2, 4.
+        assert agg_calls == [2, 4]
