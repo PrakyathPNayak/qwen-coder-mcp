@@ -1,24 +1,24 @@
 # Next loop seed
 
 ## Candidates ranked
-1. **(P3) Atomic `_save_cursor`.** Currently a non-atomic `write_text`. If the
-   process is killed mid-write `cursor.json` ends up empty/corrupt. Today
-   `_load_cursor` returns 0 in that case, so the loop silently restarts at
-   index 0 (potentially re-scanning the same file forever in a small repo).
-   Write to a tempfile + `os.replace`.
+1. **(P3) `_call_model` / `client.system_user` round-trip has no test.** Wire
+   in a fake QwenClient (already easy via `httpx.MockTransport`) and exercise
+   one full `_iteration` happy path: file picked → bug found → fix proposed →
+   accepted → applied → committed. Currently the orchestrator is unverified.
 
-2. **(P3) `_call_model` / `client.system_user` round-trip has no test.** Mock
-   `QwenClient.chat` and assert prompt assembly: includes file path, includes
-   the "diff in scope" instruction, system+user split correct.
+2. **(P3) `prompts.py` strings are never validated.** A regression that drops
+   the "must be a unified diff inside ```diff fences" sentence would make
+   every fix `not_a_unified_diff`. Snapshot/contract tests on the prompt
+   builders.
 
-3. **(P5) `_apply_diff` accepts `diff` blocks but does not require trailing
-   newline on every hunk** — sometimes git apply silently corrupts. Verify by
-   normalising line endings on the input. Lower priority, may be fine.
+3. **(P5) `_apply_diff` does not normalise CRLF in model output.** Some
+   models emit Windows line endings; `git apply` then complains about
+   "patch with CRLF line endings". Strip `\r` before `git apply --check`.
 
-4. **(P6) `server.py` builds `QwenClient` at `_build_server` import path.**
-   Add a smoke test importing the module without `.env`.
+4. **(P6) `server.py` builds `QwenClient` at `_build_server`.** Defer + smoke
+   import test.
 
-5. **(P8) `STATE.md` and `.agent/loop_log.md` unbounded growth.** Rotation.
+5. **(P8) `STATE.md` and `.agent/loop_log.md` rotation.**
 
 ## Reminder
 - Verify vLLM (`tail .loop/serve.log`, `ps -p 1493`) every few loops.

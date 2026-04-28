@@ -244,3 +244,25 @@ revert-removes-untracked, revert-restores-modified, revert-clears-mixed,
 end-to-end `_diff_in_scope` catches an untracked new file.
 
 **Result**: 69/69 green. Commit `<filled by git>`.
+
+## Loop 8 — Atomic cursor persistence
+**Bug**: `_save_cursor` called `Path.write_text`, which is not atomic.
+A SIGTERM/OOM/power loss between the implicit truncate and the actual
+write leaves `cursor.json` empty. `_load_cursor` then falls back to 0
+and the loop silently re-scans files it already covered — possibly the
+same file forever in a small repo.
+
+**Devil**: leaving a stale `.tmp` if the rename fails. Counter: catch
+OSError around `os.replace`, unlink the tmp before re-raising. Verified
+in `test_save_atomicity_no_partial_state_visible` — the original file
+keeps its prior value when `os.replace` raises.
+
+**Fix**: write to `cursor.json.tmp` then `os.replace` to `cursor.json`.
+Atomic on POSIX and on same-volume Windows. Cleans up tmp on rename
+failure.
+
+**Tests**: `tests/test_cursor.py`, 8 cases — round-trip, overwrite,
+no leftover tmp, missing file, empty file (simulated crash), corrupt
+JSON, atomicity under simulated rename failure, deep parent creation.
+
+**Result**: 77/77 green. Commit `<filled by git>`.

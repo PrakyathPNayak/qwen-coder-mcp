@@ -102,8 +102,29 @@ def _load_cursor() -> int:
 
 
 def _save_cursor(idx: int) -> None:
+    """Persist the cursor atomically.
+
+    A naive `Path.write_text` is non-atomic: if the process is killed
+    while the file is being truncated/written, the next `_load_cursor`
+    sees an empty/corrupt file and (per its own try/except) falls back
+    to ``0`` — silently re-scanning files that were already covered.
+    Write to a sibling tempfile then `os.replace`, which is atomic on
+    POSIX (and on Windows for files on the same volume).
+    """
     CURSOR_FILE.parent.mkdir(parents=True, exist_ok=True)
-    CURSOR_FILE.write_text(json.dumps({"idx": idx}), "utf-8")
+    tmp = CURSOR_FILE.with_suffix(CURSOR_FILE.suffix + ".tmp")
+    try:
+        tmp.write_text(json.dumps({"idx": idx}), "utf-8")
+        os.replace(tmp, CURSOR_FILE)
+    except OSError:
+        # If the rename failed, drop the half-written tmp and let the
+        # next iteration retry. The previous CURSOR_FILE (if any) is
+        # untouched because we never opened it for writing.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _read_file(path: Path, max_bytes: int) -> str | None:
