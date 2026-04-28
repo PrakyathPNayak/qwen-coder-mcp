@@ -39,9 +39,27 @@ CURSOR_FILE = LOOP_DIR / "cursor.json"
 LOG_FILE = LOOP_DIR / "runtime.log"
 TIMING_FILE = LOOP_DIR / "timing.log"
 STATE_FILE = _REPO / "STATE.md"
-STATE_MAX_BYTES = 256 * 1024  # rotate STATE.md when it exceeds this
+STATE_MAX_BYTES = 256 * 1024  # legacy default; use _state_max_bytes()
+_STATE_MAX_BYTES_DEFAULT = 256 * 1024
+_STATE_MAX_BYTES_CAP = 100 * 1024 * 1024
 _STATE_ARCHIVE_MAX_FILES_DEFAULT = 50
 _STATE_ARCHIVE_MAX_FILES_CAP = 10_000
+
+
+def _state_max_bytes() -> int:
+    """Cap for STATE.md size before rotation. Env-tunable; falls back to
+    the module-level STATE_MAX_BYTES constant (preserved for monkeypatch
+    compatibility in tests)."""
+    raw = os.environ.get("QWEN_STATE_MAX_BYTES")
+    if raw is None:
+        return STATE_MAX_BYTES
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return STATE_MAX_BYTES
+    if v <= 0:
+        return STATE_MAX_BYTES
+    return min(v, _STATE_MAX_BYTES_CAP)
 
 # Paths excluded from candidate file selection.
 EXCLUDE_DIRS = {".git", ".loop", ".venv", "venv", "__pycache__", "dist", "build"}
@@ -1032,7 +1050,7 @@ def _rotate_state_if_needed() -> Path | None:
         return None
     except OSError:
         return None
-    if size <= STATE_MAX_BYTES:
+    if size <= _state_max_bytes():
         return None
     try:
         STATE_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)

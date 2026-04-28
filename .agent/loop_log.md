@@ -1195,3 +1195,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 4. Right call.
 - ACT: 1 contract test (string-presence in source). 366 passed, 1 skipped.
 - COMMIT: pending.
+
+## Loop 58 — `QWEN_STATE_MAX_BYTES` env override
+- OBSERVE: `STATE_MAX_BYTES` was the only byte-cap not env-tunable.
+- ORIENT: Pure consistency / operability win. Bucket 9-ish, but very low risk.
+- DECIDE: Add `_state_max_bytes()` reading env; preserve monkeypatch on the legacy constant for existing tests.
+- DEVIL:
+  - Correctness: existing tests monkeypatch `STATE_MAX_BYTES` directly. Solution: env wins, otherwise use the (potentially monkeypatched) constant. Verified.
+  - Scope: not a bandaid — every other cap follows this pattern.
+  - Priority: low, but next.md #1 was this; doing it clears the queue.
+- ACT: `_state_max_bytes` + 8 tests (env, default, invalid, zero/neg, cap, monkeypatch interop, env-vs-constant precedence). 374 passed.
+- COMMIT: pending.

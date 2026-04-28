@@ -186,3 +186,49 @@ class TestStateArchivePruning:
         # 2 retained: the newly rotated archive plus the most recent OLD
         assert len(survivors) == 2
         assert archive_path.name in survivors
+
+
+class TestStateMaxBytesEnv:
+    """Loop 58: QWEN_STATE_MAX_BYTES env override."""
+
+    def test_default_returns_module_constant(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.delenv("QWEN_STATE_MAX_BYTES", raising=False)
+        assert L._state_max_bytes() == L.STATE_MAX_BYTES
+
+    def test_env_override_applied(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_STATE_MAX_BYTES", "1024")
+        assert L._state_max_bytes() == 1024
+
+    def test_invalid_env_falls_back(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_STATE_MAX_BYTES", "not-an-int")
+        assert L._state_max_bytes() == L.STATE_MAX_BYTES
+
+    def test_zero_falls_back(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_STATE_MAX_BYTES", "0")
+        assert L._state_max_bytes() == L.STATE_MAX_BYTES
+
+    def test_negative_falls_back(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_STATE_MAX_BYTES", "-99")
+        assert L._state_max_bytes() == L.STATE_MAX_BYTES
+
+    def test_cap_clamps_huge(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_STATE_MAX_BYTES", str(10 * 1024 * 1024 * 1024))
+        assert L._state_max_bytes() == L._STATE_MAX_BYTES_CAP
+
+    def test_monkeypatch_constant_still_works(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.delenv("QWEN_STATE_MAX_BYTES", raising=False)
+        monkeypatch.setattr(L, "STATE_MAX_BYTES", 42)
+        assert L._state_max_bytes() == 42
+
+    def test_env_takes_precedence_over_constant(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_STATE_MAX_BYTES", "999")
+        monkeypatch.setattr(L, "STATE_MAX_BYTES", 42)
+        assert L._state_max_bytes() == 999
