@@ -1149,3 +1149,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: low-impact alone, but it locks the contract so future loops can rely on it.
 - ACT: 6 new tests; 350 passed, 1 skipped.
 - COMMIT: pending.
+
+## Loop 54 — `STATE_ARCHIVE_DIR` retention cap
+- OBSERVE: `_rotate_state_if_needed` already moves oversized STATE.md into the archive dir, but the archive itself was unbounded — every rotation adds a file forever. Bucket 5.
+- ORIENT: same shape as loop 52's history retention. Reuse the same pattern.
+- DECIDE: `_state_archive_max_files()` (default 50, cap 10k, env `QWEN_STATE_ARCHIVE_MAX_FILES`) + `_prune_state_archive` called from inside `_rotate_state_if_needed` *after* the new archive is in place.
+- DEVIL:
+  - Correctness: prune runs after `os.replace`, so the new archive is visible; the cap=2 e2e test confirms the freshly-rotated archive is among the survivors.
+  - Scope: only deletes regular files in STATE_ARCHIVE_DIR (subdirs preserved, verified).
+  - Priority: bucket 5; combined with loop 52 closes the inode-leak class for `.loop/`.
+- ACT: 8 new tests including end-to-end rotation+prune. Required patching `_REPO` in the e2e test for `archive.relative_to(_REPO)` to work. 358 passed, 1 skipped.
+- COMMIT: pending.

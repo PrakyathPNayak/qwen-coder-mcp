@@ -40,6 +40,8 @@ LOG_FILE = LOOP_DIR / "runtime.log"
 TIMING_FILE = LOOP_DIR / "timing.log"
 STATE_FILE = _REPO / "STATE.md"
 STATE_MAX_BYTES = 256 * 1024  # rotate STATE.md when it exceeds this
+_STATE_ARCHIVE_MAX_FILES_DEFAULT = 50
+_STATE_ARCHIVE_MAX_FILES_CAP = 10_000
 
 # Paths excluded from candidate file selection.
 EXCLUDE_DIRS = {".git", ".loop", ".venv", "venv", "__pycache__", "dist", "build"}
@@ -1025,9 +1027,42 @@ def _rotate_state_if_needed() -> Path | None:
             f"_Previous entries archived to `{archive.relative_to(_REPO).as_posix()}`._\n\n"
         )
         STATE_FILE.write_text(header, "utf-8")
+        _prune_state_archive(_state_archive_max_files())
         return archive
     except OSError:
         return None
+
+
+def _state_archive_max_files() -> int:
+    """Cap on retained `.loop/state_archive/*.md` files."""
+    return _env_int_capped(
+        "QWEN_STATE_ARCHIVE_MAX_FILES",
+        _STATE_ARCHIVE_MAX_FILES_DEFAULT,
+        _STATE_ARCHIVE_MAX_FILES_CAP,
+    )
+
+
+def _prune_state_archive(max_files: int) -> int:
+    """Delete oldest STATE archive files until at most ``max_files`` remain."""
+    try:
+        if not STATE_ARCHIVE_DIR.exists():
+            return 0
+        entries = [p for p in STATE_ARCHIVE_DIR.iterdir() if p.is_file()]
+        if len(entries) <= max_files:
+            return 0
+        entries.sort(key=lambda p: p.stat().st_mtime)
+        excess = len(entries) - max_files
+        deleted = 0
+        for old in entries[:excess]:
+            try:
+                old.unlink()
+                deleted += 1
+            except OSError:
+                pass
+        return deleted
+    except Exception as exc:  # never break the loop on cleanup
+        _log(f"_prune_state_archive failed: {exc}")
+        return 0
 
 
 def _append_state(entry: str) -> None:

@@ -108,3 +108,81 @@ def test_rotation_idempotent_when_fresh(temp_repo, monkeypatch):
     assert a1 is not None
     assert a2 is None
     assert sorted(loop.STATE_ARCHIVE_DIR.glob("STATE.*.md")) == [a1]
+
+
+class TestStateArchivePruning:
+    """Loop 54: STATE_ARCHIVE_DIR is bounded after rotation."""
+
+    def test_default_cap(self):
+        from agent import loop as L
+        assert L._state_archive_max_files() == L._STATE_ARCHIVE_MAX_FILES_DEFAULT
+
+    def test_env_override(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_STATE_ARCHIVE_MAX_FILES", "5")
+        assert L._state_archive_max_files() == 5
+
+    def test_env_clamped(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_STATE_ARCHIVE_MAX_FILES", "999999")
+        assert L._state_archive_max_files() == L._STATE_ARCHIVE_MAX_FILES_CAP
+
+    def test_prune_deletes_oldest(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        import os as _os
+        monkeypatch.setattr(L, "STATE_ARCHIVE_DIR", tmp_path)
+        for i in range(5):
+            f = tmp_path / f"STATE.{i:04d}.md"
+            f.write_text(str(i))
+            _os.utime(f, (1000 + i, 1000 + i))
+        deleted = L._prune_state_archive(2)
+        assert deleted == 3
+        survivors = sorted(p.name for p in tmp_path.iterdir())
+        assert survivors == ["STATE.0003.md", "STATE.0004.md"]
+
+    def test_prune_noop_when_under_cap(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setattr(L, "STATE_ARCHIVE_DIR", tmp_path)
+        (tmp_path / "a.md").write_text("a")
+        assert L._prune_state_archive(10) == 0
+
+    def test_prune_missing_dir_is_noop(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setattr(L, "STATE_ARCHIVE_DIR", tmp_path / "nope")
+        assert L._prune_state_archive(10) == 0
+
+    def test_prune_skips_subdirectories(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setattr(L, "STATE_ARCHIVE_DIR", tmp_path)
+        (tmp_path / "subdir").mkdir()
+        (tmp_path / "a.md").write_text("a")
+        (tmp_path / "b.md").write_text("b")
+        L._prune_state_archive(1)
+        assert (tmp_path / "subdir").exists()
+
+    def test_rotation_triggers_archive_prune(self, tmp_path, monkeypatch):
+        """End-to-end: when STATE.md rotates and the archive is over cap,
+        old archives are pruned."""
+        from agent import loop as L
+        import os as _os
+        state_file = tmp_path / "STATE.md"
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir()
+        # Pre-seed the archive with 3 files older than rotation
+        for i in range(3):
+            f = archive_dir / f"STATE.OLD{i}.md"
+            f.write_text("old")
+            _os.utime(f, (1000 + i, 1000 + i))
+        # Make STATE.md huge so rotation fires
+        state_file.write_text("x" * 1000)
+        monkeypatch.setattr(L, "STATE_FILE", state_file)
+        monkeypatch.setattr(L, "STATE_ARCHIVE_DIR", archive_dir)
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        monkeypatch.setattr(L, "STATE_MAX_BYTES", 100)
+        monkeypatch.setenv("QWEN_STATE_ARCHIVE_MAX_FILES", "2")
+        archive_path = L._rotate_state_if_needed()
+        assert archive_path is not None
+        survivors = sorted(p.name for p in archive_dir.iterdir())
+        # 2 retained: the newly rotated archive plus the most recent OLD
+        assert len(survivors) == 2
+        assert archive_path.name in survivors
