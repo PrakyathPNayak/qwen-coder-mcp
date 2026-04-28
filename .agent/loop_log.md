@@ -3146,3 +3146,24 @@ The loop-205 `--help=all` validator only checks flag *existence* — it cannot c
 - `tests/test_serve_qwen_engine_init.py` (new, gated): runs the real launcher with `facebook/opt-125m`, polls `/v1/models`, scans the serve log for known fatal markers (`does not support HMA`, `Engine core initialization failed`, `RuntimeError: Engine`, etc.), tears down via SIGTERM. Skipped unless `QWEN_SERVE_E2E_ENGINE=1`. This is the lights-on smoke test the user asked for; it catches *combinatorial* failures that the help-validator structurally cannot.
 
 **Verify.** All 1344 prior + 3 new pure-argv tests green. Engine-init E2E test skips cleanly when the gate is off (1 skip → 2 skips). Test count around 1.34k → 1.35k. Manually verified `vllm serve <new-argv> --help` parses without error.
+
+## Loop 212 — proactive vLLM argv combination invariants
+
+**Observe.** Loop 211 fixed one vLLM 0.11 init-time pairing rule (HMA + offloading). The lesson: vLLM enforces invariants *beyond* the help table at engine init. We caught loop 211 reactively. Loop 212: enumerate the invariants we already know about and pin them with pure-argv tests so the next regression can't slip past PR review.
+
+**Orient.** Survey what the launcher emits today: dtype, max-model-len, max-num-seqs, kv-cache-dtype, gpu-memory-utilization, served-model-name, trust-remote-code, enforce-eager, limit-mm-per-prompt, enable-chunked-prefill, max-num-batched-tokens, kv-offloading-size, kv-offloading-backend, disable-hybrid-kv-cache-manager. Six known footguns:
+1. chunked-prefill without explicit max-num-batched-tokens → implicit default OOMs on long contexts
+2. max-num-batched-tokens > max-model-len → wasteful misconfiguration
+3. kv-offloading-size without kv-offloading-backend → implicit default has changed across versions
+4. offloading=0 leaving any of the three companion flags behind → engine crashes
+ silent precision downgrade in past vLLM releases
+6. gpu-memory-utilization outside 0.5-0.95 → cudaErrorMemoryAllocation on the 4090, or wasted perf
+
+**Devil.**
+- *Correctness:* Are these invariants actually enforced or are they over-tightening? Tests run against current launcher and pass; bands are intentionally wide (0.5-0.95 mem util, ≥512 batched tokens). Each band cites a real failure mode in the docstring. ✅
+- *Scope:* Should we test ALL N-tuples of argv flags? No — that's combinatorial. The six pinned are the ones with known engine-side enforcement OR known historical breakage. Heavy lights-on E2E (loop 211 file) catches the rest organically. ✅
+- *Priority:* P1 — same class as loop 211, preempted before user reports it. ✅
+
+**Act.** New `TestServeArgvCombinationInvariants` class in `tests/test_serve_qwen_help_validation.py` (6 tests, all pure-argv, no vLLM dep — they run unconditionally in CI). Each test docstring cites the failure mode. Helper `_argv_with(**env_overrides)` factored for clean per-test invocation. `_flag_value` helper for checking the value next to a flag.
+
+**Verify.** 14/14 in the help-validation file (was 8). Full suite 1353 passed, 2 skipped (was 1347). Test count around 1.34k → 1.35k.

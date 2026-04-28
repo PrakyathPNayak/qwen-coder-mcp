@@ -208,3 +208,114 @@ class TestServeArgvAcceptedByVllm:
         # And the offloading flags really were dropped.
         assert "--kv-offloading-size" not in argv
         assert "--kv-offloading-backend" not in argv
+
+
+class TestServeArgvCombinationInvariants:
+    """
+    Pure-argv pairing/sanity invariants. These run without vLLM installed.
+
+    vLLM 0.11+ enforces several flag combination rules at engine init time
+    (i.e. *after* argparse has accepted the CLI). The --help validator
+    cannot catch those because they are not visible in the help text.
+    Each invariant pinned here corresponds to a real failure mode we have
+    either hit (HMA/offloading, loop 211) or have strong reason to expect.
+    """
+
+    def _argv_with(self, **env_overrides: str) -> list[str]:
+        env = {
+            k: v for k, v in os.environ.items() if not k.startswith("QWEN_SERVE_")
+        }
+        env["QWEN_SERVE_DRY_RUN"] = "1"
+        env["PATH"] = os.environ.get("PATH", "")
+        env.update(env_overrides)
+        proc = subprocess.run(
+            ["bash", str(SCRIPT)],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        return [line for line in proc.stdout.splitlines() if line]
+
+    def _flag_value(self, argv: list[str], flag: str) -> str | None:
+        if flag not in argv:
+            return None
+        idx = argv.index(flag)
+        if idx + 1 >= len(argv):
+            return None
+        return argv[idx + 1]
+
+    def test_chunked_prefill_pairs_with_max_num_batched_tokens(self) -> None:
+        # vLLM permits --enable-chunked-prefill without --max-num-batched-tokens
+        # but the implicit default has bitten us on long contexts. Pin the
+        # explicit pairing so a future "simplification" cannot drop it.
+        argv = self._argv_with()
+        if "--enable-chunked-prefill" in argv:
+            assert "--max-num-batched-tokens" in argv, (
+                "chunked-prefill on but max-num-batched-tokens missing; "
+                "implicit defaults can OOM on long contexts"
+            )
+            value = self._flag_value(argv, "--max-num-batched-tokens")
+            assert value is not None and value.isdigit() and int(value) >= 512, (
+                f"max-num-batched-tokens={value!r} is too small to be useful"
+            )
+
+    def test_max_num_batched_tokens_not_above_max_model_len(self) -> None:
+        # batched-tokens > model-len is a legal config in vLLM but is wasteful
+        # and indicates a misconfiguration (the per-step batch can never use
+        # more tokens than the model context). Pin sanity.
+        argv = self._argv_with()
+        mm = self._flag_value(argv, "--max-model-len")
+        bt = self._flag_value(argv, "--max-num-batched-tokens")
+        if mm is not None and bt is not None:
+            assert int(bt) <= int(mm), (
+                f"max-num-batched-tokens={bt} exceeds max-model-len={mm}; "
+                "this wastes scheduler slots and signals a misconfiguration"
+            )
+
+    def test_offloading_size_pairs_with_backend(self) -> None:
+        # --kv-offloading-size without --kv-offloading-backend falls back to
+        # an implicit default that has changed across vLLM minor versions.
+        # Pin both-or-neither.
+        argv = self._argv_with()
+        size_present = "--kv-offloading-size" in argv
+        backend_present = "--kv-offloading-backend" in argv
+        assert size_present == backend_present, (
+            "kv-offloading-size and kv-offloading-backend must appear together "
+            f"(size={size_present}, backend={backend_present})"
+        )
+
+    def test_offloading_zero_drops_all_three_companions(self) -> None:
+        # When the user opts out of offloading, ALL three companion flags
+        # (size, backend, disable-hybrid-kv-cache-manager) must drop together,
+        # otherwise vLLM will either reject the argv or behave inconsistently.
+        argv = self._argv_with(QWEN_SERVE_KV_OFFLOAD_GIB="0")
+        for flag in (
+            "--kv-offloading-size",
+            "--kv-offloading-backend",
+            "--disable-hybrid-kv-cache-manager",
+        ):
+            assert flag not in argv, (
+                f"{flag} leaked into argv when offloading was disabled"
+            )
+
+    def test_dtype_and_kv_cache_dtype_both_set_explicitly(self) -> None:
+        # vLLM's auto/implicit dtype detection has caused silent precision
+        # downgrades in past releases. Pin that we always pass both
+        # --dtype and --kv-cache-dtype explicitly.
+        argv = self._argv_with()
+        assert "--dtype" in argv, "dtype must be set explicitly"
+        assert "--kv-cache-dtype" in argv, "kv-cache-dtype must be set explicitly"
+
+    def test_gpu_memory_utilization_in_safe_range(self) -> None:
+        # Values >0.95 have caused engine init to crash with cudaErrorMemoryAllocation
+        # on the 4090; values <0.5 leave huge perf on the table. Pin the band.
+        argv = self._argv_with()
+        val = self._flag_value(argv, "--gpu-memory-utilization")
+        assert val is not None
+        f = float(val)
+        assert 0.5 <= f <= 0.95, (
+            f"gpu-memory-utilization={f} outside the safe 0.5-0.95 band"
+        )
