@@ -1629,3 +1629,10 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: Could escalate to `git clean -fdx` (also remove ignored files) but that's destructive: a developer's local untracked notes/scratch would die. Stay with `-fd`.
   - Priority: This is the highest-leverage fix in the queue (correctness > observability > polish). Took priority over the next.md candidates.
 - ACT: 2-line code change (new clean-after-reset call in both fallback branches with explanatory comment). 3 new tests covering HEAD-reset clean, origin-reset clean, and post-reset clean failure not flipping ok. 507 passed.
+
+## Loop 97 — README: Runtime introspection section + SIGUSR1 example
+- OBSERVE: SIGUSR1 logger dump (loop 85) and `QWEN_AGGREGATE_SUMMARY_EVERY` (loops 86-88) documented in module docstring of `agent/loop.py` but absent from README. An operator running the loop in production would not know to send SIGUSR1.
+- ORIENT: README is the entry point. Adding a "Runtime introspection" section with the process-signalling invocation makes the feature discoverable.
+- DECIDE: New README section with the recipe, what the dump contains, sensitivity note, and a small tunables table.
+- DEVIL: SIGUSR1 is POSIX-only; Windows lacks it (handled by `hasattr(signal, "SIGUSR1")`). Dump is safe -- only label/count/schedule/last_log_message bounded-size strings.
+- ACT: README +21 lines. 3-test docstring drift audit. 510 passed.

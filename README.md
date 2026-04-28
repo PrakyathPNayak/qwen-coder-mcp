@@ -88,3 +88,26 @@ docs/                 # Design notes
 The loop only modifies files inside this repo, applies unified diffs through
 `git apply --check` first, runs `python -m compileall` on touched Python files,
 and rolls back on any failure. Commits are atomic per accepted fix.
+
+## Runtime introspection
+
+While the loop is running, send it `SIGUSR1` to dump a snapshot of every
+rate-limited swallow logger to `runtime.log`. This is the fastest way to
+diagnose "the loop is iterating but something is silently failing":
+
+```bash
+# Find the loop process and signal it (POSIX only; SIGUSR1 has no Windows equivalent)
+pkill -USR1 -f "agent.loop"
+```
+
+The dump includes the current iteration number, every logger's cumulative
+count and last-logged message, and the cached delta-summary state. None of
+the dumped data is sensitive (no diff content, no model output), so the dump
+is safe to grep for in shared logs.
+
+Tunables relevant to introspection:
+
+| Variable | Default | Purpose |
+| -------- | ------- | ------- |
+| `QWEN_AGGREGATE_SUMMARY_EVERY` | `100` | Iterations between cumulative swallow-logger summaries (0 disables). Capped at 100k. |
+| `QWEN_TIMING_MAX_BYTES` | `1_000_000` | Size cap for `.loop/timing.log` before rotation. Capped at 100MB. |

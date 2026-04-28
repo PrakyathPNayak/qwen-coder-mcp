@@ -2797,3 +2797,25 @@ class TestRevertChangesUntrackedAfterResetHard:
         monkeypatch.setattr(L, "_run_git", fake)
         monkeypatch.setattr(L, "_log", lambda m: None)
         assert L._revert_changes() is True
+
+
+class TestReadmeRuntimeIntrospectionSection:
+    """Loop 97: README documents SIGUSR1 introspection. Drift audit:
+    the README section must mention SIGUSR1, pkill, and the
+    QWEN_AGGREGATE_SUMMARY_EVERY tunable so an operator can find it
+    by searching for any of the obvious keywords."""
+
+    def test_readme_mentions_sigusr1(self):
+        from pathlib import Path
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+        assert "SIGUSR1" in readme
+
+    def test_readme_mentions_pkill_command(self):
+        from pathlib import Path
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+        assert "pkill -USR1" in readme
+
+    def test_readme_documents_aggregate_summary_env(self):
+        from pathlib import Path
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+        assert "QWEN_AGGREGATE_SUMMARY_EVERY" in readme
