@@ -3883,3 +3883,50 @@ excluded, empty input -> empty, exit-only input -> empty, CLI
 end-to-end including filter ordering, CLI no-op when no exit.
 
 Verify: full suite 1497 passed, 7 skipped (was 1489 + 8).
+
+## Loop 232 - README pass for the loop-229/230/231 analytics surface
+
+The loop-229/230/231 trio added consumer-facing surfaces
+(exit_records list, --since-last-exit flag, JSON schema) but
+README only documented the pre-existing flags. A user who reads
+README to figure out how to scope analytics to "the current
+run" would not find --since-last-exit; one parsing the JSON
+output would not find the exit_records key documented.
+
+Loop 232 fills that gap with a single coherent README addition
+that:
+  * shows --since-last-exit with two example invocations
+    (alone, and composed with --category)
+  * explains it as "scope to current run only -- ignore
+    everything up to and including the last exit:<reason>
+    shutdown breadcrumb"
+  * documents the text report's "shutdown records" section
+    with its iteration_count field as the join key to
+    runtime.log
+  * documents --json's exit_records array as a top-level field
+    with stable {ts, reason, iteration_count} keys (loop-230
+    contract)
+  * notes that iteration_count can be null when the record
+    predates the loop-226 schema
+
+Devil step. Why a single block instead of three separate
+sections (one per loop)? Because the three features are
+co-designed -- the producer (loop 226), analyzer (loop 229),
+schema (loop 230), and filter (loop 231) all manipulate the
+SAME breadcrumb. Splitting docs across four headers would
+duplicate context and bury the join-key relationship.
+
+Why pin the README content with a test? Loop 106's drift
+pattern: a future loop that renames any of the four tokens
+(--since-last-exit, exit_records, iteration_count, "shutdown
+records") would silently desync docs from code. Test prevents
+that.
+
+Why not also add an exit-record JSON example? Because the
+existing applied-record JSON example already shows the schema
+shape; an exit-record example would be redundant prose. The
+text-report sample format ("reason=sigterm iter=99") is more
+informative for a human reader trying to scan their log.
+
+One new test pinning all four documentation tokens. Verify:
+full suite 1498 passed, 7 skipped (was 1497 + 1).

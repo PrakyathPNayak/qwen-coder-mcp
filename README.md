@@ -284,4 +284,23 @@ python -m agent.timing_analyze --since 2026-04-28T00:00:00Z --until 2026-04-29T0
 # only one outcome category, or only iterations that ran a specific phase
 python -m agent.timing_analyze --category applied
 python -m agent.timing_analyze --phase devils_advocate
+
+# scope to the current run only -- ignore everything up to and
+# including the last exit:<reason> shutdown breadcrumb (loop 231).
+# Pairs with the loop-226 synthetic exit records produced when
+# the autonomous loop receives SIGTERM, KeyboardInterrupt,
+# SystemExit, or an unhandled exception. Composes with every
+# other filter -- --since-last-exit runs first, then --since /
+# --until / --category / --phase narrow further.
+python -m agent.timing_analyze --since-last-exit
+python -m agent.timing_analyze --since-last-exit --category applied
 ```
+
+The text report ends with a `shutdown records` section listing
+every `exit:<reason>` breadcrumb with its `iteration_count`
+field, which joins to the corresponding `loop exit ... iter=N`
+line in `runtime.log` (loop 229). The `--json` report exposes
+this as a top-level `exit_records` array of dicts with the exact
+keys `{ts, reason, iteration_count}` (loop 230 contract pin --
+the `iteration_count` is `null` when the record predates the
+loop-226 schema or was emitted before the first iteration ran).

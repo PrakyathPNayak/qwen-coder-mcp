@@ -521,6 +521,16 @@ class TestCategoryAndPhaseFilters:
         assert "--category" in readme
         assert "--phase" in readme
 
+    def test_readme_documents_loop_232_analytics_surfaces(self):
+        # Loop 232: pin the README documentation for the loop-229/230/231
+        # analytics-surface trio. If a future loop renames any of these
+        # consumer-facing tokens, the docs go stale silently otherwise.
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
+        assert "--since-last-exit" in readme
+        assert "exit_records" in readme
+        assert "iteration_count" in readme
+        assert "shutdown records" in readme
+
 
 class TestExitRecordsLoop229:
     """Loop 229: timing_analyze surfaces the loop-226 synthetic
