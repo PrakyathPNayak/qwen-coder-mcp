@@ -1887,3 +1887,11 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: should `--top-n` also limit category block? No -- categories are bounded at 16, the phase block is the one that grows.
   - Priority: P5 ergonomics. Strict superset of prior CLI (default unchanged).
 - ACT: format_report signature extended, CLI flag added, README usage example added, 5 tests. 590 passed.
+
+## Loop 125 — `--since <iso>` filter
+- DECIDE: pure helper `filter_since(records, since)` -- lex ISO-8601 compare works because `_write_timing` writes UTC Z-suffix. CLI flag passes through. Records with non-string `ts` excluded when filter active so partial logs cannot leak past.
+- DEVIL:
+  - Correctness: lex compare is mathematically valid for sortable ISO-8601 with same precision and fixed `Z` suffix. If a future loop changes the timestamp format to include offset like `+00:00`, the compare still works because of leading-digit dominance, but timezone variations would silently break.
+  - Scope: should `--until <iso>` symmetric counterpart exist? Not yet -- premature; YAGNI.
+  - Priority: P5. Big logs make this useful when triaging "what changed since the last deploy".
+- ACT: helper + CLI flag + 5 tests + README example. 595 passed.

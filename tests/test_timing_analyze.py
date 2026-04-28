@@ -376,3 +376,49 @@ class TestReadmeMentionsTopNFlag:
     def test_readme_mentions_top_n(self):
         readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
         assert "--top-n" in readme
+
+
+class TestSinceFilter:
+    """Loop 125: `--since <iso>` filters records by `ts >= since`. Lex
+    ISO-8601 compare is correct because `_write_timing` writes UTC
+    `YYYY-MM-DDTHH:MM:SSZ`."""
+
+    def test_filter_since_passthrough_when_none(self):
+        from agent.timing_analyze import filter_since
+        recs = [{"ts": "2026-01-01T00:00:00Z", "category": "applied", "wall_s": 1.0, "phases": {}}]
+        assert filter_since(recs, None) == recs
+        assert filter_since(recs, "") == recs
+
+    def test_filter_since_keeps_only_at_or_after(self):
+        from agent.timing_analyze import filter_since
+        recs = [
+            {"ts": "2026-01-01T00:00:00Z"},
+            {"ts": "2026-04-28T00:00:00Z"},
+            {"ts": "2026-12-31T23:59:59Z"},
+        ]
+        kept = filter_since(recs, "2026-04-28T00:00:00Z")
+        assert [r["ts"] for r in kept] == ["2026-04-28T00:00:00Z", "2026-12-31T23:59:59Z"]
+
+    def test_filter_since_excludes_records_without_string_ts(self):
+        from agent.timing_analyze import filter_since
+        recs = [
+            {"ts": "2026-04-28T00:00:00Z"},
+            {"ts": None},
+            {"ts": 12345},
+            {},
+        ]
+        kept = filter_since(recs, "2026-01-01T00:00:00Z")
+        assert len(kept) == 1
+
+    def test_cli_accepts_since(self, tmp_path):
+        from agent.timing_analyze import main
+        log = tmp_path / "t.log"
+        old = json.dumps({"ts": "2026-01-01T00:00:00Z", "category": "applied", "wall_s": 1.0, "phases": {}, "wall_s_delta_phases": 0.0})
+        new = json.dumps({"ts": "2026-12-31T00:00:00Z", "category": "clean", "wall_s": 0.5, "phases": {}, "wall_s_delta_phases": 0.0})
+        log.write_text(old + "\n" + new + "\n")
+        rc = main(["--file", str(log), "--since", "2026-06-01T00:00:00Z", "--no-rotated", "--json"])
+        assert rc == 0
+
+    def test_readme_mentions_since(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
+        assert "--since" in readme

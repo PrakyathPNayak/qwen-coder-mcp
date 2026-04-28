@@ -176,6 +176,23 @@ def _resolve_inputs(file: Path, include_rotated: bool) -> list[Path]:
     return existing
 
 
+def filter_since(records: list[dict], since: str | None) -> list[dict]:
+    """Return only records with `ts >= since` (lexicographic ISO-8601
+    compare; both sides assumed UTC `Z`-suffix as written by
+    `_write_timing`). When `since` is None or empty, the input is
+    returned unchanged. Records missing or with non-string `ts` are
+    excluded when `since` is active so partial logs cannot leak past
+    the filter."""
+    if not since:
+        return records
+    out: list[dict] = []
+    for rec in records:
+        ts = rec.get("ts")
+        if isinstance(ts, str) and ts >= since:
+            out.append(rec)
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Summarise .loop/timing.log records.")
     p.add_argument(
@@ -200,6 +217,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Limit the per-phase block to the N phases with highest p95 wall-clock.",
     )
+    p.add_argument(
+        "--since",
+        type=str,
+        default=None,
+        help="Only include records with ts >= this ISO-8601 timestamp (UTC Z suffix).",
+    )
     args = p.parse_args(argv)
     inputs = _resolve_inputs(args.file, include_rotated=not args.no_rotated)
     if not inputs:
@@ -208,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     records: list[dict] = []
     for path in inputs:
         records.extend(parse_records(path.read_text("utf-8").splitlines()))
+    records = filter_since(records, args.since)
     report = analyze(records)
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))

@@ -239,4 +239,7 @@ python -m agent.timing_analyze --no-rotated
 
 # show only the 5 slowest phases by p95 wall-clock
 python -m agent.timing_analyze --top-n 5
+
+# only records since a specific timestamp (lexicographic ISO-8601 compare)
+python -m agent.timing_analyze --since 2026-04-28T00:00:00Z
 ```
