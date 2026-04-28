@@ -3840,3 +3840,46 @@ loop sorted exit_records (e.g., by timestamp without thinking
 about insertion order). One test catches both shape and order.
 
 Verify: full suite 1489 passed, 7 skipped (was 1485 + 4).
+
+## Loop 231 - timing_analyze --since-last-exit (current-run scope)
+
+The loop-229 analyzer surfaces every shutdown breadcrumb in the
+log. For an operator who restarts the loop and wants to ask
+"what happened in the current run" the right answer is "ignore
+everything up to and including the last exit:* record". Loop
+231 ships that as a single CLI flag.
+
+filter_since_last_exit(records) walks once, remembers the index
+of the last exit-category record, and returns records[i+1:].
+The exit record itself is excluded -- it belongs to the prior
+run. If there is no exit record (fresh log) the input is
+returned unchanged so the flag is naturally idempotent on first
+run.
+
+CLI flag --since-last-exit composes with all the existing
+filters (--since/--until/--category/--phase): runs first, then
+the timestamp/category/phase filters apply to the surviving
+slice. This ordering matters: a later --since should narrow,
+not contradict.
+
+Devil step. Why a flag rather than a default? Because the most
+common use of timing_analyze IS the historical view --
+debugging a regression that happened over multiple runs. Making
+since-last-exit default would silently hide the regression
+context. Opt-in is correct.
+
+Why not also offer --since-nth-last-exit N? Because in practice
+operators want either "all" or "current run", not "two runs
+ago". YAGNI; can be added if a real use case shows up.
+
+Why excluded-not-included for the exit record itself? Because
+including it would force every since-last-exit report to
+contain a single-record exit category, polluting the cleaner
+"current run" view that's the whole point of the flag.
+
+Eight new tests cover: keeps records-after-exit, uses LAST not
+first exit, no exit -> passthrough, exit-record itself
+excluded, empty input -> empty, exit-only input -> empty, CLI
+end-to-end including filter ordering, CLI no-op when no exit.
+
+Verify: full suite 1497 passed, 7 skipped (was 1489 + 8).

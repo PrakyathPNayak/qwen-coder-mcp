@@ -258,6 +258,22 @@ def filter_until(records: list[dict], until: str | None) -> list[dict]:
     return out
 
 
+def filter_since_last_exit(records: list[dict]) -> list[dict]:
+    """Loop 231: keep only records that come AFTER the most recent
+    ``exit:<reason>`` shutdown breadcrumb in the input. Useful for
+    operators who want analytics scoped to the current run, ignoring
+    the long history of prior shutdowns. If no exit record is
+    present, returns the input unchanged. The exit record itself is
+    excluded from the output (it belongs to the prior run)."""
+    last_exit_idx = -1
+    for i, rec in enumerate(records):
+        if rec.get("category") == "exit":
+            last_exit_idx = i
+    if last_exit_idx < 0:
+        return records
+    return records[last_exit_idx + 1:]
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Summarise .loop/timing.log records.")
     p.add_argument(
@@ -306,6 +322,16 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Only include records whose phases dict contains this phase name as a key.",
     )
+    p.add_argument(
+        "--since-last-exit",
+        action="store_true",
+        help=(
+            "Loop 231: filter to records appearing AFTER the most recent "
+            "exit:<reason> shutdown breadcrumb (loop 226). Scopes the "
+            "analysis to the current run and excludes the prior shutdown "
+            "record itself. No-op if no exit record is present."
+        ),
+    )
     args = p.parse_args(argv)
     inputs = _resolve_inputs(args.file, include_rotated=not args.no_rotated)
     if not inputs:
@@ -314,6 +340,8 @@ def main(argv: list[str] | None = None) -> int:
     records: list[dict] = []
     for path in inputs:
         records.extend(parse_records(path.read_text("utf-8").splitlines()))
+    if args.since_last_exit:
+        records = filter_since_last_exit(records)
     records = filter_since(records, args.since)
     records = filter_until(records, args.until)
     records = filter_category(records, args.category)

@@ -677,3 +677,97 @@ class TestExitRecordsJsonOutputLoop230:
         report = json.loads(out)
         observed = [rec["reason"] for rec in report["exit_records"]]
         assert observed == reasons
+
+
+class TestSinceLastExitLoop231:
+    """Loop 231: filter records to AFTER the most recent exit:* breadcrumb.
+    Pairs with the loop-226 exit-record producer + loop-229 analyzer."""
+
+    def test_filter_since_last_exit_keeps_records_after_exit(self):
+        from agent.timing_analyze import filter_since_last_exit
+        recs = [
+            {"category": "applied", "ts": "2026-04-28T01:00:00Z"},
+            {"category": "exit", "ts": "2026-04-28T02:00:00Z", "outcome": "exit:sigterm"},
+            {"category": "applied", "ts": "2026-04-28T03:00:00Z"},
+            {"category": "skip", "ts": "2026-04-28T04:00:00Z"},
+        ]
+        kept = filter_since_last_exit(recs)
+        assert len(kept) == 2
+        assert kept[0]["ts"] == "2026-04-28T03:00:00Z"
+        assert kept[1]["ts"] == "2026-04-28T04:00:00Z"
+
+    def test_filter_since_last_exit_uses_only_LAST_exit(self):
+        # Two exit records in history; only records after the second
+        # one survive (the simulated current run).
+        from agent.timing_analyze import filter_since_last_exit
+        recs = [
+            {"category": "applied"},
+            {"category": "exit", "outcome": "exit:sigterm"},
+            {"category": "applied"},
+            {"category": "exit", "outcome": "exit:keyboard-interrupt"},
+            {"category": "applied"},
+        ]
+        kept = filter_since_last_exit(recs)
+        assert len(kept) == 1
+        assert kept[0] == {"category": "applied"}
+
+    def test_filter_since_last_exit_no_exit_returns_input_unchanged(self):
+        from agent.timing_analyze import filter_since_last_exit
+        recs = [{"category": "applied"}, {"category": "skip"}]
+        kept = filter_since_last_exit(recs)
+        assert kept == recs
+
+    def test_filter_since_last_exit_excludes_the_exit_record_itself(self):
+        from agent.timing_analyze import filter_since_last_exit
+        recs = [
+            {"category": "exit", "outcome": "exit:sigterm"},
+            {"category": "applied"},
+        ]
+        kept = filter_since_last_exit(recs)
+        assert len(kept) == 1
+        assert kept[0]["category"] == "applied"
+
+    def test_filter_since_last_exit_empty_input_returns_empty(self):
+        from agent.timing_analyze import filter_since_last_exit
+        assert filter_since_last_exit([]) == []
+
+    def test_filter_since_last_exit_only_exit_record_returns_empty(self):
+        from agent.timing_analyze import filter_since_last_exit
+        recs = [{"category": "exit", "outcome": "exit:sigterm"}]
+        kept = filter_since_last_exit(recs)
+        assert kept == []
+
+    def test_cli_since_last_exit_scopes_report_to_current_run(self, tmp_path, capsys):
+        from agent.timing_analyze import main
+        log = tmp_path / "t.log"
+        log.write_text(
+            json.dumps({"category": "applied", "outcome": "applied", "wall_s": 1.0, "phases": {}}) + "\n"
+            + json.dumps({
+                "ts": "2026-04-28T02:00:00Z",
+                "category": "exit",
+                "outcome": "exit:sigterm",
+                "phases": {},
+                "iteration_count": 5,
+            }) + "\n"
+            + json.dumps({"category": "applied", "outcome": "applied", "wall_s": 2.0, "phases": {}}) + "\n"
+        )
+        rc = main(["--file", str(log), "--no-rotated", "--since-last-exit", "--json"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        report = json.loads(out)
+        # Only the post-exit applied record should be counted.
+        assert report["total_records"] == 1
+        assert report["category_counts"] == {"applied": 1}
+        assert report["exit_records"] == []
+
+    def test_cli_since_last_exit_noop_when_no_exit(self, tmp_path, capsys):
+        from agent.timing_analyze import main
+        log = tmp_path / "t.log"
+        log.write_text(
+            json.dumps({"category": "applied", "outcome": "applied", "wall_s": 1.0, "phases": {}}) + "\n"
+        )
+        rc = main(["--file", str(log), "--no-rotated", "--since-last-exit", "--json"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        report = json.loads(out)
+        assert report["total_records"] == 1
