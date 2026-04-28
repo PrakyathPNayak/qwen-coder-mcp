@@ -1,0 +1,146 @@
+"""Loop 112: minimal CLI to summarise `.loop/timing.log` records.
+
+Reads JSON-line records from a timing log (default: `.loop/timing.log`
+under the current working directory) and prints a concise per-category
+and per-phase summary -- count, total wall-clock, mean, p50, p95.
+
+Designed to be importable for tests (the `analyze` and `format_report`
+functions are pure) and runnable as `python -m agent.timing_analyze`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import statistics
+import sys
+from pathlib import Path
+from typing import Iterable
+
+
+def parse_records(lines: Iterable[str]) -> list[dict]:
+    """Parse a stream of JSON-line strings, skipping blanks and lines
+    that don't deserialise to a dict. Malformed lines are silently
+    dropped -- the timing log format is forward-compatible and a
+    half-written final line on rotation is normal."""
+    out: list[dict] = []
+    for raw in lines:
+        s = raw.strip()
+        if not s:
+            continue
+        try:
+            rec = json.loads(s)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out
+
+
+def _quantile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    if len(values) == 1:
+        return values[0]
+    s = sorted(values)
+    # Linear interpolation between closest ranks.
+    pos = (len(s) - 1) * q
+    lo = int(pos)
+    hi = min(lo + 1, len(s) - 1)
+    frac = pos - lo
+    return s[lo] * (1 - frac) + s[hi] * frac
+
+
+def _summarize(values: list[float]) -> dict[str, float]:
+    if not values:
+        return {"count": 0, "total": 0.0, "mean": 0.0, "p50": 0.0, "p95": 0.0}
+    return {
+        "count": len(values),
+        "total": round(sum(values), 4),
+        "mean": round(statistics.fmean(values), 4),
+        "p50": round(_quantile(values, 0.5), 4),
+        "p95": round(_quantile(values, 0.95), 4),
+    }
+
+
+def analyze(records: list[dict]) -> dict:
+    """Group `wall_s` by `category` and per-phase wall-clock by phase
+    name. Records without `wall_s` (early-exit, `crashed`, etc) still
+    count toward category counts but contribute 0.0 to wall_s totals."""
+    by_cat: dict[str, list[float]] = {}
+    by_phase: dict[str, list[float]] = {}
+    cat_counts: dict[str, int] = {}
+    for rec in records:
+        cat = rec.get("category")
+        if isinstance(cat, str):
+            cat_counts[cat] = cat_counts.get(cat, 0) + 1
+            wall = rec.get("wall_s")
+            if isinstance(wall, (int, float)):
+                by_cat.setdefault(cat, []).append(float(wall))
+        phases = rec.get("phases")
+        if isinstance(phases, dict):
+            for name, val in phases.items():
+                if isinstance(val, (int, float)):
+                    by_phase.setdefault(name, []).append(float(val))
+    return {
+        "total_records": len(records),
+        "category_counts": cat_counts,
+        "category_wall_s": {k: _summarize(v) for k, v in by_cat.items()},
+        "phase_wall_s": {k: _summarize(v) for k, v in by_phase.items()},
+    }
+
+
+def format_report(report: dict) -> str:
+    lines: list[str] = []
+    lines.append(f"timing.log analysis -- {report['total_records']} records")
+    lines.append("")
+    lines.append("by category (count, with wall_s stats where available):")
+    for cat in sorted(report["category_counts"]):
+        n = report["category_counts"][cat]
+        stats = report["category_wall_s"].get(cat)
+        if stats and stats["count"]:
+            lines.append(
+                f"  {cat:30s} count={n:4d}  wall_s "
+                f"mean={stats['mean']:.3f} p50={stats['p50']:.3f} p95={stats['p95']:.3f}"
+            )
+        else:
+            lines.append(f"  {cat:30s} count={n:4d}  (no wall_s)")
+    lines.append("")
+    lines.append("by phase (per-phase wall-clock):")
+    for ph in sorted(report["phase_wall_s"]):
+        s = report["phase_wall_s"][ph]
+        lines.append(
+            f"  {ph:20s} count={s['count']:4d}  total={s['total']:.2f}s  "
+            f"mean={s['mean']:.3f} p50={s['p50']:.3f} p95={s['p95']:.3f}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description="Summarise .loop/timing.log records.")
+    p.add_argument(
+        "--file",
+        type=Path,
+        default=Path(".loop/timing.log"),
+        help="Path to timing.log (default: .loop/timing.log)",
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON instead of a text report.",
+    )
+    args = p.parse_args(argv)
+    if not args.file.exists():
+        print(f"timing log not found: {args.file}", file=sys.stderr)
+        return 1
+    records = parse_records(args.file.read_text("utf-8").splitlines())
+    report = analyze(records)
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        sys.stdout.write(format_report(report))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

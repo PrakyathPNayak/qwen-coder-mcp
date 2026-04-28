@@ -200,3 +200,22 @@ phase that doesn't appear on the happy path):
   "wall_s_delta_phases": 0.09
 }
 ```
+
+### Analysing timing.log
+
+The `agent.timing_analyze` module is a tiny CLI that summarises
+records in `.loop/timing.log` -- per-category counts and per-phase
+wall-clock stats (count, total, mean, p50, p95). It tolerates
+partially-corrupt logs (e.g., a half-written final line from a
+rotation race).
+
+```sh
+# human-readable text report
+python -m agent.timing_analyze
+
+# machine-readable JSON for dashboards
+python -m agent.timing_analyze --json
+
+# point at a non-default location
+python -m agent.timing_analyze --file /path/to/timing.log
+```

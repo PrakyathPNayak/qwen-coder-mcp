@@ -1778,3 +1778,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: Should I add a third example for `crashed` (empty phases) or `qwen_error_*` (only first phase)? The current 2 examples already cover the happy + recovery paths -- third would be diminishing returns. Punt to next.md.
   - Priority: Documentation completeness, low risk.
 - ACT: 2 ```json fences in README, AST audit walks all fences after the marker. 2 new tests. 543 passed.
+
+## Loop 112 — wall_s analytics CLI
+- OBSERVE: timing.log accumulates JSON-line records but there's no tooling to summarise it. To find regressions an operator has to run ad-hoc jq incantations or write a one-shot script. The schema is documented (loop 106, 109, 111) and stable enough to ship a real consumer.
+- ORIENT: P5 observability tooling. Useful for debugging regressions in the loop itself (the agent is improving its own code -- if a recent commit makes find_bugs slower, p95 drift in the analytics surfaces it).
+- DECIDE: New `agent/timing_analyze.py` module with `parse_records`, `analyze`, `format_report` pure functions and a `main(argv)` CLI entry. Default reads `.loop/timing.log`. Supports `--json` for machine-readable output and `--file` for non-default paths. Tolerates malformed lines (rotation races leave half-written final lines in the wild).
+- DEVIL:
+  - Correctness: Records without `wall_s` (early-exit, crashed) need to count toward category counts but contribute 0 to wall_s totals -- otherwise mean is over-stated. Implemented: `cat_counts` is incremented unconditionally; `by_cat[wall_s]` is appended only when `wall_s` is numeric.
+  - Quantile: `statistics.quantiles` requires n >= 2; using a hand-rolled linear-interp `_quantile` to handle 0/1-element lists. Tested.
+  - Scope: This is OBSERVABILITY of an OBSERVABILITY tool. Not directly fixing a bug. But it pays back next time the agent introduces a regression and the analytics catch it.
+  - Priority: Lower than fixing live bugs but higher than cosmetic cleanup. The phase audit (loop 109) hard-codes a set of 8 phases -- if I miss documenting a new phase, the analytics still ingest it correctly since it walks `phases.keys()` dynamically.
+- ACT: New module + 15 tests + README "Analysing timing.log" section. 558 passed.
