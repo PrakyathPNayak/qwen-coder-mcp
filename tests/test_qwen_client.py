@@ -6,6 +6,8 @@ is monkey-patched to a no-op so tests stay fast.
 """
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -778,3 +780,113 @@ class TestTruncationLoop236:
         c = _client_with(handler)
         out = c.chat([ChatMessage("user", "hi")])
         assert TRUNCATION_MARKER not in out
+
+
+# ============================================================ Loop 237
+# Streaming-path parity for finish_reason=length truncation marker.
+class TestStreamTruncationLoop237:
+    """Loop 237: stream_chat now mirrors loop 236's non-stream behaviour
+    by yielding TRUNCATION_MARKER after the final flush when the SSE
+    stream's last finish_reason was 'length'. Without this, streaming
+    consumers (TUI, agent loop streaming path) silently saw a partial
+    answer that looked like a premature stop."""
+
+    @staticmethod
+    def _sse_response(chunks: list[str]) -> httpx.Response:
+        body = "\n".join(chunks) + "\n"
+        return httpx.Response(
+            200,
+            text=body,
+            headers={"content-type": "text/event-stream"},
+        )
+
+    @staticmethod
+    def _delta(content: str, finish_reason: str | None = None) -> str:
+        choice: dict = {"delta": {"content": content}}
+        if finish_reason is not None:
+            choice["finish_reason"] = finish_reason
+        return "data: " + json.dumps({"choices": [choice]})
+
+    def test_stream_yields_marker_when_finish_reason_length(self):
+        from qwen_coder_mcp.qwen_client import TRUNCATION_MARKER
+
+        chunks = [
+            self._delta("partial answer "),
+            self._delta("that was cut off", finish_reason="length"),
+            "data: [DONE]",
+        ]
+
+        def handler(_req):
+            return self._sse_response(chunks)
+
+        c = _client_with(handler)
+        out = "".join(c.chat_stream([ChatMessage("user", "hi")]))
+        assert "partial answer that was cut off" in out
+        assert TRUNCATION_MARKER in out
+
+    def test_stream_no_marker_when_finish_reason_stop(self):
+        from qwen_coder_mcp.qwen_client import TRUNCATION_MARKER
+
+        chunks = [
+            self._delta("complete "),
+            self._delta("answer", finish_reason="stop"),
+            "data: [DONE]",
+        ]
+
+        def handler(_req):
+            return self._sse_response(chunks)
+
+        c = _client_with(handler)
+        out = "".join(c.chat_stream([ChatMessage("user", "hi")]))
+        assert TRUNCATION_MARKER not in out
+        assert "complete answer" in out
+
+    def test_stream_no_marker_when_no_finish_reason(self):
+        from qwen_coder_mcp.qwen_client import TRUNCATION_MARKER
+
+        chunks = [
+            self._delta("answer"),
+            "data: [DONE]",
+        ]
+
+        def handler(_req):
+            return self._sse_response(chunks)
+
+        c = _client_with(handler)
+        out = "".join(c.chat_stream([ChatMessage("user", "hi")]))
+        assert TRUNCATION_MARKER not in out
+
+    def test_stream_marker_emitted_even_without_done_sentinel(self):
+        """If the server closes the connection without sending [DONE]
+        we must still emit the marker after the final flush."""
+        from qwen_coder_mcp.qwen_client import TRUNCATION_MARKER
+
+        chunks = [
+            self._delta("truncated"),
+            self._delta("", finish_reason="length"),
+        ]
+
+        def handler(_req):
+            return self._sse_response(chunks)
+
+        c = _client_with(handler)
+        out = "".join(c.chat_stream([ChatMessage("user", "hi")]))
+        assert TRUNCATION_MARKER in out
+
+    def test_stream_finish_reason_latched_not_overwritten_by_null(self):
+        """finish_reason='length' on chunk N must not be overwritten by
+        a missing/null finish_reason on chunk N+1."""
+        from qwen_coder_mcp.qwen_client import TRUNCATION_MARKER
+
+        chunks = [
+            self._delta("a", finish_reason="length"),
+            self._delta(""),  # null finish_reason
+            "data: [DONE]",
+        ]
+
+        def handler(_req):
+            return self._sse_response(chunks)
+
+        c = _client_with(handler)
+        out = "".join(c.chat_stream([ChatMessage("user", "hi")]))
+        assert TRUNCATION_MARKER in out

@@ -533,6 +533,7 @@ class QwenClient:
                     raise QwenError(f"stream {resp.status_code}: {body}")
                 raise QwenFatalError(f"stream client error {resp.status_code}: {body}")
             think_filter = _StreamingThinkStripFilter()
+            stream_finish_reason: str | None = None
             for line in resp.iter_lines():
                 if not line:
                     continue
@@ -549,6 +550,12 @@ class QwenClient:
                         tail = think_filter.flush()
                         if tail:
                             yield tail
+                        # Loop 237: streaming-path parity with loop 236.
+                        # Surface max_tokens truncation by emitting the
+                        # marker after the tail flush so consumers see
+                        # the same signal the non-stream path produces.
+                        if stream_finish_reason == "length":
+                            yield f"\n\n{TRUNCATION_MARKER}"
                         return
                     continue
                 try:
@@ -556,9 +563,16 @@ class QwenClient:
                 except json.JSONDecodeError:
                     continue
                 try:
-                    delta = obj["choices"][0].get("delta") or {}
+                    choice0 = obj["choices"][0]
                 except (KeyError, IndexError):
                     continue
+                # Latch the finish_reason from any chunk that carries
+                # one (vLLM emits it on the final delta). null/missing
+                # values don't overwrite a previously-seen reason.
+                fr = choice0.get("finish_reason")
+                if isinstance(fr, str) and fr:
+                    stream_finish_reason = fr
+                delta = choice0.get("delta") or {}
                 content = delta.get("content")
                 if isinstance(content, str) and content:
                     cleaned = think_filter.feed(content)
@@ -577,6 +591,8 @@ class QwenClient:
             tail = think_filter.flush()
             if tail:
                 yield tail
+            if stream_finish_reason == "length":
+                yield f"\n\n{TRUNCATION_MARKER}"
 
     @staticmethod
     def _extract_text(data: dict[str, Any]) -> str:
