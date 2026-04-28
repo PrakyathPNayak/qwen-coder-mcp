@@ -81,6 +81,7 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/grep",
     "/find",
     "/clear",
+    "/resume",
     "/save",
     "/git",
     "/tests",
@@ -138,6 +139,7 @@ Slash commands:
                        Recursive regex search; --py/--md/--json filters by suffix
   /find <glob> [path]  Glob search through the repo
   /clear               Clear chat history
+  /resume              Reload .agent/agent_state.json into chat history
   /save <path>         Save the current chat transcript to a file
   /git <subcmd>        Read-only git status / log / diff / show / branch
   /tests [args]        Run pytest in the repo
@@ -266,6 +268,14 @@ def _last_assistant_reply(history: list[ChatMessage]) -> str | None:
         if msg.role == "assistant":
             return msg.content
     return None
+
+
+def _role_counts(history: list[ChatMessage]) -> dict[str, int]:
+    """Count messages by role for status renderings (e.g. /resume)."""
+    counts: dict[str, int] = {}
+    for msg in history:
+        counts[msg.role] = counts.get(msg.role, 0) + 1
+    return counts
 
 
 def _render_apply(
@@ -1032,6 +1042,33 @@ def dispatch_slash(
             return "no history available", False
         history.clear()
         return "(history cleared)", False
+    if name == "resume":
+        if history is None:
+            return "no history available", False
+        target = fs_cfg.root / ".agent" / "agent_state.json"
+        loaded = agent_loop.load_agent_checkpoint(target)
+        if not loaded:
+            return (
+                f"no checkpoint found at {target} (or file is empty/corrupt)",
+                False,
+            )
+        # Replace in-place so the caller's reference stays the same.
+        history.clear()
+        history.extend(loaded)
+        roles = ", ".join(
+            f"{r}={c}" for r, c in _role_counts(loaded).items()
+        )
+        last_assistant = next(
+            (m.content for m in reversed(loaded) if m.role == "assistant"),
+            "",
+        )
+        snippet = last_assistant[:200].replace("\n", " ")
+        return (
+            f"resumed {len(loaded)} messages from {target.name} ({roles})\n"
+            f"last assistant: {snippet}…"
+            if snippet else
+            f"resumed {len(loaded)} messages from {target.name} ({roles})"
+        ), False
     if name == "save":
         if history is None:
             return "no history available", False

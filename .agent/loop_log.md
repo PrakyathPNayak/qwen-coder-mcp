@@ -2501,3 +2501,20 @@ read-only operation, no state changes.
 **Act.** Added 4 new helpers + 1 kwarg in `agent_loop.py`. Wired `_agent_checkpoint` into `_start_agent_turn` in `tui.py`. Created `tests/test_agent_checkpoint.py` with 12 cases: round-trip, version, malformed-skip, save+load, parent-dir creation, atomic-write, missing path, corrupt JSON, non-object JSON, hook fires once per tool step, hook failure doesn't abort, hook silent when no tools called.
 
 **Verify.** `pytest -x -q` → ~1k passing, 1 skipped.
+
+## Loop 174 — /resume slash command rehydrates agent_state.json into history
+
+**Observe.** Loop 173 added auto-checkpointing but no way to load it back. A user whose TUI crashed mid-multi-step run still couldn't resume — the JSON sat there unread. The loop_log explicitly flagged this as the natural follow-up.
+
+**Orient.** dispatch_slash already takes `history` as a mutable list and the existing `/clear` mutates it in place. So `/resume` can do the same: load checkpoint, clear, extend. We must mutate the existing list (not rebind) because the TUI App holds a reference to it. Existing `load_agent_checkpoint` already returns `[]` on missing/corrupt — perfect signal for the "no checkpoint" branch.
+
+**Decide.** Add `/resume` to SLASH_COMMANDS + HELP_TEXT. New branch in dispatch_slash that: reads `fs_cfg.root / .agent / agent_state.json`, replaces history in-place, returns a status string with role counts + last-assistant-snippet (truncated to 200 chars). Add `_role_counts` helper near `_last_assistant_reply`. No confirm modal needed — `/resume` is reversible by `/clear`, and gating it behind a modal would just make recovery slower.
+
+**Devil.**
+- *Correctness:* If the checkpoint JSON has no `assistant` role, `next(...)` returns `""` and we omit the snippet line. Tested. ✅
+- *Scope:* Should `/resume` also reload the system prompt? It does — `load_agent_checkpoint` includes all roles. The user could overwrite their system prompt this way, but that's the point of "resume the prior session". ✅
+- *Priority:* Bigger items? `/diff` and per-step latency are nice-to-haves; resume completes a feature shipped in loop 173 that's currently dead-ended. ✅
+
+**Act.** New `_role_counts` helper. `/resume` registered in SLASH_COMMANDS + HELP_TEXT. Branch added to dispatch_slash. 8 new tests in `tests/test_resume_slash.py` covering: registration, tab completion, parse, missing file, happy-path round-trip, in-place mutation contract, corrupt file recovery, and no-assistant-message snippet handling.
+
+**Verify.** `pytest -x -q` → ~1k passed, 1 skipped.
