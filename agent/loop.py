@@ -105,13 +105,16 @@ def _rotate_log_if_oversized(path: Path, max_bytes: int) -> None:
 
 def _log(msg: str) -> None:
     line = f"[{_now()}] {msg}"
-    print(line, flush=True)
+    try:
+        print(line, flush=True)
+    except Exception:  # logging must never break the loop
+        pass
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         _rotate_log_if_oversized(LOG_FILE, _runtime_log_max_bytes())
         with LOG_FILE.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
-    except OSError:
+    except Exception:  # logging must never break the loop
         pass
 
 

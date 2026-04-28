@@ -1294,3 +1294,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 6/8 — close the second drift surface before moving on.
 - ACT: 2 tests in `TestApplyDiffErrorCategoryDriftAudit`. 395 passed.
 - COMMIT: pending.
+
+## Loop 67 — `_log` broadens swallow to all `Exception`
+- OBSERVE: `_log` only caught `OSError` on the file path, and `print` was unguarded. A `UnicodeEncodeError` from print, or a `RuntimeError` from the write path, would propagate — killing the iteration via the outer `Exception` catch in `main`. Logging is observability, not correctness.
+- ORIENT: Bucket 5 (resource cliff) — under filesystem pressure or weird msg payloads, the loop becomes its own foot-gun.
+- DECIDE: Wrap `print` with a separate `try/except Exception`, broaden file-write swallow from `OSError` to `Exception`. Still suppresses inside `_rotate_log_if_oversized` separately.
+- DEVIL:
+  - Correctness: broad `except` is generally bad; here it's the right call because `_log`'s *only contract* is "never break the caller". Test fixture verifies `RuntimeError` from a fake handle is now swallowed.
+  - Scope: this addresses the cause (narrow except), not just one symptom. Symmetric with `_write_timing` and `_rotate_log_if_oversized` which already use broad except.
+  - Priority: bucket 5 — observability stability is loop-survival.
+- ACT: 3 tests covering OSError on open, UnicodeError on print, RuntimeError on write. 398 passed.
+- COMMIT: pending.

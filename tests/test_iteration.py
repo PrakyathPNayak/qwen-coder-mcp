@@ -899,3 +899,62 @@ class TestRuntimeLogCategoryPrefix:
         for outcome, expected in cases.items():
             line = f"iteration [{L._outer_outcome_category(outcome)}] -> {outcome}"
             assert line == expected
+
+
+class TestLogNeverRaises:
+    """Loop 67: `_log` is observability and must never raise — broad except."""
+
+    def test_log_swallows_oserror_on_open(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        bad = tmp_path / "no" / "such" / "dir" / "a.log"
+        # Simulate a chmod 000 dir would be flaky in CI; instead patch
+        # the rotation helper to OK and break the open call.
+        monkeypatch.setattr(L, "LOG_FILE", bad)
+        # mkdir succeeds in tmp_path but we'll patch open to raise.
+        orig_open = Path.open
+        def boom(self, *a, **kw):
+            raise OSError("disk full")
+        monkeypatch.setattr(Path, "open", boom)
+        try:
+            L._log("test")  # must not raise
+        finally:
+            monkeypatch.setattr(Path, "open", orig_open)
+
+    def test_log_swallows_unicode_error_on_print(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setattr(L, "LOG_FILE", tmp_path / "a.log")
+        # Patch print to raise; verify the file write still happens.
+        import builtins
+        orig_print = builtins.print
+        def boom(*a, **kw):
+            raise UnicodeEncodeError("ascii", "x", 0, 1, "")
+        monkeypatch.setattr(builtins, "print", boom)
+        try:
+            L._log("hello")
+        finally:
+            monkeypatch.setattr(builtins, "print", orig_print)
+        # File write should still have succeeded.
+        text = (tmp_path / "a.log").read_text(encoding="utf-8")
+        assert "hello" in text
+
+    def test_log_swallows_arbitrary_exception_from_write(self, tmp_path, monkeypatch):
+        """Even non-OSError exceptions from the write path are swallowed."""
+        from agent import loop as L
+        monkeypatch.setattr(L, "LOG_FILE", tmp_path / "a.log")
+
+        class WeirdHandle:
+            def write(self, *a, **kw):
+                raise RuntimeError("not OSError, not allowed to crash _log")
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        orig_open = Path.open
+        def fake_open(self, *a, **kw):
+            return WeirdHandle()
+        monkeypatch.setattr(Path, "open", fake_open)
+        try:
+            L._log("test")  # must not raise
+        finally:
+            monkeypatch.setattr(Path, "open", orig_open)
