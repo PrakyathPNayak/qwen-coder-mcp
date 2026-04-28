@@ -917,3 +917,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: yes, hangs are higher impact than minor cleanups.
 - ACT: Added helper + 3 between-phase checks in `_iteration`. 4 new tests. 236/236 green.
 - COMMIT: pending.
+
+## Loop 32 — qwen_client: gate `extra` against reserved keys
+- OBSERVE: `chat()` does `payload.update(extra)` unconditionally. After loop 25 made `system_user` forward `extra`, callers can silently overwrite `model`, `messages`, `stream` — the last would break `_extract_text` (not built for streaming chunks).
+- ORIENT: Real correctness footgun reachable from the agent loop. Other candidates audited in this loop (`_revert_changes` symmetric, `_strip_fence` nested fences low-impact) didn't show actionable bugs.
+- DECIDE: Reject `extra` payloads that intersect `{model, messages, stream}` with `QwenFatalError` (non-retriable). Lists conflicting keys for the caller.
+- DEVIL:
+  - Correctness: any legitimate caller currently passing one of these via `extra`? `system_user` only forwards from typed kwargs; no test/source path passes them. Safe.
+  - Scope: addresses the cause (no validation), not a symptom.
+  - Priority: defensive but cheap; aligns with earlier loops hardening untrusted-input paths.
+- ACT: Added reserved-key intersection check; raised QwenFatalError. 5 new tests (override-model, override-messages, override-stream, multi-conflict, safe-keys-pass-through). 241/241 green.
+- COMMIT: pending.

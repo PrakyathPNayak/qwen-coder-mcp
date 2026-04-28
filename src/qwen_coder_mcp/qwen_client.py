@@ -89,6 +89,18 @@ class QwenClient:
         if stop:
             payload["stop"] = list(stop)
         if extra:
+            # Reserved keys are managed by this method directly. Letting
+            # callers overwrite them via `extra` would silently change
+            # the request model, prompt, or response shape and break
+            # downstream parsing (`_extract_text` only handles
+            # `stream=False` payloads).
+            reserved = {"model", "messages", "stream"}
+            conflicts = reserved.intersection(extra.keys())
+            if conflicts:
+                raise QwenFatalError(
+                    "extra cannot override reserved keys: "
+                    f"{sorted(conflicts)}"
+                )
             payload.update(extra)
 
         last_err: Exception | None = None

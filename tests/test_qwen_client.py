@@ -341,3 +341,59 @@ def test_whitespace_only_content_raises_qwen_error():
     c = _client_with(handler)
     with pytest.raises(QwenError):
         c.chat([ChatMessage("user", "hi")], max_retries=1)
+
+
+# ----------------------------------------- extra-key reserved-key gating
+def test_extra_cannot_override_model():
+    c = _client_with(lambda r: _ok_response("ok"))
+    with pytest.raises(QwenFatalError) as ei:
+        c.chat([ChatMessage("user", "hi")], extra={"model": "evil"})
+    assert "model" in str(ei.value)
+
+
+def test_extra_cannot_override_messages():
+    c = _client_with(lambda r: _ok_response("ok"))
+    with pytest.raises(QwenFatalError) as ei:
+        c.chat([ChatMessage("user", "hi")], extra={"messages": []})
+    assert "messages" in str(ei.value)
+
+
+def test_extra_cannot_override_stream():
+    c = _client_with(lambda r: _ok_response("ok"))
+    with pytest.raises(QwenFatalError) as ei:
+        c.chat([ChatMessage("user", "hi")], extra={"stream": True})
+    assert "stream" in str(ei.value)
+
+
+def test_extra_lists_all_conflicting_keys():
+    c = _client_with(lambda r: _ok_response("ok"))
+    with pytest.raises(QwenFatalError) as ei:
+        c.chat(
+            [ChatMessage("user", "hi")],
+            extra={"model": "x", "stream": True, "presence_penalty": 0.1},
+        )
+    msg = str(ei.value)
+    assert "model" in msg and "stream" in msg
+    assert "presence_penalty" not in msg  # non-reserved isn't flagged
+
+
+def test_extra_with_only_safe_keys_still_works():
+    seen: dict = {}
+
+    def handler(request):
+        import json
+        seen.update(json.loads(request.content))
+        return _ok_response("ok")
+
+    c = _client_with(handler)
+    out = c.chat(
+        [ChatMessage("user", "hi")],
+        extra={"presence_penalty": 0.2, "top_k": 40, "repetition_penalty": 1.05},
+    )
+    assert out == "ok"
+    assert seen["presence_penalty"] == 0.2
+    assert seen["top_k"] == 40
+    assert seen["repetition_penalty"] == 1.05
+    # Reserved keys remain client-controlled.
+    assert seen["model"] == "qwen3.6-27b"
+    assert seen["stream"] is False
