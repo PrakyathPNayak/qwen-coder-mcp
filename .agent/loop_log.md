@@ -2688,3 +2688,20 @@ read-only operation, no state changes.
 **Act.** New helper + constant in `tui.py` between `format_turn_profile` and `render_checkpoint_hint`. Updated TUI `_agent_checkpoint` call. Ten tests in `test_resolve_rotation_keep.py` covering: unset → default, default = 5 pin, empty/whitespace → default, valid int, 0 = retain all, negative clamped, garbage → default, float string → default, env=None reads `os.environ`.
 
 **Verify.** `pytest -x -q` → ~1.1k passed, 1 skipped.
+
+## Loop 185 — `docs/AGENT_CHECKPOINTS.md` covers loops 173, 179-184
+
+**Observe.** Six loops worth of checkpoint work — single-file save (173), `/resume` (174), rotation (179), `/checkpoints` (180), fallback recovery (181), boot hint (183), env-var override (184) — and zero documentation. A user landing on the repo can't discover any of it without reading the source.
+
+**Orient.** The work is feature-complete enough to merit its own doc page. Two storage layers, four slash commands, one env var — that's a half-page table away from being self-explanatory. README needs a one-line link so it's findable.
+
+**Decide.** Create `docs/AGENT_CHECKPOINTS.md` with: storage-layer comparison table, recovery flow numbered list, slash-command table, env-var table, rationale for keeping the two layers separate, file-format note. Add a sentence pointing at it from README.
+
+**Devil.**
+- *Correctness:* Did I miss any commands? `/resume`, `/checkpoints`, `/checkpoints load`, `/checkpoints prune`, `/lat`. Cross-checked SLASH_COMMANDS — that's the full set. ✅
+- *Scope:* Should this go in LOCAL_SERVE.md instead of a new file? No — LOCAL_SERVE.md is about vLLM/llama.cpp serving; agent checkpoints are an orthogonal concern with their own audience. ✅
+- *Priority:* `/agent --resume` is the queue's pick but pure feature work without a doc base means future docs accumulate the entire backlog at once. Document the system *now* while the surface is small enough to fully cover. ✅
+
+**Act.** New `docs/AGENT_CHECKPOINTS.md`. README updated with a single-sentence link. No code changes.
+
+**Verify.** `pytest -x -q` → ~1.1k passed, 1 skipped (unchanged). Markdown changes don't need their own tests but verifying nothing broke is cheap insurance.

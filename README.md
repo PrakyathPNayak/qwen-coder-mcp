@@ -16,7 +16,9 @@ cp .env.example .env           # already pointed at the local server
 ```
 
 See [`docs/LOCAL_SERVE.md`](docs/LOCAL_SERVE.md) for VRAM budget, alternate
-quantizations, and the llama.cpp fallback.
+quantizations, and the llama.cpp fallback. See
+[`docs/AGENT_CHECKPOINTS.md`](docs/AGENT_CHECKPOINTS.md) for the agent's
+checkpoint / rotation / `/resume` recovery flow.
 
 ## Features
 
