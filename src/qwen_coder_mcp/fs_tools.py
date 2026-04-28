@@ -361,6 +361,153 @@ def edit_file(
     }
 
 
+def _whitespace_tolerant_pattern(old: str) -> "re.Pattern[str]":
+    """Build a regex that matches ``old`` with every run of ASCII
+    whitespace (spaces, tabs, newlines) treated as ``\\s+``.
+
+    All non-whitespace characters are escaped so regex metacharacters
+    in the source string are matched literally. Useful when the model
+    emits the right code but with slightly different indentation or a
+    different newline style than the file on disk -- a frequent source
+    of "old_str not found" errors with the strict ``edit_file`` tool.
+    """
+    import re as _re
+
+    # Split into whitespace runs and non-whitespace runs.
+    parts: list[str] = []
+    buf = ""
+    in_ws = False
+    for ch in old:
+        ws = ch.isspace()
+        if ws != in_ws and buf:
+            parts.append(buf)
+            buf = ""
+        in_ws = ws
+        buf += ch
+    if buf:
+        parts.append(buf)
+    pieces: list[str] = []
+    for part in parts:
+        if part and part[0].isspace():
+            pieces.append(r"\s+")
+        else:
+            pieces.append(_re.escape(part))
+    pattern = "".join(pieces)
+    return _re.compile(pattern, flags=_re.MULTILINE)
+
+
+def regex_edit_file(
+    cfg: FsConfig,
+    rel: str,
+    old: str,
+    new: str,
+    *,
+    count: int | None = 1,
+    dry_run: bool = False,
+    raw_regex: bool = False,
+) -> dict[str, object]:
+    """Whitespace-tolerant str-replace edit (loop 267).
+
+    Sibling of ``edit_file``: instead of requiring an exact byte match
+    for ``old``, this routine treats every run of whitespace in
+    ``old`` as ``\\s+`` so the model's "right code, slightly different
+    indent" emissions still apply cleanly. Set ``raw_regex=True`` to
+    treat ``old`` as a literal Python regex (advanced use; bypasses
+    the whitespace normalisation).
+
+    Same count / dry_run / size-cap semantics as ``edit_file``.
+
+    Returns ``{path, replacements, size, before_size, dry_run, preview?,
+    pattern}`` -- the compiled pattern source is included so the
+    operator can audit what matched.
+    """
+    import re as _re
+
+    p = _resolve_inside_root(cfg, rel)
+    if p.is_dir():
+        raise FsError(f"is a directory: {rel}")
+    if not p.exists():
+        raise FsError(f"not found: {rel}")
+    if not isinstance(old, str) or old == "":
+        raise FsError("regex_edit_file requires a non-empty 'old' string")
+    if not isinstance(new, str):
+        raise FsError("regex_edit_file requires a string 'new' value")
+    raw = p.read_bytes()
+    try:
+        original = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise FsError(f"binary file: {rel}") from exc
+    if raw_regex:
+        try:
+            pat = _re.compile(old, flags=_re.MULTILINE)
+        except _re.error as exc:
+            raise FsError(f"regex_edit_file: invalid regex: {exc}") from exc
+    else:
+        pat = _whitespace_tolerant_pattern(old)
+    matches = list(pat.finditer(original))
+    occurrences = len(matches)
+    if occurrences == 0:
+        head = original.splitlines()[:20]
+        head_preview = "\n".join(head)
+        raise FsError(
+            f"regex_edit_file: 'old' (pattern={pat.pattern!r}) did not match in {rel}. "
+            f"first 20 lines for re-orientation:\n{head_preview}"
+        )
+    if count is not None and occurrences != count:
+        raise FsError(
+            f"regex_edit_file: pattern matched {occurrences}x in {rel} but count={count}. "
+            "Add more surrounding context or pass count=null to replace all."
+        )
+    # Treat ``new`` as a literal replacement (no group back-refs) so
+    # \1 / \g<...> tokens in the model's output don't accidentally
+    # interpolate. Operator-driven raw_regex mode could be enhanced
+    # later if back-refs are wanted.
+    repl = new.replace("\\", "\\\\")
+    if count is None:
+        replaced, n_done = pat.subn(repl, original)
+    else:
+        replaced, n_done = pat.subn(repl, original, count=count)
+    encoded = replaced.encode("utf-8")
+    if len(encoded) > cfg.max_write_bytes:
+        raise FsError(
+            f"edited content too large ({len(encoded)} > {cfg.max_write_bytes})"
+        )
+    if dry_run:
+        return {
+            "path": rel,
+            "replacements": n_done,
+            "size": len(encoded),
+            "before_size": len(raw),
+            "dry_run": True,
+            "preview": replaced,
+            "pattern": pat.pattern,
+        }
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(encoded)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, p)
+    except OSError as exc:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise FsError(f"regex edit failed: {exc}") from exc
+    return {
+        "path": rel,
+        "replacements": n_done,
+        "size": len(encoded),
+        "before_size": len(raw),
+        "dry_run": False,
+        "pattern": pat.pattern,
+    }
+
+
 def insert_lines(
     cfg: FsConfig,
     rel: str,

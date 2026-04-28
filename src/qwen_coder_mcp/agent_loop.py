@@ -56,6 +56,9 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     "search": "grep",
     "rg": "grep",
     "glob": "find",
+    "fs_edit_regex": "fs_regex_edit",
+    "regex_edit": "fs_regex_edit",
+    "edit_regex": "fs_regex_edit",
 }
 
 
@@ -221,6 +224,42 @@ def _tool_fs_edit(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     )
 
 
+def _tool_fs_regex_edit(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    """Whitespace-tolerant str-replace edit (loop 267).
+
+    Like fs_edit but every run of whitespace in ``old`` matches any
+    run of whitespace in the file, so the model's "right code,
+    slightly different indent or newline" emissions still apply.
+    Pass ``raw_regex=true`` to treat ``old`` as a literal regex
+    (advanced).
+    """
+    path = str(args.get("path", "")).strip()
+    if not path:
+        return "error: fs_regex_edit needs a 'path' arg"
+    old = args.get("old", "")
+    new = args.get("new", "")
+    if not isinstance(old, str) or not isinstance(new, str):
+        return "error: fs_regex_edit needs string 'old' and 'new' args"
+    count_arg = args.get("count", 1)
+    if count_arg is None:
+        count: int | None = None
+    else:
+        try:
+            count = int(count_arg)
+        except (TypeError, ValueError):
+            count = 1
+    dry_run = bool(args.get("dry_run", False))
+    raw_regex = bool(args.get("raw_regex", False))
+    res = fs_tools.regex_edit_file(
+        cfg, path, old, new, count=count, dry_run=dry_run, raw_regex=raw_regex
+    )
+    mode = "dry-run" if res.get("dry_run") else "edited"
+    return (
+        f"{mode} {res.get('path')} (regex): {res.get('replacements')} "
+        f"replacement(s), size {res.get('before_size')} -> {res.get('size')} bytes"
+    )
+
+
 def _tool_fs_insert(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     """Insert content at a specific line position (loop 252)."""
     path = str(args.get("path", "")).strip()
@@ -349,6 +388,7 @@ DEFAULT_TOOLS: dict[str, ToolFn] = {
 WRITE_TOOLS: dict[str, ToolFn] = {
     "fs_write": _tool_fs_write,
     "fs_edit": _tool_fs_edit,
+    "fs_regex_edit": _tool_fs_regex_edit,
     "fs_insert": _tool_fs_insert,
     "apply_patch": _tool_apply_patch,
     "run_shell": _tool_run_shell,
@@ -552,6 +592,13 @@ Available tools:
   validates the match WITHOUT mutating, so you can preview before
   committing. If 'old' is not uniquely matched the call fails with a
   helpful error so you can re-read with more surrounding context and retry.
+- fs_regex_edit(path: str, old: str, new: str, count: int|null=1,
+  dry_run: bool=false, raw_regex: bool=false) -- whitespace-tolerant
+  variant of fs_edit (write mode only). Every run of whitespace in 'old'
+  matches any run of whitespace in the file, so slight indentation or
+  newline differences don't break the edit. Prefer this when fs_edit
+  fails with "old not found" for code that looks textually correct.
+  Set raw_regex=true to treat 'old' as a literal Python regex (advanced).
 - fs_insert(path: str, content: str, after_line: int|None=None,
   before_line: int|None=None) -- insert content at a specific 1-based
   line position (write mode only). Exactly one of after_line/before_line
@@ -618,7 +665,12 @@ def run_tool(
     that the model can read and adapt to.
     """
     registry = tools if tools is not None else DEFAULT_TOOLS
-    fn = registry.get(call.name)
+    # Loop 267: also apply alias normalisation here so callers that
+    # bypass parse_tool_calls (direct ToolCall construction in tests
+    # or external integrations) still get the same dispatch as model
+    # output that goes through the parser.
+    canonical_name = _canonical_tool_name(call.name)
+    fn = registry.get(canonical_name)
     if fn is None:
         avail = ", ".join(sorted(registry.keys()))
         return ToolResult(
@@ -626,7 +678,7 @@ def run_tool(
             output=f"error: unknown tool {call.name!r}. Available: {avail}",
             error=True,
         )
-    if call.name in DESTRUCTIVE_TOOLS and confirm is not None:
+    if canonical_name in DESTRUCTIVE_TOOLS and confirm is not None:
         try:
             if not confirm(call):
                 return ToolResult(

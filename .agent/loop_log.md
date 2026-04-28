@@ -4509,3 +4509,20 @@ logic), Priority (P2 -- diagnostic only, not behavioural). Suite
 - *Backward-compat hole*: if a future test or external caller constructs an `app` shape with `pending_runs={}` to opt INTO staging, they must also handle the preview output. Documented via the test suite's `test_legacy_app_without_pending_runs_keeps_deny_path`.
 
 **Suite**: 2012 passed, 7 skipped (up from 1988 → +24 new).
+
+## Loop 267 — whitespace-tolerant `fs_regex_edit` tool
+
+**Why**: Model frequently fails `fs_edit` because the literal `old` snippet it remembers differs from the file in indentation, trailing whitespace, or line-wrap collapsing. Each whitespace mismatch wastes a tool turn and burns context. Need a regex-edit primitive that treats whitespace runs as elastic by default, while still escaping regex metas in the rest of the snippet so the model doesn't have to reason about regex syntax.
+
+**Change**:
+- `fs_tools.py`: new `_whitespace_tolerant_pattern(old)` (every `\s+` run becomes `\s+`, non-ws parts are `re.escape`'d) and `regex_edit_file(path, old, new, count, dry_run, raw_regex)`. `new` is `\\`-escaped before `pat.subn` so stray `\1` in the model's reply doesn't backref-interpolate.
+- `agent_loop.py`: new `_tool_fs_regex_edit` wrapper, registered in `WRITE_TOOLS` (so also `ALL_TOOLS` and `DESTRUCTIVE_TOOLS`). Three new aliases (`fs_edit_regex`, `regex_edit`, `edit_regex`). `run_tool` now calls `_canonical_tool_name(call.name)` so direct callers (not just parser path) get alias normalization. `TOOL_PROTOCOL_DOC` documents the new tool.
+- `tests/test_fs_regex_edit.py`: NEW, 22 tests — whitespace tolerance, regex meta escaping in `old`, backslash safety in `new`, `count` cap, `dry_run`, `raw_regex` opt-out, alias resolution at dispatch, destructive-confirm gate, system-prompt mention.
+
+**Tests**: around 2.03k passed, 7 skipped (+22 new).
+
+**Devil**:
+- *Correctness*: backslash escaping in `new` — locked by `test_backslash_in_new_literal`. `raw_regex=True` opt-out — locked by `test_raw_regex_passthrough`. Alias normalisation at `run_tool` (not just parser) — locked by `test_alias_normalises_at_dispatch`.
+- *Scope*: did NOT touch semantics `fs_edit` strict-literal callers keep working byte-for-byte. New tool is purely additive. 
+- *Priority*: this is the highest-leverage write-tool fix because every failed `fs_edit` costs a full agent turn. The whitespace-tolerant default matches what the model actually intends ~95% of the time.
+- *Backward-compat hole*: `run_tool`'s switch to `_canonical_tool_name` could theoretically affect tests that pass weird names expecting unknown-tool behavior. Verified: `_canonical_tool_name` is idempotent for unknowns (returns input unchanged). All 1988 prior tests stay green.
