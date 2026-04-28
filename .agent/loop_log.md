@@ -2671,3 +2671,20 @@ read-only operation, no state changes.
 **Act.** New pure helper `render_checkpoint_hint` in `tui.py` next to `_role_counts`. Boot path in `on_mount` calls it when `prior` is empty and writes the returned line to the log. Five tests in `test_checkpoint_hint.py` covering: no checkpoint, primary present, rotation-only fallback, empty primary, corrupt primary.
 
 **Verify.** `pytest -x -q` → ~1.1k passed, 1 skipped.
+
+## Loop 184 — `QWEN_AGENT_ROTATION_KEEP` env-var override
+
+**Observe.** Loop 179 hardcoded `keep=5` in the TUI's `_agent_checkpoint` callback. For long sessions or for users who want forensic history of every step, 5 is too low; for users on tight disk budgets it might be too high. Magic number with no escape hatch.
+
+**Orient.** Standard config-knob pattern — read env var at use site, fall back to a documented default constant, defensively parse. The helper is independently testable; the use site is one line.
+
+**Decide.** Add `DEFAULT_ROTATION_KEEP = 5` and `resolve_rotation_keep(env=None)` to `tui.py`. Read `QWEN_AGENT_ROTATION_KEEP` from env. Empty/missing/unparseable → default. Negative → clamped to 0 (which `rotate_agent_checkpoints` already treats as "retain everything"). Wire `_agent_checkpoint` to call `resolve_rotation_keep()` instead of literal `5`.
+
+**Devil.**
+- *Correctness:* Should `resolve_rotation_keep` cache the value? No — env vars can change at runtime (testing, hot config). Each call reads fresh; the cost is negligible. ✅
+- *Scope:* Why not full config object? Premature — one knob doesn't need a class. If 3+ rotation knobs appear, refactor then. ✅
+- *Priority:* Removes a magic number and unblocks a class of users (long-session, audit). Lower-impact than `/agent --resume` but lower-cost too — perfect breather loop after `/lat`'s heavier surface. ✅
+
+**Act.** New helper + constant in `tui.py` between `format_turn_profile` and `render_checkpoint_hint`. Updated TUI `_agent_checkpoint` call. Ten tests in `test_resolve_rotation_keep.py` covering: unset → default, default = 5 pin, empty/whitespace → default, valid int, 0 = retain all, negative clamped, garbage → default, float string → default, env=None reads `os.environ`.
+
+**Verify.** `pytest -x -q` → ~1.1k passed, 1 skipped.

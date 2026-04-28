@@ -303,6 +303,32 @@ def _format_checkpoint_listing(snapshots: list[Path]) -> str:
     return "\n".join(rows)
 
 
+DEFAULT_ROTATION_KEEP = 5
+_ROTATION_KEEP_ENV = "QWEN_AGENT_ROTATION_KEEP"
+
+
+def resolve_rotation_keep(env: dict[str, str] | None = None) -> int:
+    """Resolve the rotation-keep count from the environment.
+
+    Reads ``QWEN_AGENT_ROTATION_KEEP``; falls back to
+    ``DEFAULT_ROTATION_KEEP`` (5) when unset, empty, or unparseable.
+    Negative values are clamped to 0 (= "retain everything"). Pure so
+    unit tests can pass an isolated dict instead of mutating
+    ``os.environ``.
+    """
+    import os
+
+    src = os.environ if env is None else env
+    raw = src.get(_ROTATION_KEEP_ENV)
+    if raw is None or raw.strip() == "":
+        return DEFAULT_ROTATION_KEEP
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_ROTATION_KEEP
+    return max(value, 0)
+
+
 def render_checkpoint_hint(fs_cfg: fs_tools.FsConfig) -> str | None:
     """When a usable agent checkpoint exists at ``.agent/agent_state.json``
     (or its rotations), return a single-line hint suggesting ``/resume``.
@@ -2158,7 +2184,9 @@ def _build_app(
                 the run_agent contract — we just note them in the log."""
                 try:
                     target = self.fs_cfg.root / ".agent" / "agent_state.json"
-                    agent_loop.rotate_agent_checkpoints(target, hist, keep=5)
+                    agent_loop.rotate_agent_checkpoints(
+                        target, hist, keep=resolve_rotation_keep()
+                    )
                 except Exception as exc:  # noqa: BLE001
                     self.call_from_thread(
                         self._agent_status,
