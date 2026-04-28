@@ -1,9 +1,9 @@
-# Loop 189 candidates
+# Loop 190 candidates
 
-1. **Atomic write of audit log** — same `.tmp + os.replace` treatment we gave checkpoints.
-2. **Live vLLM smoke test** of `<tool_call>` protocol (opt-in, `pytest -m live`).
-3. **`/checkpoints diff N`** — diff between current chat history and snapshot N.
-4. **`format_turn_profile` honours TTY width** — wrap the tools table.
-5. **`/lat reset`** — clear the turn-profile ring buffer.
+1. **`/lat reset`** — clear the turn-profile ring buffer mid-session.
+2. **`/checkpoints diff N`** — diff between current chat history and snapshot N.
+3. **`format_turn_profile` honours TTY width** — wrap the tools table when the terminal is narrow.
+4. **Atomic write for `save_agent_state`** — verify and harden if missing.
+5. **Live vLLM smoke test** of `<tool_call>` protocol (opt-in, `pytest -m live`).
 
-(1) is the natural integrity-hardening pick — every other persistence point in the agent layer now has atomic writes.
+(1) is small-scope but useful; (2) is meatier and gives users a way to see what they'd lose by resuming; (3) is pure cosmetics. Lean (1) first to keep the cadence, then (2).

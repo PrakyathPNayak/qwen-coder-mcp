@@ -1690,14 +1690,28 @@ def save_history_jsonl(
     except OSError:
         return 0
     tail = history[-max_messages:]
+    # Atomic write: serialise to a sibling .tmp, fsync, then os.replace
+    # so a crash mid-write can never leave the on-disk history in a
+    # half-written state. Mirrors save_agent_checkpoint.
+    tmp = path.with_suffix(path.suffix + ".tmp")
     try:
-        with path.open("w", encoding="utf-8") as fh:
+        with tmp.open("w", encoding="utf-8") as fh:
             for msg in tail:
                 fh.write(
                     json.dumps({"role": msg.role, "content": msg.content})
                     + "\n"
                 )
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, path)
     except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
         return 0
     return len(tail)
 

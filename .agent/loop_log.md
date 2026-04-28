@@ -2756,3 +2756,20 @@ read-only operation, no state changes.
 **Act.** Three edits in `tui.py`: new constant + `format_turn_profiles` between `format_turn_profile` and `format_tool_latency`; `App.__init__` initialises `self.turn_profiles = []`; runner appends + trims after `last_turn_profile = profile`; `/lat` branch parses optional N arg with two error paths (non-integer, <1). HELP_TEXT updated to mention `[N]`. New `tests/test_lat_multi.py` with 14 cases across three test classes covering: empty buffer, single-profile no-header, multi-profile headers, recency ordering, n-clamp to buffer length, n=0 and negative both treated as 1, dispatcher with no arg, valid arg, non-integer, zero, negative, fallback path when buffer missing, default-cap pin.
 
 **Verify.** `pytest -x -q` → ~1.2k passed, 1 skipped.
+
+## Loop 189 — atomic write for `save_history_jsonl`
+
+**Observe.** Searched for persistence layers without atomic writes. `save_agent_checkpoint` uses `.tmp + os.replace + fsync` (loop ~150). `save_history_jsonl` (the durable per-turn JSONL chat history at `<root>/.agent/tui_history.jsonl`) was using a plain `path.open("w", ...)` — truncates the live file before content is fully serialised. A crash mid-write leaves the user with a half-written history file and we'd silently swallow it on next load (load_history_jsonl drops malformed lines).
+
+**Orient.** This is a real integrity gap. The TUI saves history on every assistant turn end and again on shutdown — those are exactly the points where a SIGKILL or OOM is most likely (long generations, high memory pressure under vLLM). The audit-log candidate from `next.md` was misframed — there's no on-disk audit log to harden — but the underlying motivation (atomic writes wherever we persist) is right; just retarget at the actual gap.
+
+**Decide.** Rewrite the body of `save_history_jsonl` to mirror `save_agent_checkpoint`: serialise into `<path>.tmp`, fsync the descriptor, `os.replace(tmp, path)`. On any OSError, unlink the tmp file and return 0 (existing behaviour: silent no-op on save failure). Don't change the function signature — drop-in replacement.
+
+**Devil.**
+- *Correctness:* Does `os.replace` cross-device? On the same FS — yes, it's the documented atomic primitive on POSIX and on Windows since Python 3.3. The history lives in the same directory as everything else under `.agent/`, no cross-device move possible. ✅ The `RuntimeError` raised by serialisation now propagates instead of silently returning 0 — but that's *better*: we don't want to lie about save failures, and the original file is still preserved by virtue of not being truncated. The TUI's exception handlers around `save_history_jsonl` calls already catch broadly.
+- *Scope:* Should `load_history_jsonl` *also* attempt a `.tmp` recovery? No — if the `os.replace` succeeded the canonical path holds the new data; if it didn't the canonical path holds the old data. The `.tmp` is always either in-flight or stale. Recovering from it would invent ambiguity. ✅
+- *Priority:* Live vLLM smoke test still queued. But that requires actual vLLM runtime — environment-dependent, can't be deterministic. Atomic history write is a pure-Python, pure-fs change with deterministic tests. Higher leverage right now. ✅
+
+**Act.** One block edit in `tui.py` replacing the `with path.open("w") as fh:` body with the `.tmp` dance. New `tests/test_history_atomic_write.py` with 8 cases: round-trip, no `.tmp` left after success, original file preserved when `os.replace` fails (monkey-patched to OSError), original file preserved when serialisation raises mid-loop, `.tmp` cleaned up after replace failure, the spy assertion that the live data is in `.tmp` at the moment of replace, max_messages still truncates, each line is independently parseable JSON.
+
+**Verify.** `pytest tests/test_history_atomic_write.py -x -q` → 8 passed. Full suite → ~1.2k passed, 1 skipped.
