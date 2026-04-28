@@ -1475,3 +1475,75 @@ class TestSwallowSummaries:
         client = _ScriptedClient(["\n   \n"])  # empty issue, clean branch
         L._iteration(client, max_bytes=10_000, push=False)
         assert any("swallow-summary _write_timing" in l for l in log_lines)
+
+
+class TestPruneAndCursorRateLimited:
+    """Loop 76: `_prune_dir_oldest` and `_save_cursor` failures route
+    through the rate-limited swallow loggers so persistent disk faults
+    don't spam one log line per iteration."""
+
+    def test_prune_failure_uses_rate_limited_logger(self, monkeypatch, tmp_path):
+        from agent import loop as L
+        L._PRUNE_SWALLOW_LOG.reset()
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        monkeypatch.setattr(L._PRUNE_SWALLOW_LOG, "schedule", "linear")
+        monkeypatch.setattr(L._PRUNE_SWALLOW_LOG, "every", 5)
+
+        # Bad directory (file, not dir) → iterdir raises.
+        bad = tmp_path / "afile"
+        bad.write_text("x")
+        # Drive 7 calls.
+        for _ in range(7):
+            L._prune_dir_oldest(bad, 0)
+        # Linear every=5: count=1 logs, count=5 logs, others suppressed → 2 lines.
+        prune_lines = [l for l in log_lines if "_prune_dir_oldest failed" in l]
+        assert len(prune_lines) == 2
+        assert L._PRUNE_SWALLOW_LOG.count == 7
+        # Context (the bad path) appears in the emitted line.
+        assert any(str(bad) in l for l in prune_lines)
+
+    def test_cursor_save_failure_uses_rate_limited_logger(self, monkeypatch, tmp_path):
+        import os
+        from agent import loop as L
+        L._CURSOR_SWALLOW_LOG.reset()
+        monkeypatch.setattr(L, "CURSOR_FILE", tmp_path / ".loop" / "cursor.json")
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        monkeypatch.setattr(L._CURSOR_SWALLOW_LOG, "schedule", "linear")
+        monkeypatch.setattr(L._CURSOR_SWALLOW_LOG, "every", 4)
+
+        real_replace = os.replace
+        L.os.replace = lambda *a, **k: (_ for _ in ()).throw(OSError("nope"))
+        try:
+            for i in range(6):
+                L._save_cursor(i)
+        finally:
+            L.os.replace = real_replace
+        cur_lines = [l for l in log_lines if "_save_cursor failed" in l]
+        # Linear every=4: count=1 logs, count=4 logs → 2 lines.
+        assert len(cur_lines) == 2
+        # Last logged carries idx context (idx=3 logged at count=4).
+        assert any("idx=3" in l for l in cur_lines)
+
+    def test_swallow_loggers_includes_prune_and_cursor(self):
+        from agent import loop as L
+        labels = {lg.label for lg in L._swallow_loggers()}
+        assert "_prune_dir_oldest" in labels
+        assert "_save_cursor" in labels
+
+    def test_report_context_appears_in_log_line(self, monkeypatch):
+        from agent import loop as L
+        lg = L._RateLimitedSwallowLogger("test_ctx", every=1, schedule="linear")
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        lg.report(OSError("boom"), context="path=/tmp/x")
+        assert log_lines == ["test_ctx failed (count=1) [path=/tmp/x]: boom"]
+
+    def test_report_no_context_keeps_legacy_format(self, monkeypatch):
+        from agent import loop as L
+        lg = L._RateLimitedSwallowLogger("test_noctx", every=1, schedule="linear")
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        lg.report(OSError("boom"))
+        assert log_lines == ["test_noctx failed (count=1): boom"]

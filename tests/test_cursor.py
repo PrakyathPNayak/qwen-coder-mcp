@@ -120,7 +120,7 @@ def test_save_cursor_swallows_rename_failure_and_logs(cursor, monkeypatch, tmp_p
     finally:
         mod.os.replace = real_replace
     assert L._load_cursor() == 7
-    assert any("cursor save failed" in m for m in log_calls), log_calls
+    assert any("_save_cursor failed" in m for m in log_calls), log_calls
 
 
 def test_save_cursor_swallows_rename_failure_even_if_log_fails(cursor, monkeypatch):

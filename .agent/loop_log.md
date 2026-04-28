@@ -1395,3 +1395,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Edge: counters persist across iterations, so manually resetting individual loggers (e.g. tests) requires also clearing `_LAST_SWALLOW_SUMMARY_COUNTS`. Documented in test setup.
 - ACT: Helper added, `_finish` updated, 6 new tests (no-failure, suppressed-grows, count-unchanged, re-emits-after-more, never-raises, end-to-end finish-calls-summary). 431 passed.
 - COMMIT: pending.
+
+## Loop 76 — rate-limit `_prune_dir_oldest` and `_save_cursor` log paths
+- OBSERVE: `_log` audit (per next.md #3) found two callers vulnerable to per-iteration spam: `_prune_dir_oldest` (runs every iteration; a perm-denied state archive prune would log every loop) and `_save_cursor` (runs each iteration). Both used raw `_log` with no rate limiting.
+- ORIENT: Same bug shape as loops 68-71 covered. Apply same fix: route through `_RateLimitedSwallowLogger`.
+- DECIDE: Add `_PRUNE_SWALLOW_LOG` and `_CURSOR_SWALLOW_LOG` (both exponential). Extend `report()` with optional `context` arg so the directory path / idx is preserved in the emitted line. Register both in `_swallow_loggers()` so they get periodic summaries.
+- DEVIL:
+  - Correctness: was the `directory` / `idx` info important to ops? Yes — directory tells you which path is failing. Solved by `context` arg.
+  - Scope: This is the same root cause class (unbounded log emission from per-iter sinks). Are there others? `_run_git timeout` is conditional/rare; commit/push failures are also iteration-bounded but already gated by branch logic. The two added here are the highest-frequency repeat offenders.
+  - Priority: bucket 5/6; was next.md #3.
+- ACT: 5 new tests (prune linear cadence + path context, cursor linear cadence + idx context, swallow_loggers registration, context format, no-context legacy format). Migrated 1 existing cursor test to new label. 436 passed.
+- COMMIT: pending.

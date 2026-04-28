@@ -169,10 +169,11 @@ class _RateLimitedSwallowLogger:
         # Linear default.
         return self.every > 0 and n % self.every == 0
 
-    def report(self, exc: BaseException) -> None:
+    def report(self, exc: BaseException, context: str = "") -> None:
         self.count += 1
         if self._should_log():
-            _log(f"{self.label} failed (count={self.count}): {exc}")
+            ctx = f" [{context}]" if context else ""
+            _log(f"{self.label} failed (count={self.count}){ctx}: {exc}")
             self.last_logged_count = self.count
 
     def reset(self) -> None:
@@ -364,7 +365,7 @@ def _save_cursor(idx: int) -> None:
         except OSError:
             pass
         try:
-            _log(f"cursor save failed (idx={idx}): {exc}")
+            _CURSOR_SWALLOW_LOG.report(exc, context=f"idx={idx}")
         except Exception:
             pass
 
@@ -1231,7 +1232,7 @@ def _prune_dir_oldest(directory: Path, max_files: int) -> int:
                 pass
         return deleted
     except Exception as exc:  # never break the loop on cleanup
-        _log(f"_prune_dir_oldest({directory}) failed: {exc}")
+        _PRUNE_SWALLOW_LOG.report(exc, context=str(directory))
         return 0
 
 
@@ -1305,6 +1306,8 @@ def _write_history(name: str, body: str) -> Path | None:
 
 _STATE_SWALLOW_LOG = _RateLimitedSwallowLogger("_append_state", schedule="exponential")
 _HISTORY_SWALLOW_LOG = _RateLimitedSwallowLogger("_write_history", schedule="exponential")
+_PRUNE_SWALLOW_LOG = _RateLimitedSwallowLogger("_prune_dir_oldest", schedule="exponential")
+_CURSOR_SWALLOW_LOG = _RateLimitedSwallowLogger("_save_cursor", schedule="exponential")
 
 
 # -------------------------------------------------------------------- core
@@ -1391,7 +1394,13 @@ def _swallow_loggers() -> tuple["_RateLimitedSwallowLogger", ...]:
     Kept as a function (rather than a constant) so tests that swap
     individual loggers on the module don't see a stale tuple.
     """
-    return (_TIMING_SWALLOW_LOG, _STATE_SWALLOW_LOG, _HISTORY_SWALLOW_LOG)
+    return (
+        _TIMING_SWALLOW_LOG,
+        _STATE_SWALLOW_LOG,
+        _HISTORY_SWALLOW_LOG,
+        _PRUNE_SWALLOW_LOG,
+        _CURSOR_SWALLOW_LOG,
+    )
 
 
 _LAST_SWALLOW_SUMMARY_COUNTS: dict[str, int] = {}
