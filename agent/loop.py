@@ -1723,6 +1723,52 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
     return _finish(f"commit_failed:{rel}")
 
 
+_AGGREGATE_SUMMARY_EVERY_DEFAULT = 100
+_AGGREGATE_SUMMARY_EVERY_MAX = 100_000
+
+
+def _aggregate_summary_every() -> int:
+    """How often (in iterations) ``main()`` emits the aggregate
+    swallow-logger snapshot. Env-tunable via
+    ``QWEN_AGGREGATE_SUMMARY_EVERY``; clamped to (0, 100_000].
+    """
+    return _env_int_capped(
+        "QWEN_AGGREGATE_SUMMARY_EVERY",
+        _AGGREGATE_SUMMARY_EVERY_DEFAULT,
+        _AGGREGATE_SUMMARY_EVERY_MAX,
+    )
+
+
+def _log_aggregate_swallow_summary(iteration_count: int) -> None:
+    """Emit a single aggregate line summarising every swallow logger's
+    cumulative count at the current point in the run. Only emits if
+    *some* logger has a non-zero count (avoids noise on healthy runs).
+
+    Unlike ``_log_swallow_summaries`` (per-iteration delta detection),
+    this is an unconditional cumulative snapshot useful for long-run
+    diagnostics where transient suppressions may have stopped reporting
+    via the per-iteration channel.
+    """
+    try:
+        parts: list[str] = []
+        any_nonzero = False
+        for lg in _swallow_loggers():
+            try:
+                s = lg.summary()
+                count = int(s.get("count", 0))
+                if count > 0:
+                    any_nonzero = True
+                parts.append(f"{s.get('label', '?')}={count}")
+            except Exception:
+                continue
+        if not any_nonzero:
+            return
+        _log(f"aggregate-swallow-summary iter={iteration_count} " + " ".join(parts))
+    except Exception:
+        # Aggregate logging is observability; never break the outer loop.
+        pass
+
+
 def main() -> None:
     from qwen_coder_mcp.config import load_settings  # local import
     settings = load_settings()
@@ -1733,6 +1779,8 @@ def main() -> None:
         f"interval={settings.loop_interval_seconds}s push={settings.loop_push}"
     )
     client = QwenClient(settings)
+    iteration_count = 0
+    aggregate_every = _aggregate_summary_every()
     try:
         while True:
             try:
@@ -1742,6 +1790,9 @@ def main() -> None:
                 _log(f"iteration [{_outer_outcome_category(outcome)}] -> {outcome}")
             except Exception:  # never break the loop
                 _log("iteration crashed:\n" + traceback.format_exc())
+            iteration_count += 1
+            if aggregate_every > 0 and iteration_count % aggregate_every == 0:
+                _log_aggregate_swallow_summary(iteration_count)
             time.sleep(max(1, settings.loop_interval_seconds))
     finally:
         client.close()

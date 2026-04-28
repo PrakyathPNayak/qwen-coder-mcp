@@ -1463,3 +1463,15 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 8/9; was next.md #4.
 - ACT: 5 new tests (first=T, suppressed=F, periodic, exponential cadence vector, demo callsite). 454 passed.
 - COMMIT: pending.
+
+## Loop 82 — `main()` periodic aggregate swallow-summary
+- OBSERVE: `_log_swallow_summaries` (loop 75) only fires when count *grew* this iteration. A long run where suppression has plateaued (e.g., 1000 iters into a stable 1-failure-per-iter fault — exponential schedule has stopped logging) loses visibility.
+- ORIENT: Need a complementary cumulative snapshot at iteration boundaries.
+- DECIDE: Add `_log_aggregate_swallow_summary(iter)` emitting one line `aggregate-swallow-summary iter=N label1=count1 label2=count2 ...` whenever any count > 0. Cadence env-tunable via `QWEN_AGGREGATE_SUMMARY_EVERY`, default 100, clamped to (0, 100000].
+- DEVIL:
+  - Correctness: only emits when ANY count > 0 — healthy runs stay silent. ✓
+  - Scope: per-iter delta channel (loop 75) + cumulative-every-N (this loop) = full visibility. The two are complementary, not redundant.
+  - Edge: a logger whose `summary()` raises gets silently skipped (audited in test). The aggregate helper itself is double-wrapped in try/except so it can't break the loop.
+  - Edge: clamping uses `_env_int_capped`, identical to other env vars.
+- ACT: 4 new tests (silent on zero, emits-with-counts, broken-logger-survives, env clamp). 458 passed.
+- COMMIT: pending.

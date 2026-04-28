@@ -1811,3 +1811,65 @@ class TestSwallowLoggerReportReturnsBool:
             if lg.report(OSError("e")):
                 extra_dumps.append("dumped")
         assert extra_dumps == ["dumped"]  # only count=1
+
+
+class TestAggregateSwallowSummary:
+    """Loop 82: `main()` periodic aggregate snapshot of every swallow
+    logger's cumulative count, env-tunable cadence, default every 100
+    iterations."""
+
+    def test_emits_nothing_when_all_counts_zero(self, monkeypatch):
+        from agent import loop as L
+        for lg in L._swallow_loggers():
+            lg.reset()
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        L._log_aggregate_swallow_summary(100)
+        assert log_lines == []
+
+    def test_emits_when_any_count_nonzero(self, monkeypatch):
+        from agent import loop as L
+        for lg in L._swallow_loggers():
+            lg.reset()
+        L._TIMING_SWALLOW_LOG.report(OSError("boom"))
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        L._log_aggregate_swallow_summary(250)
+        assert len(log_lines) == 1
+        line = log_lines[0]
+        assert "aggregate-swallow-summary" in line
+        assert "iter=250" in line
+        assert "_write_timing=1" in line
+        # Other loggers still appear with =0.
+        for lg in L._swallow_loggers():
+            if lg is not L._TIMING_SWALLOW_LOG:
+                assert f"{lg.label}=0" in line
+        for lg in L._swallow_loggers():
+            lg.reset()
+
+    def test_never_raises_on_broken_logger(self, monkeypatch):
+        from agent import loop as L
+        class _Bad:
+            label = "bad"
+            def summary(self):
+                raise RuntimeError("x")
+        good = L._RateLimitedSwallowLogger("good", every=1, schedule="linear")
+        good.report(OSError("e"))
+        monkeypatch.setattr(L, "_swallow_loggers", lambda: (_Bad(), good))
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        L._log_aggregate_swallow_summary(1)
+        # Only good logger contributes; broken one is skipped silently.
+        assert len(log_lines) == 1
+        assert "good=1" in log_lines[0]
+
+    def test_aggregate_every_clamped(self, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setenv("QWEN_AGGREGATE_SUMMARY_EVERY", "0")
+        assert L._aggregate_summary_every() == L._AGGREGATE_SUMMARY_EVERY_DEFAULT
+        monkeypatch.setenv("QWEN_AGGREGATE_SUMMARY_EVERY", "999999999")
+        assert L._aggregate_summary_every() == L._AGGREGATE_SUMMARY_EVERY_MAX
+        monkeypatch.setenv("QWEN_AGGREGATE_SUMMARY_EVERY", "garbage")
+        assert L._aggregate_summary_every() == L._AGGREGATE_SUMMARY_EVERY_DEFAULT
+        monkeypatch.setenv("QWEN_AGGREGATE_SUMMARY_EVERY", "50")
+        assert L._aggregate_summary_every() == 50
