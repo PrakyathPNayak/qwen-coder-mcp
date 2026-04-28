@@ -797,6 +797,15 @@ def _validate_changed_files(paths: Iterable[Path]) -> tuple[bool, str]:
                 except ModuleNotFoundError:
                     continue
                 yaml.safe_load(full.read_text(encoding="utf-8"))
+            elif suffix in {".cfg", ".ini"}:
+                # `setup.cfg`, `tox.ini`, `pytest.ini` etc. configparser
+                # raises on duplicate sections, malformed headers, or
+                # interpolation errors. We skip interpolation (raw
+                # parser) so legitimate `%` characters in values don't
+                # trip false-positives.
+                import configparser
+                parser = configparser.RawConfigParser()
+                parser.read_string(full.read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001 — surface any parse error
             return False, f"{suffix.lstrip('.')}_invalid:{p}: {str(exc)[:200]}"
 

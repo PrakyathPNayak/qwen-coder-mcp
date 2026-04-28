@@ -1053,3 +1053,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: medium; tightens the operability story.
 - ACT: 7 new tests across the helpers and shared `_env_timeout_seconds`. 296 passed, 1 skipped.
 - COMMIT: pending.
+
+## Loop 45 — `_validate_changed_files` accept `.cfg` / `.ini`
+- OBSERVE: validator covers .py / .json / .toml / .yml. setup.cfg, tox.ini, pytest.ini are common in Python projects (this repo has `pyproject.toml` only, but a model fix could touch any .cfg/.ini introduced later).
+- ORIENT: small but cause-level: malformed configparser files break tooling at runtime, not at compile.
+- DECIDE: add suffix branch using `configparser.RawConfigParser` (no interpolation, so `%` in values is fine).
+- DEVIL:
+  - Correctness: RawConfigParser still rejects duplicate sections, missing headers — the actual structural bugs.
+  - Scope: cause-level. Forward-compat for repo evolution.
+  - Priority: medium.
+- ACT: 5 new tests covering valid cfg/ini, duplicate-section, missing-header, percent-in-value. 301 passed, 1 skipped.
+- COMMIT: pending.

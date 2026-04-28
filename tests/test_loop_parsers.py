@@ -515,3 +515,43 @@ class TestApplyAndValidateTimeoutEnv:
         assert L._env_timeout_seconds("X_TEST_T", 7, 100) == 7
         monkeypatch.delenv("X_TEST_T", raising=False)
         assert L._env_timeout_seconds("X_TEST_T", 7, 100) == 7
+
+
+class TestValidateChangedFilesCfgIni:
+    """Loop 45: cfg/ini files validated via configparser."""
+
+    def test_valid_cfg_passes(self, tmp_path, monkeypatch):
+        (tmp_path / "setup.cfg").write_text("[metadata]\nname = pkg\n")
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, msg = L._validate_changed_files([Path("setup.cfg")])
+        assert ok is True, msg
+
+    def test_invalid_cfg_fails(self, tmp_path, monkeypatch):
+        # Duplicate section is a configparser parse error
+        (tmp_path / "bad.cfg").write_text("[a]\nx = 1\n[a]\ny = 2\n")
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, msg = L._validate_changed_files([Path("bad.cfg")])
+        assert ok is False
+        assert msg.startswith("cfg_invalid")
+
+    def test_valid_ini_passes(self, tmp_path, monkeypatch):
+        (tmp_path / "tox.ini").write_text("[tox]\nenvlist = py311\n")
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, _ = L._validate_changed_files([Path("tox.ini")])
+        assert ok is True
+
+    def test_malformed_ini_fails(self, tmp_path, monkeypatch):
+        # No section header -> MissingSectionHeaderError
+        (tmp_path / "broken.ini").write_text("x = 1\ny = 2\n")
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, msg = L._validate_changed_files([Path("broken.ini")])
+        assert ok is False
+        assert msg.startswith("ini_invalid")
+
+    def test_percent_in_value_does_not_trip_raw_parser(self, tmp_path, monkeypatch):
+        # `%` would explode the default ConfigParser via interpolation,
+        # but we use RawConfigParser so this passes.
+        (tmp_path / "ok.cfg").write_text("[s]\nfmt = 50% off\n")
+        monkeypatch.setattr(L, "_REPO", tmp_path)
+        ok, _ = L._validate_changed_files([Path("ok.cfg")])
+        assert ok is True
