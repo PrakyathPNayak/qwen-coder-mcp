@@ -1918,3 +1918,86 @@ class TestTimingWallSeconds:
         assert "wall_s" in rec
         assert isinstance(rec["wall_s"], (int, float))
         assert rec["wall_s"] >= 0.0
+
+
+class TestSwallowLoggerLastMessage:
+    """Loop 84: `_RateLimitedSwallowLogger.last_log_message` stores the
+    most recent emitted line so a future SIGUSR1 dump (and operators
+    inspecting from a debugger) can see what the last surfaced failure
+    actually said. Suppressed reports do not overwrite it."""
+
+    def test_initial_last_log_message_is_none(self):
+        from agent import loop as L
+        lg = L._RateLimitedSwallowLogger("test_init", every=1)
+        try:
+            assert lg.last_log_message is None
+        finally:
+            lg.reset()
+
+    def test_first_emit_sets_last_log_message(self, monkeypatch):
+        from agent import loop as L
+        lg = L._RateLimitedSwallowLogger("test_first", every=1)
+        try:
+            emitted = lg.report(RuntimeError("boom"))
+            assert emitted is True
+            assert lg.last_log_message is not None
+            assert "test_first failed" in lg.last_log_message
+            assert "boom" in lg.last_log_message
+        finally:
+            lg.reset()
+
+    def test_suppressed_reports_do_not_overwrite_last_message(
+        self, monkeypatch
+    ):
+        from agent import loop as L
+        lg = L._RateLimitedSwallowLogger(
+            "test_supp", every=10, schedule="linear"
+        )
+        try:
+            lg.report(RuntimeError("first"))
+            first_msg = lg.last_log_message
+            assert first_msg is not None
+            # Counts 2..9 are suppressed under linear every=10.
+            for _ in range(8):
+                lg.report(RuntimeError("suppressed"))
+            assert lg.last_log_message == first_msg
+        finally:
+            lg.reset()
+
+    def test_subsequent_emit_overwrites_last_message(self):
+        from agent import loop as L
+        lg = L._RateLimitedSwallowLogger("test_over", every=1)
+        try:
+            lg.report(RuntimeError("first"))
+            lg.report(RuntimeError("second"))
+            assert "second" in lg.last_log_message
+        finally:
+            lg.reset()
+
+    def test_reset_clears_last_log_message(self):
+        from agent import loop as L
+        lg = L._RateLimitedSwallowLogger("test_reset", every=1)
+        lg.report(RuntimeError("boom"))
+        assert lg.last_log_message is not None
+        lg.reset()
+        assert lg.last_log_message is None
+
+    def test_summary_includes_last_log_message(self):
+        from agent import loop as L
+        lg = L._RateLimitedSwallowLogger("test_sum", every=1)
+        try:
+            lg.report(RuntimeError("boom"))
+            s = lg.summary()
+            assert "last_log_message" in s
+            assert "boom" in s["last_log_message"]
+        finally:
+            lg.reset()
+
+    def test_context_is_included_in_last_log_message(self):
+        from agent import loop as L
+        lg = L._RateLimitedSwallowLogger("test_ctx", every=1)
+        try:
+            lg.report(RuntimeError("boom"), context="idx=42")
+            assert "[idx=42]" in lg.last_log_message
+        finally:
+            lg.reset()

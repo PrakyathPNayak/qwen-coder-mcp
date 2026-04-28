@@ -1487,3 +1487,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Edge: `wall_s` rounded to 4 decimal places, matching phase-time precision.
 - ACT: 3 new tests (write_timing-includes-wall_s, omits-without-arg, end-to-end). Migrated 1 budget test. 461 passed.
 - COMMIT: pending.
+
+## Loop 84 — `_RateLimitedSwallowLogger.last_log_message`
+- OBSERVE: `summary()` exposes counts but no preview of the actual error text. Operators dumping logger state from a debugger or future SIGUSR1 handler still need to grep loop.log.
+- ORIENT: Cache the last emitted line on the instance. Only update on actual emit (not suppressed reports), so it serves as a faithful "last surfaced" snapshot.
+- DECIDE: Add `last_log_message: str | None` attribute, initialized None, set on emit, cleared on reset, included in summary().
+- DEVIL:
+  - Correctness: Suppressed reports must NOT overwrite — verified by test.
+  - Privacy: messages contain str(exc); no PII expected since we wrap stdlib OSError/CalledProcessError. Acceptable.
+  - Memory: O(1) per logger, 9 loggers → trivial.
+- ACT: 7 new tests. 468 passed.
+- COMMIT: pending.

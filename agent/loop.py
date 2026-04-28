@@ -201,6 +201,7 @@ class _RateLimitedSwallowLogger:
         self.schedule = schedule
         self.count = 0
         self.last_logged_count = 0
+        self.last_log_message: str | None = None
 
     def _should_log(self) -> bool:
         n = self.count
@@ -228,16 +229,19 @@ class _RateLimitedSwallowLogger:
         self.count += 1
         if self._should_log():
             ctx = f" [{context}]" if context else ""
-            _log(f"{self.label} failed (count={self.count}){ctx}: {exc}")
+            msg = f"{self.label} failed (count={self.count}){ctx}: {exc}"
+            _log(msg)
             self.last_logged_count = self.count
+            self.last_log_message = msg
             return True
         return False
 
     def reset(self) -> None:
         self.count = 0
         self.last_logged_count = 0
+        self.last_log_message = None
 
-    def summary(self) -> dict[str, int | str]:
+    def summary(self) -> dict[str, int | str | None]:
         """Return a snapshot of suppression state for diagnostics."""
         return {
             "label": self.label,
@@ -246,6 +250,7 @@ class _RateLimitedSwallowLogger:
             "suppressed": self.count - self.last_logged_count,
             "schedule": self.schedule,
             "every": self.every,
+            "last_log_message": self.last_log_message,
         }
 
 
