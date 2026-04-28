@@ -56,7 +56,18 @@ otherwise emit one log line per iteration. The instances cover:
 ``_run_git_timeout``. Each one is
 registered in ``_swallow_loggers()`` and gets a per-iteration summary
 emitted from ``_finish`` whenever its count has grown since the last
-summary.
+summary. ``main()`` additionally emits an aggregate cumulative snapshot
+every ``QWEN_AGGREGATE_SUMMARY_EVERY`` iterations (default 100) for
+long-run diagnostics.
+
+Runtime introspection
+---------------------
+Operators of a long-running daemon can request a one-shot snapshot of
+every swallow logger's full state (counts, suppression deltas,
+``last_log_message``, and the cached ``_LAST_SWALLOW_SUMMARY_COUNTS``)
+without restarting the process by sending SIGUSR1 to the loop PID
+(POSIX only; the handler is a no-op on Windows). The same snapshot is
+exposed programmatically as ``_dump_logger_state(reason, iteration=...)``.
 """
 from __future__ import annotations
 
@@ -1868,7 +1879,11 @@ def main() -> None:
     client = QwenClient(settings)
     iteration_count = 0
     aggregate_every = _aggregate_summary_every()
-    _install_sigusr1_handler()
+    sigusr1_installed = _install_sigusr1_handler()
+    _log(
+        f"loop diagnostics | aggregate_summary_every={aggregate_every} "
+        f"sigusr1_handler={'installed' if sigusr1_installed else 'unavailable'}"
+    )
     try:
         while True:
             try:

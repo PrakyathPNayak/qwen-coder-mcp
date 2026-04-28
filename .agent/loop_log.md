@@ -1531,3 +1531,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Edge: `iter=` token only appears when iteration is not None -- confirmed via test_iteration_marker_omitted_when_none.
 - ACT: 4 new tests, _CURRENT_ITERATION + dump arg + cache emit. 481 passed.
 - COMMIT: pending.
+
+## Loop 88 — startup diagnostics + SIGUSR1 documentation
+- OBSERVE: SIGUSR1 + aggregate cadence are not visible to operators tailing loop.log. They have to reverse-engineer from grep patterns. Module docstring also unaware of new introspection capability.
+- ORIENT: Two complementary fixes. (1) Emit a single `loop diagnostics` line at startup right after `loop starting` showing aggregate cadence and SIGUSR1 install status. (2) Append a "Runtime introspection" section to the module docstring covering both capabilities + the env var name.
+- DECIDE: Use the existing `_install_sigusr1_handler` return bool (already True on POSIX, False on Windows) and surface it in the startup line so the install-failure case is visible too.
+- DEVIL:
+  - Correctness: handler must be installed BEFORE the diagnostics line emits (the line prints its outcome). Confirmed by reading order.
+  - Drift: docstring drift audit could be tightened later. Current 3 assertions cover the new content keywords.
+  - Scope: env var QWEN_AGGREGATE_SUMMARY_EVERY now mentioned in two places (docstring + startup line); single source of truth would be cleaner but cost is one-line updates which is acceptable.
+- ACT: 5 new tests, docstring + startup line. 486 passed.
+- COMMIT: pending.

@@ -2281,3 +2281,94 @@ class TestDumpLoggerStateExtended:
         except KeyboardInterrupt:
             pass
         assert observed == [1, 2, 3, 4, 5]
+
+
+class TestStartupDiagnosticsLog:
+    """Loop 88: main() should log aggregate-summary cadence + SIGUSR1
+    handler status at startup so operators can see what to expect from
+    the very first log line."""
+
+    def test_startup_logs_aggregate_every_and_sigusr1(self, monkeypatch):
+        from agent import loop as L
+        log_lines: list[str] = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        monkeypatch.setattr(L, "_aggregate_summary_every", lambda: 250)
+        monkeypatch.setattr(L, "_install_sigusr1_handler", lambda: True)
+        monkeypatch.setattr(L, "_iteration", lambda *a, **kw: "ok")
+        from types import SimpleNamespace
+        fake_settings = SimpleNamespace(
+            model="x", base_url="y", loop_interval_seconds=0,
+            loop_max_file_bytes=10_000, loop_push=False,
+        )
+        import sys as _sys
+        config_mod = _sys.modules.get("qwen_coder_mcp.config")
+        monkeypatch.setattr(
+            config_mod, "load_settings", lambda: fake_settings, raising=False
+        )
+
+        class _StubClient:
+            def __init__(self, *a, **kw): pass
+            def close(self): pass
+        monkeypatch.setattr(L, "QwenClient", _StubClient)
+        monkeypatch.setattr(
+            L.time, "sleep", lambda _s: (_ for _ in ()).throw(KeyboardInterrupt())
+        )
+        try:
+            L.main()
+        except KeyboardInterrupt:
+            pass
+        diag = [l for l in log_lines if "loop diagnostics" in l]
+        assert len(diag) == 1
+        assert "aggregate_summary_every=250" in diag[0]
+        assert "sigusr1_handler=installed" in diag[0]
+
+    def test_startup_logs_sigusr1_unavailable_on_windows_path(self, monkeypatch):
+        from agent import loop as L
+        log_lines: list[str] = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        monkeypatch.setattr(L, "_aggregate_summary_every", lambda: 100)
+        monkeypatch.setattr(L, "_install_sigusr1_handler", lambda: False)
+        monkeypatch.setattr(L, "_iteration", lambda *a, **kw: "ok")
+        from types import SimpleNamespace
+        fake_settings = SimpleNamespace(
+            model="x", base_url="y", loop_interval_seconds=0,
+            loop_max_file_bytes=10_000, loop_push=False,
+        )
+        import sys as _sys
+        config_mod = _sys.modules.get("qwen_coder_mcp.config")
+        monkeypatch.setattr(
+            config_mod, "load_settings", lambda: fake_settings, raising=False
+        )
+
+        class _StubClient:
+            def __init__(self, *a, **kw): pass
+            def close(self): pass
+        monkeypatch.setattr(L, "QwenClient", _StubClient)
+        monkeypatch.setattr(
+            L.time, "sleep", lambda _s: (_ for _ in ()).throw(KeyboardInterrupt())
+        )
+        try:
+            L.main()
+        except KeyboardInterrupt:
+            pass
+        diag = [l for l in log_lines if "loop diagnostics" in l]
+        assert len(diag) == 1
+        assert "sigusr1_handler=unavailable" in diag[0]
+
+
+class TestSigusr1DocumentedInDocstring:
+    """Loop 88: keep module docstring synced with runtime introspection
+    capability so the agent can rediscover SIGUSR1 from the source."""
+
+    def test_module_docstring_mentions_sigusr1(self):
+        from agent import loop as L
+        assert L.__doc__ is not None
+        assert "SIGUSR1" in L.__doc__
+
+    def test_module_docstring_mentions_dump_logger_state(self):
+        from agent import loop as L
+        assert "_dump_logger_state" in L.__doc__
+
+    def test_module_docstring_mentions_aggregate_cadence(self):
+        from agent import loop as L
+        assert "QWEN_AGGREGATE_SUMMARY_EVERY" in L.__doc__
