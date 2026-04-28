@@ -906,3 +906,14 @@ compileall subprocess.run; on TimeoutExpired return
 kwarg actually forwarded. Existing tests still pass.
 
 **Result**: 232/232 green.
+
+## Loop 31 — iteration wall-clock budget
+- OBSERVE: Three model calls per iteration; httpx 120s timeout × max_retries=3 with backoff means a single iteration could hang ~20 minutes if backend flaps. No outer deadline.
+- ORIENT: Real risk during vLLM warmup or partial outages. Highest impact loop-control gap remaining.
+- DECIDE: Add `_iteration_budget_seconds()` (env-overridable via `QWEN_LOOP_ITER_BUDGET_S`, default 600s, fallback on bad/<=0 input). Compute `deadline = monotonic() + budget` once per iteration; check between phases (after find_bugs, after propose_fix, after devils_advocate). Return distinct `budget_exceeded:<file>:<phase>` so logs separate this from network errors.
+- DEVIL:
+  - Correctness: cannot cancel an in-flight httpx call; one call may complete past deadline. Acceptable — bounds at 1× call beyond budget instead of 3×.
+  - Scope: addresses cause (no outer deadline), not symptom.
+  - Priority: yes, hangs are higher impact than minor cleanups.
+- ACT: Added helper + 3 between-phase checks in `_iteration`. 4 new tests. 236/236 green.
+- COMMIT: pending.

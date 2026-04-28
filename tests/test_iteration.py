@@ -214,3 +214,45 @@ def test_applied_path_works_without_gitignore(env):
     out = L._iteration(client, max_bytes=10_000, push=False)
     assert out.startswith("applied:"), out
     assert (repo / "f.py").read_text("utf-8") == "x = 2\n"
+
+
+# --------------------------------------------------- iteration budget
+def test_budget_helper_default(monkeypatch):
+    import agent.loop as L
+    monkeypatch.delenv("QWEN_LOOP_ITER_BUDGET_S", raising=False)
+    assert L._iteration_budget_seconds() == 600.0
+
+
+def test_budget_helper_env_override(monkeypatch):
+    import agent.loop as L
+    monkeypatch.setenv("QWEN_LOOP_ITER_BUDGET_S", "12.5")
+    assert L._iteration_budget_seconds() == 12.5
+
+
+def test_budget_helper_invalid_falls_back(monkeypatch):
+    import agent.loop as L
+    monkeypatch.setenv("QWEN_LOOP_ITER_BUDGET_S", "not-a-number")
+    assert L._iteration_budget_seconds() == 600.0
+    monkeypatch.setenv("QWEN_LOOP_ITER_BUDGET_S", "0")
+    assert L._iteration_budget_seconds() == 600.0
+    monkeypatch.setenv("QWEN_LOOP_ITER_BUDGET_S", "-5")
+    assert L._iteration_budget_seconds() == 600.0
+
+
+def test_iteration_aborts_on_budget_after_find_bugs(env, monkeypatch):
+    """If the deadline is exceeded after the first model call, the
+    iteration must NOT proceed to ask for a fix."""
+    L, _repo = env
+    # Drive the clock manually: first read sets the deadline, every
+    # subsequent read returns a value far past it.
+    import itertools
+    ticks = itertools.chain([1000.0], itertools.repeat(9999.0))
+    monkeypatch.setattr(L.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setenv("QWEN_LOOP_ITER_BUDGET_S", "1")
+    # Only one reply needed — second call should never be reached.
+    client = _ScriptedClient(["- something is off\n"])
+    out = L._iteration(client, max_bytes=10_000, push=False)
+    assert out.startswith("budget_exceeded:"), out
+    assert "after_find_bugs" in out
+    # Only the first call was issued.
+    assert len(client.calls) == 1

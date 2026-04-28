@@ -66,6 +66,22 @@ def _log(msg: str) -> None:
 _GIT_CMD_TIMEOUT_SECONDS = 60
 
 
+def _iteration_budget_seconds() -> float:
+    """Wall-clock ceiling for one `_iteration` call. Three Qwen calls can
+    each retry several times with backoff (~120s timeout × ~3 attempts +
+    sleeps), so a single iteration could otherwise burn ~20 minutes if
+    the backend is flapping. The budget is checked *between* phases so
+    one in-flight network call may still complete after the deadline."""
+    raw = os.environ.get("QWEN_LOOP_ITER_BUDGET_S", "600")
+    try:
+        v = float(raw)
+        if v <= 0:
+            return 600.0
+        return v
+    except (TypeError, ValueError):
+        return 600.0
+
+
 def _run_git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     """Run `git <args>` with a hard timeout.
 
@@ -596,7 +612,12 @@ def _python_syntax_ok(paths: Iterable[Path]) -> tuple[bool, str]:
 def _diff_in_scope(changed: Iterable[Path], target: Path) -> tuple[bool, str]:
     """The loop asks the model to fix one specific file. Reject diffs that
     touch any file other than `target` so a misbehaving model cannot
-    silently rewrite the rest of the repo."""
+    silently rewrite the rest of the repo.
+
+    An empty `changed` list is intentionally NOT rejected here: the
+    empty-diff case is filtered later in `_commit_and_push` via its
+    `git status --porcelain` check, so callers get a single
+    canonical "nothing to commit" outcome there."""
     target_norm = Path(target).as_posix()
     out_of_scope = [
         Path(p).as_posix() for p in changed
@@ -797,6 +818,11 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
     if code is None:
         return f"skip:{rel} (unreadable_or_too_large)"
 
+    deadline = time.monotonic() + _iteration_budget_seconds()
+
+    def _over_budget() -> bool:
+        return time.monotonic() > deadline
+
     _log(f"scanning {rel}")
     try:
         issues = client.system_user(
@@ -806,6 +832,9 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
         )
     except QwenError as exc:
         return f"qwen_error_find_bugs:{exc}"
+
+    if _over_budget():
+        return f"budget_exceeded:{rel}:after_find_bugs"
 
     issue = _parse_first_issue(issues)
     if not issue:
@@ -820,6 +849,9 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
     except QwenError as exc:
         return f"qwen_error_propose_fix:{exc}"
 
+    if _over_budget():
+        return f"budget_exceeded:{rel}:after_propose_fix"
+
     diff_clean = _strip_fence(diff)
 
     try:
@@ -830,6 +862,9 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
         )
     except QwenError as exc:
         return f"qwen_error_devils_advocate:{exc}"
+
+    if _over_budget():
+        return f"budget_exceeded:{rel}:after_devils_advocate"
 
     accept, reason = _verdict_accepts(critique)
     history_body = (
