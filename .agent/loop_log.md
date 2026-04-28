@@ -2859,3 +2859,20 @@ read-only operation, no state changes.
 **Act.** Edit `write_file` body to use the atomic dance. New `tests/test_fs_write_atomic.py` with 7 cases: round-trip, no leftover .tmp on success, replace-failure preserves original, .tmp cleaned up after replace failure, the spy assertion that the source is a .tmp at the moment of replace, oversize-rejected-before-tmp-write (no .tmp created on size reject), create_parents still works (no .tmp left in nested dir).
 
 **Verify.** All 7 new tests pass. Full suite ~1.2k passed, 1 skipped.
+
+## Loop 195 — `/checkpoints diff --since-resume`
+
+**Observe.** Loop 192/193 gave users a way to diff against a *specific* snapshot N. But the natural recovery question is "what would `/resume` do to me right now?" — and `/resume` uses `load_latest_checkpoint`, which has its own ordering (primary first, then rotations newest-first). Forcing users to mentally reproduce that ordering to pick the right N is a bug-magnet.
+
+**Orient.** Add a `--since-resume` flag that calls `load_latest_checkpoint` directly and renders the diff against whatever snapshot the agent layer would have chosen. Same flag stripping as `--inline`, fully composable.
+
+**Decide.** Strip `--inline` and `--since-resume` from args before parsing the index. When `--since-resume` is set, skip the index-required path entirely; reach for `agent_loop.load_latest_checkpoint(primary)`. Print a friendly "(no checkpoint that /resume could load)" if the source is None.
+
+**Devil.**
+- *Correctness:* The renderer uses `source.name` as the snapshot label, so users always know which file was diffed even though they didn't pick it. ✅
+- *Scope:* Should `/resume` itself print a one-line "to preview, run `/checkpoints diff --since-resume`" hint? Tempting, but too noisy on every resume. Leave as-is. ✅
+- *Priority:* This finishes the recovery preview triple — list, diff specific, diff "what `/resume` would do". After this, the recovery story is complete enough to move on to other things. ✅
+
+**Act.** Two-line filter against `--since-resume` in the dispatcher; new branch ahead of the index parse. Updated usage string to list both forms. Updated HELP_TEXT entry. Loop-192's `assert out == "usage:..."` softened to substring matches. New `tests/test_checkpoints_diff_since_resume.py` with 7 cases: no checkpoint message, picks primary when present, falls back to rotation when primary missing, --inline composes, no-history, usage string lists --since-resume, flag order doesn't matter (--since-resume --inline == --inline --since-resume).
+
+**Verify.** All 7 new tests pass. Full suite ~1.2k passed, 1 skipped.

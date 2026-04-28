@@ -131,7 +131,7 @@ class TestCheckpointsDiffDispatch:
             fs_cfg=fs_cfg,
             history=[],
         )
-        assert out == "usage: /checkpoints diff <N> [--inline]"
+        assert "usage:" in out and "--inline" in out
 
     def test_diff_no_snapshots(self, fs_cfg: fs_tools.FsConfig) -> None:
         out, _ = dispatch_slash(

@@ -142,12 +142,13 @@ Slash commands:
   /find <glob> [path]  Glob search through the repo
   /clear               Clear chat history
   /resume              Reload .agent/agent_state.json into chat history
-  /checkpoints [load N|prune K|diff N [--inline]]
+  /checkpoints [load N|prune K|diff N [--inline]|diff --since-resume [--inline]]
                        List rotated agent-state snapshots; `load N` rehydrates
                        snapshot N (1-based, oldest first) into history;
                        `prune K` deletes all but the newest K snapshots;
-                       `diff N` compares current history vs snapshot N
-                       (`--inline` adds per-message unified diffs)
+                       `diff N` compares current history vs snapshot N;
+                       `diff --since-resume` diffs against whatever /resume
+                       would load (`--inline` adds per-message unified diffs)
   /save <path>         Save the current chat transcript to a file
   /git <subcmd>        Read-only git status / log / diff / show / branch
   /tests [args]        Run pytest in the repo
@@ -1359,14 +1360,36 @@ def dispatch_slash(
         if sub == "diff":
             if history is None:
                 return "no history available", False
-            # Strip a `--inline` flag wherever it appears in the args.
+            # Strip flags wherever they appear in the args.
             rest_args = list(cmd.args[1:])
             inline = False
+            since_resume = False
             if "--inline" in rest_args:
                 inline = True
                 rest_args = [a for a in rest_args if a != "--inline"]
+            if "--since-resume" in rest_args:
+                since_resume = True
+                rest_args = [a for a in rest_args if a != "--since-resume"]
+            if since_resume:
+                primary = fs_cfg.root / ".agent" / "agent_state.json"
+                loaded, source = agent_loop.load_latest_checkpoint(primary)
+                if source is None:
+                    return "(no checkpoint that /resume could load)", False
+                return (
+                    format_history_diff(
+                        list(history),
+                        loaded,
+                        snapshot_label=source.name,
+                        inline_diff=inline,
+                    ),
+                    False,
+                )
             if not rest_args:
-                return "usage: /checkpoints diff <N> [--inline]", False
+                return (
+                    "usage: /checkpoints diff <N> [--inline] | "
+                    "/checkpoints diff --since-resume [--inline]",
+                    False,
+                )
             try:
                 idx = int(rest_args[0])
             except ValueError:
