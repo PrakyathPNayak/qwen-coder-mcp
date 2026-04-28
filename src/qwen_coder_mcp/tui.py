@@ -154,7 +154,7 @@ Slash commands:
   /save <path>         Save the current chat transcript to a file
   /git <subcmd>        Read-only git status / log / diff / show / branch
   /tests [args]        Run pytest in the repo
-  /tokens [--json]     Estimate total tokens in current chat history
+  /tokens [--json [--top K]]  Estimate total tokens in current chat history
   /lat [N|reset] [--json]
                        Show the last N agent turns' timing breakdown
                        (TTFT, per-tool latencies, summary). Default N=1.
@@ -1604,21 +1604,56 @@ def dispatch_slash(
         if history is None:
             return "no history available", False
         as_json = "--json" in cmd.args or "--format=json" in cmd.args
+        # Parse optional --top K (or --top=K) for the JSON payload.
+        top_k: int | None = None
+        rest = [a for a in cmd.args if a not in {"--json", "--format=json"}]
+        i = 0
+        while i < len(rest):
+            tok = rest[i]
+            if tok == "--top":
+                if i + 1 >= len(rest):
+                    return "usage: /tokens --json --top K", False
+                try:
+                    top_k = int(rest[i + 1])
+                except ValueError:
+                    return f"--top: not an integer: {rest[i + 1]!r}", False
+                i += 2
+                continue
+            if tok.startswith("--top="):
+                try:
+                    top_k = int(tok.split("=", 1)[1])
+                except ValueError:
+                    return f"--top: not an integer: {tok!r}", False
+                i += 1
+                continue
+            return f"/tokens: unknown argument: {tok!r}", False
+        if top_k is not None and top_k < 0:
+            return "--top: must be non-negative", False
+        if top_k is not None and not as_json:
+            return "--top requires --json", False
         per_message = [estimate_tokens(m.content) for m in history]
         total = sum(per_message)
         msgs = len(history)
         if as_json:
             import json as _json
 
-            payload = {
+            entries = [
+                {"index": i, "role": m.role, "tokens_estimated": t}
+                for i, (m, t) in enumerate(zip(history, per_message))
+            ]
+            payload: dict = {
                 "messages": msgs,
                 "tokens_estimated": total,
                 "estimator": "four-chars-per-token",
-                "per_message": [
-                    {"index": i, "role": m.role, "tokens_estimated": t}
-                    for i, (m, t) in enumerate(zip(history, per_message))
-                ],
+                "per_message": entries,
             }
+            if top_k is not None:
+                # Stable sort: highest tokens first, original index breaks ties.
+                top = sorted(
+                    entries, key=lambda e: (-e["tokens_estimated"], e["index"])
+                )[:top_k]
+                payload["top"] = top
+                payload["top_k"] = top_k
             return _json.dumps(payload, indent=2), False
         return (
             f"~{total} tokens across {msgs} messages "

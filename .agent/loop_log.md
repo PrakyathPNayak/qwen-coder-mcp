@@ -3060,3 +3060,18 @@ Despite ~1.28k tests passing. Root cause: vLLM 0.11 removed `--swap-space` (repl
 **Act.** `_format_checkpoint_listing(snapshots, *, width: int | None = None)`; `None` reads `shutil.get_terminal_size`, floors at 40 cols; name budget = `max(8, width - 37)` (37 is the fixed prefix); truncates with `…`. New `tests/test_checkpoint_listing_width.py` (10 tests across explicit-width / auto-width / empty / stat-failure paths). One bug caught at first run — `tiny.json` is 9 chars but at `width=40` budget is 8, so it does truncate; test corrected to use `width=80`.
 
 **Verify.** 10 new + all 1289 prior tests green.
+
+## Loop 207 — `/tokens --json --top K` surfaces the heaviest messages
+
+**Observe.** `/tokens --json` (loop 201) emits the full per-message breakdown but operators triaging context bloat have to sort it themselves. A `--top K` flag is a 30-line addition that mirrors the existing JSON-export pattern.
+
+**Orient.** Smaller scope than the candidate end-to-end TUI smoke test (deferred — that warrants its own loop after this hardening pass). Pure renderer work.
+
+**Devil.**
+- *Correctness:* Tie-breaking when two messages estimate to the same token count? Stable: secondary sort on original index. ✅
+- *Scope:* Should `top` replace `per_message` to keep payloads small? No — composability matters more; tools that already parse `per_message` keep working. Two operators may want both in one call. ✅
+- *Priority:* Mid-tier. Doesn't fix a bug but materially improves a debugging workflow that currently requires post-processing. After two priority-1 loops (vLLM regression, terminal-width arc), a small QoL win is acceptable. ✅
+
+**Act.** Dispatcher in `/tokens` parses `--top K` and `--top=K`; rejects `--top` without `--json`, negative values, non-integer values, missing value, unknown args. Adds `top` (sorted desc by tokens, idx tiebreak) and `top_k` to the JSON payload. 14 new tests in `test_tokens_json_top.py` covering basics, edges (zero/oversized/coexists), errors (5 paths), and backwards compat (bare `/tokens` and bare `--json` paths unchanged).
+
+**Verify.** 14 new + all 1299 prior tests green. Test count around 1.30k → 1.31k.
