@@ -105,6 +105,187 @@ class TestWebSearch:
             client.close()
 
 
+class TestDdgAnomalyFallbackLoop235:
+    """Loop 235: DDG returns a 202 anomaly/botnet challenge page when
+    it fingerprints us as a scraper. Previously we silently returned []
+    because our regex matches nothing in the challenge HTML. Now we
+    detect the challenge markers and fall back to DDG's Instant Answer
+    JSON API which doesn't bot-block."""
+
+    _ANOMALY_HTML = (
+        '<html><body><form action="//duckduckgo.com/anomaly.js?'
+        'sv=html&cc=botnet&ti=1234"></form></body></html>'
+    )
+    _IA_JSON = {
+        "Heading": "Python (programming language)",
+        "AbstractText": "Python is a high-level programming language.",
+        "AbstractURL": "https://en.wikipedia.org/wiki/Python_(programming_language)",
+        "RelatedTopics": [
+            {
+                "Text": "NumPy - NumPy is a library for Python.",
+                "FirstURL": "https://duckduckgo.com/NumPy",
+            },
+            {
+                "Text": "Django - A web framework.",
+                "FirstURL": "https://duckduckgo.com/Django",
+            },
+        ],
+    }
+
+    def test_anomaly_marker_triggers_ia_fallback(self):
+        urls_hit: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            urls_hit.append(str(request.url))
+            if "html.duckduckgo.com" in str(request.url):
+                return httpx.Response(202, text=self._ANOMALY_HTML)
+            if "api.duckduckgo.com" in str(request.url):
+                return httpx.Response(200, json=self._IA_JSON)
+            return httpx.Response(404, text="nope")
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        try:
+            out = W.web_search("python", max_results=5, client=client)
+        finally:
+            client.close()
+        assert any("html.duckduckgo.com" in u for u in urls_hit)
+        assert any("api.duckduckgo.com" in u for u in urls_hit)
+        assert len(out) == 3
+        assert out[0].url.startswith("https://en.wikipedia.org")
+        assert out[1].title == "NumPy"
+        assert "library for Python" in out[1].snippet
+
+    def test_empty_parse_also_falls_back(self):
+        """Even on a 200 with no anomaly markers, an empty result list
+        should fall back to IA so the caller isn't blind to a future
+        DDG markup change."""
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "html.duckduckgo.com" in str(request.url):
+                return httpx.Response(200, text="<html>no results here</html>")
+            if "api.duckduckgo.com" in str(request.url):
+                return httpx.Response(200, json=self._IA_JSON)
+            return httpx.Response(404)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        try:
+            out = W.web_search("python", max_results=5, client=client)
+        finally:
+            client.close()
+        assert len(out) == 3
+        assert out[0].title == "Python (programming language)"
+
+    def test_is_ddg_anomaly_detects_botnet(self):
+        assert W._is_ddg_anomaly(self._ANOMALY_HTML, 202) is True
+        assert W._is_ddg_anomaly(self._ANOMALY_HTML, 200) is True
+
+    def test_is_ddg_anomaly_lowercases_check(self):
+        upper = (
+            '<form action="//duckduckgo.com/ANOMALY.JS?'
+            'sv=html&CC=BOTNET"></form>'
+        )
+        assert W._is_ddg_anomaly(upper, 202) is True
+
+    def test_is_ddg_anomaly_negative_for_normal_page(self):
+        sample = (
+            '<a class="result__a" href="https://example.com/x">X</a>'
+            '<a class="result__snippet">snip</a>'
+        )
+        assert W._is_ddg_anomaly(sample, 200) is False
+
+    def test_is_ddg_anomaly_handles_empty(self):
+        assert W._is_ddg_anomaly("", 200) is False
+        assert W._is_ddg_anomaly(None, 200) is False  # type: ignore[arg-type]
+
+    def test_ia_fallback_respects_max_results(self):
+        big = {
+            "Heading": "Q",
+            "AbstractText": "abs",
+            "AbstractURL": "https://example.com/abs",
+            "RelatedTopics": [
+                {
+                    "Text": f"T{i} - desc{i}",
+                    "FirstURL": f"https://example.com/t{i}",
+                }
+                for i in range(20)
+            ],
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "html.duckduckgo.com" in str(request.url):
+                return httpx.Response(202, text=self._ANOMALY_HTML)
+            return httpx.Response(200, json=big)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        try:
+            out = W.web_search("q", max_results=3, client=client)
+        finally:
+            client.close()
+        assert len(out) == 3
+
+    def test_ia_fallback_walks_nested_topic_groups(self):
+        """DDG IA sometimes nests topics under a 'Topics' key (groups
+        like "See also"). The walker must recurse into them."""
+        nested = {
+            "Heading": "Q",
+            "AbstractText": "",
+            "AbstractURL": "",
+            "RelatedTopics": [
+                {
+                    "Name": "See also",
+                    "Topics": [
+                        {
+                            "Text": "Nested - inner topic",
+                            "FirstURL": "https://example.com/nested",
+                        },
+                    ],
+                },
+                {
+                    "Text": "Top - top topic",
+                    "FirstURL": "https://example.com/top",
+                },
+            ],
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "html.duckduckgo.com" in str(request.url):
+                return httpx.Response(202, text=self._ANOMALY_HTML)
+            return httpx.Response(200, json=nested)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        try:
+            out = W.web_search("q", max_results=5, client=client)
+        finally:
+            client.close()
+        urls = [r.url for r in out]
+        assert "https://example.com/nested" in urls
+        assert "https://example.com/top" in urls
+
+    def test_ia_fallback_skips_topics_missing_url_or_text(self):
+        partial = {
+            "Heading": "Q",
+            "AbstractText": "",
+            "AbstractURL": "",
+            "RelatedTopics": [
+                {"Text": "no url here", "FirstURL": ""},
+                {"Text": "", "FirstURL": "https://example.com/no-text"},
+                {"Text": "Good - real one", "FirstURL": "https://example.com/good"},
+            ],
+        }
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if "html.duckduckgo.com" in str(request.url):
+                return httpx.Response(202, text=self._ANOMALY_HTML)
+            return httpx.Response(200, json=partial)
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        try:
+            out = W.web_search("q", max_results=5, client=client)
+        finally:
+            client.close()
+        assert len(out) == 1
+        assert out[0].url == "https://example.com/good"
+
+
 # ----------------------------------------------------- fetch_url
 class TestFetchUrl:
     def test_empty_url_raises(self):
