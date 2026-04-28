@@ -1609,3 +1609,13 @@ kwarg actually forwarded. Existing tests still pass.
   - Risk: Could mask real contamination bugs (a test that secretly relies on another test's count). Mitigated because tests should be independent; if any test breaks under autouse-reset, it was relying on contamination and was wrong.
   - Pre-existing try/finally resets are now redundant but harmless — leave them in (they document intent and protect against fixture removal).
 - ACT: 5-line conftest fixture, 2 tests. 502 passed.
+
+## Loop 95 — Extend autouse fixture to clear _LAST_SWALLOW_SUMMARY_COUNTS
+- OBSERVE: 4 occurrences of `L._LAST_SWALLOW_SUMMARY_COUNTS.clear()` in `test_iteration.py`. Same contamination risk as the per-logger counts: a test that seeds the dict to verify "summary suppressed because count unchanged" leaks state.
+- ORIENT: Trivial extension to the loop 94 fixture. One-line addition before and after `yield`.
+- DECIDE: Add `_LAST_SWALLOW_SUMMARY_COUNTS.clear()` to both halves of the fixture. Add 2-test sequence verifying the cleanup.
+- DEVIL:
+  - Correctness: `dict.clear()` is in-place, so the module-level reference is preserved. No risk of replacing the dict object and breaking imports.
+  - Scope: Other module-level state? `_CURRENT_ITERATION` is reset by tests via monkeypatch (per loop 89 audit). No other dict-shaped contamination vectors found.
+  - Priority: Direct follow-up to loop 94. Cheap.
+- ACT: 1-line conftest addition x2, 2 tests. 504 passed.

@@ -27,6 +27,7 @@ def _reset_swallow_loggers():
         from agent import loop as L
         for lg in L._swallow_loggers():
             lg.reset()
+        L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
     except Exception:
         pass
     yield
@@ -34,5 +35,6 @@ def _reset_swallow_loggers():
         from agent import loop as L
         for lg in L._swallow_loggers():
             lg.reset()
+        L._LAST_SWALLOW_SUMMARY_COUNTS.clear()
     except Exception:
         pass

@@ -2701,3 +2701,20 @@ class TestSwallowLoggerAutoReset:
             assert lg.count == 0, (
                 f"{lg.label} not reset between tests (count={lg.count})"
             )
+
+
+class TestLastSwallowSummaryCountsAutoReset:
+    """Loop 95: `_LAST_SWALLOW_SUMMARY_COUNTS` is the per-iteration
+    delta cache for swallow summaries. The autouse fixture from loop
+    94 was extended to also clear this dict so a test that injects a
+    fake count (to verify "summary suppressed because count unchanged"
+    behaviour) can't leak that fake count into a later test."""
+
+    def test_a_seeds_dict(self):
+        from agent import loop as L
+        L._LAST_SWALLOW_SUMMARY_COUNTS["fake-label"] = 999
+        assert L._LAST_SWALLOW_SUMMARY_COUNTS["fake-label"] == 999
+
+    def test_b_observes_clean_dict(self):
+        from agent import loop as L
+        assert L._LAST_SWALLOW_SUMMARY_COUNTS == {}
