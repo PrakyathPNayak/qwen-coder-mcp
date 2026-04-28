@@ -66,6 +66,11 @@ def test_save_atomicity_no_partial_state_visible(cursor):
     We pre-seed a valid cursor at value 11, then simulate a save that
     *fails* by patching `os.replace` to raise. After the failed save,
     the original file must still parse as 11 (not be truncated to 0).
+
+    Loop 19 changed `_save_cursor` to log-and-continue rather than
+    re-raise on rename failure (re-raising caused unbounded re-scans
+    of the same file when disk filled up, since the next iteration
+    re-loads the old cursor). The test now asserts the silent path.
     """
     L, f = cursor
     L._save_cursor(11)
@@ -79,8 +84,8 @@ def test_save_atomicity_no_partial_state_visible(cursor):
 
     mod.os.replace = boom  # type: ignore[attr-defined]
     try:
-        with pytest.raises(OSError):
-            L._save_cursor(99)
+        # Must NOT raise — but must also NOT corrupt the existing cursor.
+        L._save_cursor(99)
     finally:
         mod.os.replace = real_replace  # type: ignore[attr-defined]
 
@@ -96,3 +101,43 @@ def test_save_creates_parent_directory(tmp_path, monkeypatch):
     monkeypatch.setattr(L, "CURSOR_FILE", deep)
     L._save_cursor(5)
     assert json.loads(deep.read_text("utf-8")) == {"idx": 5}
+
+
+def test_save_cursor_swallows_rename_failure_and_logs(cursor, monkeypatch, tmp_path):
+    """Loop 19 contract: rename failure does not propagate, but the
+    failure is logged so an operator can see disk problems.
+    """
+    L, f = cursor
+    L._save_cursor(7)
+    log_calls: list[str] = []
+    monkeypatch.setattr(L, "_log", lambda msg: log_calls.append(msg))
+
+    import agent.loop as mod
+    real_replace = os.replace
+    mod.os.replace = lambda *a, **k: (_ for _ in ()).throw(OSError("nope"))
+    try:
+        L._save_cursor(13)  # must not raise
+    finally:
+        mod.os.replace = real_replace
+    assert L._load_cursor() == 7
+    assert any("cursor save failed" in m for m in log_calls), log_calls
+
+
+def test_save_cursor_swallows_rename_failure_even_if_log_fails(cursor, monkeypatch):
+    """Logging itself is wrapped in try/except — so even a broken logger
+    cannot crash the loop."""
+    L, f = cursor
+    L._save_cursor(3)
+
+    def boom_log(_msg):
+        raise RuntimeError("logger broken")
+
+    monkeypatch.setattr(L, "_log", boom_log)
+    import agent.loop as mod
+    real_replace = os.replace
+    mod.os.replace = lambda *a, **k: (_ for _ in ()).throw(OSError("nope"))
+    try:
+        L._save_cursor(99)  # must not raise even though logger raises
+    finally:
+        mod.os.replace = real_replace
+    assert L._load_cursor() == 3

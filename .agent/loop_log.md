@@ -550,3 +550,37 @@ parametrised over 5 mode-header variants (4 symlink + 1 gitlink),
 plus normal-mode allow-list and content-line false-positive guard.
 
 **Result**: 179/179 green.
+
+## Loop 19 — `_save_cursor` is non-raising on rename failure
+**Bug**: when `os.replace` failed (disk full, permissions, etc.),
+`_save_cursor` re-raised the OSError. The outer `_main` loop catches
+all exceptions, BUT the iteration aborts AFTER the model round-trip
+already cost time/tokens, and the next iteration calls
+`_load_cursor()` which reads from disk and gets the OLD cursor again
+ so the loop *forever* re-scans the same file (and forever fails
+the same save) until disk recovers. Cost: unbounded GPU/token waste
+for the duration of the disk problem.
+
+**Devil**: (a) Could swallowing hide a real disk problem? `_log` also
+writes to disk; if disk is full, the log write fails too. But we
+already wrap `_log` in try/except in the new code, so nothing
+propagates. The operator finds out via either the log (when disk
+recovers) or via the empty `STATE.md` writes (also failing). Net: no
+worse than re-raising. (b) Could it mask cursor inconsistency? No —
+the previous CURSOR_FILE is preserved by atomic-replace contract.
+Verified by retained `test_save_atomicity_no_partial_state_visible`.
+(c) Could the wrapped-`_log` catch ever swallow an exception we *do*
+care about? It catches `Exception`, not `BaseException` (so SIGINT /
+SystemExit propagate). That's the right boundary.
+
+**Fix**: `_save_cursor` catches `OSError`, cleans tmp, logs,
+returns. Inner `_log` is wrapped in `try/except Exception: pass`.
+
+**Tests**: existing `test_save_atomicity_no_partial_state_visible`
+updated (no longer expects raise; still asserts state preservation).
+Two new tests: `test_save_cursor_swallows_rename_failure_and_logs`
+asserts the log message is emitted; `test_save_cursor_swallows
+_rename_failure_even_if_log_fails` asserts a broken logger doesn't
+crash the loop.
+
+**Result**: 181/181 green.

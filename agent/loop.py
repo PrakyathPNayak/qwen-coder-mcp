@@ -112,21 +112,32 @@ def _save_cursor(idx: int) -> None:
     to ``0`` — silently re-scanning files that were already covered.
     Write to a sibling tempfile then `os.replace`, which is atomic on
     POSIX (and on Windows for files on the same volume).
+
+    On rename failure (disk full, permissions, etc.), the previous
+    cursor value is preserved and the failure is logged. We do NOT
+    re-raise: the outer loop catches all exceptions, but if we raise
+    here we abort the current iteration *after* the model round-trip
+    has already cost time/tokens, and the next iteration loads the
+    OLD cursor again — so the same file is re-scanned indefinitely
+    until disk recovers. Logging-and-continuing means we lose progress
+    for one iteration, not unbounded compute.
     """
     CURSOR_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = CURSOR_FILE.with_suffix(CURSOR_FILE.suffix + ".tmp")
     try:
         tmp.write_text(json.dumps({"idx": idx}), "utf-8")
         os.replace(tmp, CURSOR_FILE)
-    except OSError:
-        # If the rename failed, drop the half-written tmp and let the
-        # next iteration retry. The previous CURSOR_FILE (if any) is
+    except OSError as exc:
+        # Drop the half-written tmp; previous CURSOR_FILE (if any) is
         # untouched because we never opened it for writing.
         try:
             tmp.unlink()
         except OSError:
             pass
-        raise
+        try:
+            _log(f"cursor save failed (idx={idx}): {exc}")
+        except Exception:
+            pass
 
 
 def _read_file(path: Path, max_bytes: int) -> str | None:
