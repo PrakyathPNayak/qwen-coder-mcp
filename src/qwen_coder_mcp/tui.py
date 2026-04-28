@@ -141,7 +141,9 @@ Slash commands:
                        Recursive regex search; --py/--md/--json filters by suffix
   /find <glob> [path]  Glob search through the repo
   /clear               Clear chat history
-  /resume              Reload .agent/agent_state.json into chat history
+  /resume [--preview]  Reload .agent/agent_state.json into chat history;
+                       `--preview` (also `--dry-run`) shows the diff and
+                       leaves history untouched
   /checkpoints [load N|prune K|diff N [--inline]|diff --since-resume [--inline]]
                        List rotated agent-state snapshots; `load N` rehydrates
                        snapshot N (1-based, oldest first) into history;
@@ -1297,6 +1299,27 @@ def dispatch_slash(
         if history is None:
             return "no history available", False
         target = fs_cfg.root / ".agent" / "agent_state.json"
+        # --preview / --dry-run: render the diff vs current history
+        # without mutating it. Lets users decide before pulling the
+        # trigger on a destructive in-place replacement.
+        preview = any(a in {"--preview", "--dry-run"} for a in cmd.args)
+        if preview:
+            loaded, source = agent_loop.load_latest_checkpoint(target)
+            if source is None:
+                return (
+                    f"no checkpoint found at {target} or any rotation "
+                    f"under {target.parent / 'checkpoints'}",
+                    False,
+                )
+            return (
+                "[dim]· preview only — history unchanged[/dim]\n"
+                + format_history_diff(
+                    list(history),
+                    loaded,
+                    snapshot_label=source.name,
+                ),
+                False,
+            )
         loaded, source = agent_loop.load_latest_checkpoint(target)
         if not loaded:
             return (

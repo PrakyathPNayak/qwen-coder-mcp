@@ -2893,3 +2893,20 @@ read-only operation, no state changes.
 **Act.** Three edits in `docs/AGENT_CHECKPOINTS.md`. No tests (no code change).
 
 **Verify.** Test suite still green at ~1.2k passed (regression check, no new tests).
+
+## Loop 197 — `/resume --preview` (a.k.a. `--dry-run`)
+
+**Observe.** Users will type `/resume` first because it's the obvious command. They might *then* discover they wanted to preview — but at that point `/resume` has already mutated `history` in place. The `/checkpoints diff --since-resume` from loop 195 is the right operation but lives under a different command name and isn't discoverable from `/resume`.
+
+**Orient.** Easier path: bake the preview into `/resume` itself. `/resume --preview` (alias `--dry-run`) renders the same diff as `/checkpoints diff --since-resume` but never touches `history`. Discoverable via `/help resume`.
+
+**Decide.** Add a flag check at the top of the `/resume` branch; when set, call `load_latest_checkpoint`, render `format_history_diff`, return without mutating. Update HELP_TEXT to a multi-line entry.
+
+**Devil.**
+- *Correctness:* The non-preview path still works unchanged; flag is checked before the mutation. Pinned by `test_resume_without_preview_still_loads`. ✅
+- *Scope:* Should `--preview` accept `--inline` too? Yes, but we'd be re-implementing flag parsing inside the `/resume` branch. The dedicated `/checkpoints diff --since-resume --inline` already exists for inline. Keep `/resume --preview` simple. ✅
+- *Priority:* Closes the discoverability gap on the recovery preview. Small (~25 LoC + 5 tests). ✅
+
+**Act.** Edit `/resume` branch to handle `--preview`/`--dry-run`. Update HELP_TEXT entry. New `tests/test_resume_preview.py` with 5 cases: preview doesn't mutate, --dry-run alias, no-checkpoint message, non-preview /resume still loads, no-history safety.
+
+**Verify.** All 5 new tests pass. Full suite ~1.2k passed, 1 skipped.
