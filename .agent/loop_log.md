@@ -2402,3 +2402,28 @@ registry membership, basic echo, empty cmd error, denylist trip, deny
 through run_tool with confirm, and absence from DEFAULT_TOOLS.
 
 **Result**: 1002 passed (+6), 1 skipped.
+
+## Loop 169 — /agent --max N flag
+
+**Observe**: 1002 green from loop 168. Hard 6-step cap meant any non-trivial
+bug-hunt got cut off before the agent could settle. next.md flagged this #1.
+
+**Decide**: extend the slash parser to accept `--max N` (and `--max=N`),
+encode the value into the sentinel body as a leading `--max=N\n` line,
+decode it in the App handler via a new module-level `_decode_agent_body`
+helper, and pass it as the `max_steps` kwarg to `run_agent`. Range-check
+1..50 to guard against runaway loops.
+
+**Devil's advocate**:
+- Correctness: encoder/decoder are inverses; tested with no-max, max
+  only, and both flag orders (--write before --max and after).
+- Scope: addresses the cause -- arbitrary cap was too low. Range check
+  prevents the inverse mistake (cap too high).
+- Priority: #1 in next.md and a precondition for autonomous bug-hunts.
+
+**Act**: tui.py adds flag parser loop in `dispatch_slash`, module-level
+`_decode_agent_body` (so tests can import), `max_steps` kwarg through
+`_start_agent_turn`, status badge shows the override, HELP_TEXT updated.
+9 new tests in `TestAgentMaxFlag`.
+
+**Result**: 1011 passed (+9), 1 skipped.

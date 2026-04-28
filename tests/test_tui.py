@@ -2590,3 +2590,80 @@ class TestAgentWriteAndConfirmDispatch:
         assert "/agent_write_on" in comps
         assert "/confirm_writes_on" in comps
         assert "/confirm_writes_off" in comps
+
+
+class TestAgentMaxFlag:
+    def test_max_flag_encoded_in_body(self, tmp_path: Path) -> None:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/agent --max 12 think harder"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        assert text.startswith(tui._AGENT_SENTINEL)
+        body = text[len(tui._AGENT_SENTINEL):]
+        task, n = tui._decode_agent_body(body)
+        assert n == 12
+        assert task == "think harder"
+
+    def test_max_equals_form(self, tmp_path: Path) -> None:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/agent --max=8 do it"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        body = text[len(tui._AGENT_SENTINEL):]
+        task, n = tui._decode_agent_body(body)
+        assert n == 8 and task == "do it"
+
+    def test_max_combined_with_write(self, tmp_path: Path) -> None:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/agent --write --max 20 refactor"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        assert text.startswith(tui._AGENT_WRITE_SENTINEL)
+        body = text[len(tui._AGENT_WRITE_SENTINEL):]
+        task, n = tui._decode_agent_body(body)
+        assert n == 20 and task == "refactor"
+
+    def test_max_in_either_order(self, tmp_path: Path) -> None:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/agent --max 5 --write x"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        # --write came after --max, both flags must be honoured.
+        assert text.startswith(tui._AGENT_WRITE_SENTINEL)
+
+    def test_max_rejects_non_integer(self, tmp_path: Path) -> None:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/agent --max abc do thing"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        assert "expects an integer" in text
+
+    def test_max_out_of_range(self, tmp_path: Path) -> None:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/agent --max 999 x"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        assert "between 1 and 50" in text
+
+    def test_max_without_task(self, tmp_path: Path) -> None:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/agent --max 4"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        assert "usage:" in text
+
+    def test_decode_no_max_returns_none(self) -> None:
+        body = "just some task"
+        task, n = tui._decode_agent_body(body)
+        assert n is None
+        assert task == "just some task"
+
+    def test_help_advertises_max(self) -> None:
+        assert "--max" in tui.HELP_TEXT

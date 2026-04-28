@@ -35,7 +35,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from . import agent_loop, fs_tools, prompts, shell_tools, web_tools
 from .qwen_client import ChatMessage, QwenClient
@@ -156,6 +156,7 @@ Slash commands:
   /cd [path]           Show or change the fs sandbox root for the session
   /agent <task>        Run an agentic tool-calling turn (one-off, read-only)
   /agent --write <task> Same, but with fs_write + apply_patch enabled
+  /agent --max N <task> Override the 6-step cap (1..50); combinable with --write
   /agent_on            Make all subsequent chats agentic by default
   /agent_off           Disable default agent mode (back to plain chat)
   /agent_write_on      Enable fs_write + apply_patch in default agent mode
@@ -385,6 +386,22 @@ _CD_SENTINEL = "__CD__"
 _AGENT_SENTINEL = "__AGENT__"
 _AGENT_WRITE_SENTINEL = "__AGENTW__"
 _AGENT_TOGGLE_SENTINEL = "__AGENT_TOGGLE__"
+
+
+def _decode_agent_body(body: str) -> tuple[str, int | None]:
+    """Pull a leading ``--max=N\\n`` line off an agent sentinel body.
+
+    Returns the (task, max_steps) pair; max_steps is None when no
+    ``--max`` was supplied. Mirrors the encoder in ``dispatch_slash``.
+    """
+    if body.startswith("--max="):
+        head, _, rest = body.partition("\n")
+        try:
+            n = int(head[len("--max="):])
+        except ValueError:
+            return body, None
+        return rest, n
+    return body, None
 
 
 def _render_cd(cfg: fs_tools.FsConfig, path: str) -> str:
@@ -840,17 +857,46 @@ def dispatch_slash(
         return "bye", True
     if name == "agent":
         if not cmd.rest:
-            return "usage: /agent [--write] <task>", False
+            return "usage: /agent [--write] [--max N] <task>", False
         rest = cmd.rest
         write_mode = False
-        toks = rest.split(None, 1)
-        if toks and toks[0] in ("--write", "-w"):
-            write_mode = True
-            rest = toks[1] if len(toks) > 1 else ""
-            if not rest.strip():
-                return "usage: /agent --write <task>", False
+        max_steps: int | None = None
+        # Parse leading flags. Order doesn't matter; loop until we hit
+        # something that isn't a flag.
+        while True:
+            toks = rest.split(None, 1)
+            if not toks:
+                break
+            head = toks[0]
+            if head in ("--write", "-w"):
+                write_mode = True
+                rest = toks[1] if len(toks) > 1 else ""
+            elif head == "--max" or head.startswith("--max="):
+                if head.startswith("--max="):
+                    val = head[len("--max="):]
+                    rest = toks[1] if len(toks) > 1 else ""
+                else:
+                    if len(toks) < 2:
+                        return "usage: /agent --max N <task>", False
+                    val_toks = toks[1].split(None, 1)
+                    val = val_toks[0]
+                    rest = val_toks[1] if len(val_toks) > 1 else ""
+                try:
+                    parsed = int(val)
+                except ValueError:
+                    return f"--max expects an integer, got {val!r}", False
+                if parsed < 1 or parsed > 50:
+                    return "--max must be between 1 and 50", False
+                max_steps = parsed
+            else:
+                break
+        if not rest.strip():
+            return "usage: /agent [--write] [--max N] <task>", False
         prefix = _AGENT_WRITE_SENTINEL if write_mode else _AGENT_SENTINEL
-        return prefix + rest, False
+        body = rest
+        if max_steps is not None:
+            body = f"--max={max_steps}\n{rest}"
+        return prefix + body, False
     if name == "agent_on":
         return _AGENT_TOGGLE_SENTINEL + "on", False
     if name == "agent_off":
@@ -1588,13 +1634,21 @@ def _build_app(
                     log.write(f"[yellow](retrying)[/yellow] {line}")
                 elif isinstance(text, str) and text.startswith(_AGENT_SENTINEL):
                     task = text[len(_AGENT_SENTINEL):]
+                    task, max_steps = _decode_agent_body(task)
                     self._streaming = True
-                    self._start_agent_turn(task, write=self.agent_write_default)
+                    self._start_agent_turn(
+                        task,
+                        write=self.agent_write_default,
+                        max_steps=max_steps,
+                    )
                     return
                 elif isinstance(text, str) and text.startswith(_AGENT_WRITE_SENTINEL):
                     task = text[len(_AGENT_WRITE_SENTINEL):]
+                    task, max_steps = _decode_agent_body(task)
                     self._streaming = True
-                    self._start_agent_turn(task, write=True)
+                    self._start_agent_turn(
+                        task, write=True, max_steps=max_steps
+                    )
                     return
                 elif isinstance(text, str) and text.startswith(_AGENT_TOGGLE_SENTINEL):
                     flag = text[len(_AGENT_TOGGLE_SENTINEL):]
@@ -1730,18 +1784,27 @@ def _build_app(
             self._refresh_status()
             self._streaming = False
 
-        def _start_agent_turn(self, task: str, *, write: bool = False) -> None:
+        def _start_agent_turn(
+            self,
+            task: str,
+            *,
+            write: bool = False,
+            max_steps: int | None = None,
+        ) -> None:
             """Run an agentic tool-calling turn in a worker thread.
 
             Reuses the streaming Static widget for live status of which
             tool is firing; final answer is rendered via _post_assistant
             once the loop ends. ``write=True`` exposes fs_write +
             apply_patch tools, allowing the agent to edit the workspace.
+            ``max_steps`` overrides the default 6-step cap (1..50).
             """
             t0 = time.monotonic()
             try:
                 stream = self.query_one("#stream", Static)
                 badge = "agent+write" if write else "agent"
+                if max_steps is not None:
+                    badge = f"{badge}/{max_steps}"
                 stream.update(f"[yellow]{badge}: thinking…[/yellow]")
                 stream.add_class("live")
             except Exception:  # noqa: BLE001
@@ -1802,14 +1865,19 @@ def _build_app(
             def runner() -> None:
                 final_text = ""
                 live_buf: list[str] = []
+                kwargs: dict[str, Any] = {
+                    "client": self.client,
+                    "fs_cfg": self.fs_cfg,
+                    "tools": tools,
+                    "confirm": _confirm_write,
+                }
+                if max_steps is not None:
+                    kwargs["max_steps"] = max_steps
                 try:
                     for ev in agent_loop.run_agent(
                         self.history,
                         task,
-                        client=self.client,
-                        fs_cfg=self.fs_cfg,
-                        tools=tools,
-                        confirm=_confirm_write,
+                        **kwargs,
                     ):
                         if ev.kind == "chunk":
                             live_buf.append(ev.text)
