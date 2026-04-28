@@ -4037,3 +4037,20 @@ instead of raising QwenError (which would burn retries on same cap).
 QWEN_MAX_TOKENS default bumped 8192->16384 (well under 65536 serve max).
 +6 tests (length+stop+unclosed-think+closed-think+idempotent+legacy).
 Suite 1523 green.
+
+## Loop 237 — chat_stream surfaces finish_reason=length (parity w/ 236)
+Commit: 46119d4. Streaming path latches finish_reason from any SSE
+chunk; emits TRUNCATION_MARKER after final flush on length, on both
+[DONE] exit and connection-closed-without-[DONE]. +5 tests.
+
+## Loop 238 — default repetition_penalty=1.05 to break Qwen3-Next loops
+Commit: 30fd690. User reported "model repeats itself and does nothing
+but that". serve.log proved it: engine ran 1 req for 2.5 minutes at
+36 tok/s with KV cache steadily growing -- classic n-gram loop
+burning max_tokens. Codebase pinned temp=0.2 everywhere with zero
+rep control, contrary to model's own generation_config (temp=1.0,
+top_k=20, top_p=0.95 -- recommended precisely because the model
+loops at low temp without rep penalty). Added repetition_penalty
+default to chat + chat_stream + system_user. QWEN_REPETITION_PENALTY
+env override; per-call kwarg; extra-dict still wins. +8 tests.
+Suite 1536 green.
