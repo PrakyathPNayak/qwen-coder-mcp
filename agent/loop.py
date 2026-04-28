@@ -83,7 +83,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 # Allow `python -m agent.loop` from repo root.
 _REPO = Path(__file__).resolve().parents[1]
@@ -161,6 +161,80 @@ def _rotate_log_if_oversized(path: Path, max_bytes: int) -> None:
         path.rename(rotated)
     except Exception:  # never break the loop on logging
         pass
+
+
+def _preflight_health_probe(
+    client: QwenClient,
+    *,
+    deadline_seconds: float = 30.0,
+    poll_interval_seconds: float = 3.0,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> dict:
+    """Probe ``client``'s vLLM ``/health`` endpoint at loop startup.
+
+    Loop 215 added :meth:`QwenClient.vllm_health_probe` so the TUI's
+    ``/sysinfo --probe`` could surface engine readiness on demand.
+    Loop 219 promotes that probe into the autonomous loop's startup
+    so operators get an instant, structured readiness signal in
+    ``runtime.log`` — instead of having to wait for the first chat
+    to time out and read the retry traceback to deduce that vLLM
+    isn't actually up yet.
+
+    Behaviour: poll ``/health`` every ``poll_interval_seconds`` until
+    either (a) it returns ``ok=True``, or (b) ``deadline_seconds``
+    elapse. Each probe result is logged. Returns the final result
+    dict so callers (tests, future TUI surfacing) can inspect it.
+
+    Critically, this NEVER raises and NEVER blocks the loop forever.
+    A backend that's still warming up just gets a "still booting"
+    warning in the log and the loop proceeds to its first iteration
+    anyway. The per-iteration retry logic in ``QwenClient.chat`` is
+    still the primary defence against transient unavailability; this
+    probe is purely an observability ramp.
+
+    Disable via ``QWEN_LOOP_DISABLE_HEALTH_PROBE=1`` for environments
+    where the vLLM endpoint is intentionally absent (e.g., a stub
+    ``QwenClient`` in tests / dev mode).
+    """
+    if os.environ.get("QWEN_LOOP_DISABLE_HEALTH_PROBE", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        _log("preflight probe: disabled via QWEN_LOOP_DISABLE_HEALTH_PROBE")
+        return {"ok": False, "skipped": True}
+    if not hasattr(client, "vllm_health_probe"):
+        _log("preflight probe: client lacks vllm_health_probe; skipping")
+        return {"ok": False, "skipped": True}
+
+    deadline = monotonic() + max(0.0, deadline_seconds)
+    attempt = 0
+    last: dict = {"ok": False, "error": "no probe attempted"}
+    while True:
+        attempt += 1
+        try:
+            last = client.vllm_health_probe() or {"ok": False}
+        except Exception as exc:  # observability: probe never breaks loop
+            last = {"ok": False, "error": f"probe raised: {exc!r}"}
+        if last.get("ok"):
+            _log(
+                f"preflight probe: ok after {attempt} attempt(s) "
+                f"(status={last.get('status')})"
+            )
+            return last
+        _log(
+            f"preflight probe: not ready (attempt {attempt}, "
+            f"status={last.get('status')!r}, error={last.get('error')!r}, "
+            f"hint={last.get('hint')!r})"
+        )
+        if monotonic() >= deadline:
+            _log(
+                "preflight probe: deadline elapsed; proceeding anyway. "
+                "iteration retry logic will continue trying."
+            )
+            return last
+        sleep(min(poll_interval_seconds, max(0.0, deadline - monotonic())))
 
 
 def _log(msg: str) -> None:
@@ -1982,6 +2056,11 @@ def main() -> None:
         f"interval={settings.loop_interval_seconds}s push={settings.loop_push}"
     )
     client = QwenClient(settings)
+    # Loop 219: probe vLLM /health up front so operators see an
+    # instant readiness signal in runtime.log instead of having to
+    # decode the first chat-call timeout. Never blocks forever; never
+    # raises. See _preflight_health_probe for full rationale.
+    _preflight_health_probe(client)
     iteration_count = 0
     aggregate_every = _aggregate_summary_every()
     sigusr1_installed = _install_sigusr1_handler()

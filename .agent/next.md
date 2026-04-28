@@ -1,23 +1,19 @@
-# Loop 219 candidates
+# Loop 220 candidates
 
-1. **`QWEN_SERVE_FORCE_OFFLOAD=1` escape hatch** for false-positive
-   hybrid-name matches in `serve_qwen.sh`. Currently a misnamed
-   dense model (e.g., contains "mamba") cannot get offloading even
-   when the operator explicitly requests it.
-2. **agent_loop pre-flight `/health` probe** — same probe as
-   `/sysinfo --probe`, but in the autonomous loop's startup so it
-   self-detects engine readiness instead of timing out the first
-   chat call.
-3. **`/checkpoints export N <path> --gzip`** — long-deferred.
-4. **Audit `agent_loop` for any spot consuming `qwen_client` output
-   without `_extract_text`** — ensure the strip applies everywhere
-   chain-of-thought could leak into a parser.
-5. **TUI prefix-buffering policy** for unwrapped `</think>` case in
-   streaming (deferred from loop 218; needs a reasoned default for
-   prefix size and a way for the TUI to surface "thinking..." in
-   the buffer window without leaking content).
+1. **`QWEN_SERVE_FORCE_OFFLOAD=1` escape hatch** — let operators
+   override the loop-216 hybrid guard for misnamed dense models.
+2. **`/checkpoints export N <path> --gzip`** — long-deferred.
+3. **TUI prefix-buffering for unwrapped streaming** — handle the
+   loop-218-deferred unwrapped-`</think>` case in chat_stream by
+   buffering the first N chars of any response. Trade initial
+   latency for correctness on edge cases.
+4. **Surface preflight probe in TUI startup banner** — loop 219
+   added the probe to the headless loop; the TUI startup could
+   show the same line so users know the backend is alive before
+   sending the first message.
+5. **`/sysinfo --probe --json`** symmetry audit — loop 215 added
+   the probe to text mode; verify the JSON path still emits a
+   parseable structure when probe returns `ok=False`.
 
-**Recommended:** (4) — the loop-217 strip is in `_extract_text` so
-any callsite that bypasses it (calling `httpx` directly, or a
-private branch in agent_loop) still leaks. Worth a 30-minute audit
-pass with a grep + reasoning.
+**Recommended:** (4) — directly extends the loop-219 work and is
+small, concrete, user-visible.

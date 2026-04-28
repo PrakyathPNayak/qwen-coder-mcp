@@ -3362,3 +3362,56 @@ truncated mid-thought) or release it verbatim if we're outside.
 integration tests through `chat_stream` with mocked SSE.
 
 **Verify.** Full suite 1409 passed, 6 skipped (was 1392 + 17).
+
+## Loop 219 — agent_loop pre-flight /health probe + audit pass
+
+**Observe.** Loop 215 added `vllm_health_probe()` for `/sysinfo --probe`
+in the TUI. The autonomous loop never used it — operators only learn
+the backend is unhealthy by reading the first chat-call timeout
+traceback. Plus, after loops 217 + 218 added `<think>` stripping,
+worth one audit pass to confirm no callsite bypasses
+`_extract_text` / `chat_stream` and leaks chain-of-thought.
+
+**Orient.**
+- Audit: `grep -nE "client\.|httpx\.(post|stream)" src/qwen_coder_mcp/`
+  across `agent_loop`, `tui`, `server` — every model call goes through
+  `chat()`, `chat_stream()`, or `system_user()` (which delegates to
+  `chat`). All three paths strip. No bypasses.
+- Pre-flight probe: add `_preflight_health_probe(client, deadline=30s,
+  poll=3s)` in `agent/loop.py`. Loop calls it once after constructing
+  `QwenClient` and before entering the iteration loop. Polls
+  `/health` until ok or deadline; logs every attempt; never raises;
+  never blocks forever. Returns the final probe dict so a future TUI
+  surfacing can read it.
+
+**Devil.**
+- *Correctness — what if a stub client doesn't have the method?*
+  `hasattr(client, "vllm_health_probe")` guard, returns
+  `{"ok": False, "skipped": True}` and logs a "skipping" line. Pinned
+  by `test_missing_probe_method_is_skipped`. ✅
+- *Correctness — what if the probe itself raises?* Wrapped in
+  `try/except Exception` (intentionally broad: observability code
+  must never break the loop). Pinned by
+  `test_probe_exception_is_swallowed`. ✅
+- *Correctness — what if `/health` is permanently 503?* Deadline
+  elapses → log "proceeding anyway" → return last result → loop
+  continues to its first iteration; chat retry logic takes over.
+  Pinned by `test_deadline_elapses_returns_last_result`. ✅
+- *Scope — does this make the loop slower to start?* Up-front cost
+  is one probe (≤ 5s) on a healthy backend. On an unhealthy one,
+  capped at 30s, which is still less than the chat-retry exhaustion
+  budget (≈3min default). Net positive. ✅
+- *Scope — should the probe block?* Considered; rejected. The user's
+  operating-law is "NEVER stop". Even a clearly broken backend must
+  not prevent the loop from logging an iteration crash. Probe is
+  pure observability. ✅
+- *Priority — P1.* Closes the readiness chain (215, 217, 218, 219).
+
+**Act.** New `_preflight_health_probe` function with explicit
+`sleep` / `monotonic` injection points so tests run instantly. Wired
+into `main()` right after `QwenClient(settings)`. Disable via
+`QWEN_LOOP_DISABLE_HEALTH_PROBE=1`. 7 tests covering immediate-ok,
+eventual-ok, deadline-exceeded, env-disable, missing-method,
+exception-swallow, zero-deadline.
+
+**Verify.** Full suite 1416 passed, 6 skipped (was 1409 + 7).
