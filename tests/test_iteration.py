@@ -276,3 +276,47 @@ def test_iteration_budget_just_under_cap(monkeypatch):
     from agent import loop
     monkeypatch.setenv("QWEN_LOOP_ITER_BUDGET_S", "3600")
     assert loop._iteration_budget_seconds() == 3600.0
+
+
+class TestPhaseTimer:
+    """Loop 48: per-phase timing helper."""
+
+    def test_phase_timer_records_elapsed(self):
+        from agent import loop as L
+        phases: dict[str, float] = {}
+        with L._PhaseTimer(phases, "x"):
+            pass
+        assert "x" in phases
+        assert phases["x"] >= 0.0
+
+    def test_phase_timer_records_even_on_exception(self):
+        from agent import loop as L
+        phases: dict[str, float] = {}
+        try:
+            with L._PhaseTimer(phases, "y"):
+                raise RuntimeError("boom")
+        except RuntimeError:
+            pass
+        assert "y" in phases
+
+    def test_write_timing_appends_jsonl(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        monkeypatch.setattr(L, "TIMING_FILE", tmp_path / "timing.log")
+        L._write_timing(Path("a.py"), "applied:a.py", {"find_bugs": 1.5})
+        L._write_timing(Path("b.py"), "clean:b.py", {"find_bugs": 0.7})
+        lines = (tmp_path / "timing.log").read_text(encoding="utf-8").splitlines()
+        assert len(lines) == 2
+        import json
+        rec0 = json.loads(lines[0])
+        assert rec0["file"] == "a.py"
+        assert rec0["outcome"] == "applied:a.py"
+        assert rec0["phases"]["find_bugs"] == 1.5
+
+    def test_write_timing_swallows_io_error(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        # Point at a path whose parent cannot be created (a regular file)
+        bogus_parent = tmp_path / "not_a_dir"
+        bogus_parent.write_text("x")
+        monkeypatch.setattr(L, "TIMING_FILE", bogus_parent / "child.log")
+        # Must not raise
+        L._write_timing(Path("a.py"), "x", {})

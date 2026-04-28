@@ -37,6 +37,7 @@ HISTORY_DIR = LOOP_DIR / "history"
 STATE_ARCHIVE_DIR = LOOP_DIR / "state_archive"
 CURSOR_FILE = LOOP_DIR / "cursor.json"
 LOG_FILE = LOOP_DIR / "runtime.log"
+TIMING_FILE = LOOP_DIR / "timing.log"
 STATE_FILE = _REPO / "STATE.md"
 STATE_MAX_BYTES = 256 * 1024  # rotate STATE.md when it exceeds this
 
@@ -1028,6 +1029,44 @@ def _commit_and_push(message: str, push: bool) -> bool:
     return True
 
 
+def _write_timing(rel: Path, outcome: str, phases: dict[str, float]) -> None:
+    """Append one JSON line per iteration capturing per-phase wallclock.
+
+    Phases are recorded only when actually entered, so an early-exit
+    iteration produces a partial record. Failures are swallowed: timing
+    is observability, not correctness, and must never break the loop.
+    """
+    try:
+        import json
+        TIMING_FILE.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": _now(),
+            "file": rel.as_posix(),
+            "outcome": outcome,
+            "phases": {k: round(v, 4) for k, v in phases.items()},
+        }
+        with TIMING_FILE.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+    except Exception as exc:  # never break the loop on logging
+        _log(f"_write_timing failed: {exc}")
+
+
+class _PhaseTimer:
+    """Context manager that records elapsed seconds for one phase."""
+
+    def __init__(self, phases: dict[str, float], name: str) -> None:
+        self._phases = phases
+        self._name = name
+        self._start = 0.0
+
+    def __enter__(self) -> "_PhaseTimer":
+        self._start = time.monotonic()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self._phases[self._name] = time.monotonic() - self._start
+
+
 def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
     files = _candidate_files()
     if not files:
@@ -1041,52 +1080,60 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
         return f"skip:{rel} (unreadable_or_too_large)"
 
     deadline = time.monotonic() + _iteration_budget_seconds()
+    phases: dict[str, float] = {}
 
     def _over_budget() -> bool:
         return time.monotonic() > deadline
 
+    def _finish(outcome: str) -> str:
+        _write_timing(rel, outcome, phases)
+        return outcome
+
     _log(f"scanning {rel}")
     try:
-        issues = client.system_user(
-            prompts.REVIEWER_SYSTEM,
-            prompts.find_bugs_user(str(rel), code),
-            temperature=0.1,
-        )
+        with _PhaseTimer(phases, "find_bugs"):
+            issues = client.system_user(
+                prompts.REVIEWER_SYSTEM,
+                prompts.find_bugs_user(str(rel), code),
+                temperature=0.1,
+            )
     except QwenError as exc:
-        return f"qwen_error_find_bugs:{exc}"
+        return _finish(f"qwen_error_find_bugs:{exc}")
 
     if _over_budget():
-        return f"budget_exceeded:{rel}:after_find_bugs"
+        return _finish(f"budget_exceeded:{rel}:after_find_bugs")
 
     issue = _parse_first_issue(issues)
     if not issue:
-        return f"clean:{rel}"
+        return _finish(f"clean:{rel}")
 
     try:
-        diff = client.system_user(
-            prompts.CODER_SYSTEM,
-            prompts.propose_fix_user(str(rel), code, issue),
-            temperature=0.1,
-        )
+        with _PhaseTimer(phases, "propose_fix"):
+            diff = client.system_user(
+                prompts.CODER_SYSTEM,
+                prompts.propose_fix_user(str(rel), code, issue),
+                temperature=0.1,
+            )
     except QwenError as exc:
-        return f"qwen_error_propose_fix:{exc}"
+        return _finish(f"qwen_error_propose_fix:{exc}")
 
     if _over_budget():
-        return f"budget_exceeded:{rel}:after_propose_fix"
+        return _finish(f"budget_exceeded:{rel}:after_propose_fix")
 
     diff_clean = _strip_fence(diff)
 
     try:
-        critique = client.system_user(
-            prompts.DEVILS_ADVOCATE_SYSTEM,
-            prompts.devils_advocate_user(str(rel), code, diff_clean, issue),
-            temperature=0.0,
-        )
+        with _PhaseTimer(phases, "devils_advocate"):
+            critique = client.system_user(
+                prompts.DEVILS_ADVOCATE_SYSTEM,
+                prompts.devils_advocate_user(str(rel), code, diff_clean, issue),
+                temperature=0.0,
+            )
     except QwenError as exc:
-        return f"qwen_error_devils_advocate:{exc}"
+        return _finish(f"qwen_error_devils_advocate:{exc}")
 
     if _over_budget():
-        return f"budget_exceeded:{rel}:after_devils_advocate"
+        return _finish(f"budget_exceeded:{rel}:after_devils_advocate")
 
     accept, reason = _verdict_accepts(critique)
     history_body = (
@@ -1103,16 +1150,17 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
         _append_state(
             f"- {_now()} `{rel}` — rejected fix ({reason[:80]})\n"
         )
-        return f"rejected:{rel}:{reason[:80]}"
+        return _finish(f"rejected:{rel}:{reason[:80]}")
 
-    ok, msg = _apply_diff(diff_clean)
+    with _PhaseTimer(phases, "apply_diff"):
+        ok, msg = _apply_diff(diff_clean)
     if not ok:
         _write_history(
             f"{int(time.time())}-apply-failed.md",
             history_body + f"APPLY FAILED ({msg})\n",
         )
         _append_state(f"- {_now()} `{rel}` — apply failed ({msg[:80]})\n")
-        return f"apply_failed:{rel}:{msg[:80]}"
+        return _finish(f"apply_failed:{rel}:{msg[:80]}")
 
     changed = _changed_paths()
     scope_ok, scope_msg = _diff_in_scope(changed, rel)
@@ -1123,9 +1171,10 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
             history_body + f"OUT OF SCOPE ({scope_msg})\n",
         )
         _append_state(f"- {_now()} `{rel}` — reverted ({scope_msg[:60]})\n")
-        return f"out_of_scope:{rel}:{scope_msg[:80]}"
+        return _finish(f"out_of_scope:{rel}:{scope_msg[:80]}")
 
-    syn_ok, syn_msg = _validate_changed_files(changed)
+    with _PhaseTimer(phases, "validate"):
+        syn_ok, syn_msg = _validate_changed_files(changed)
     if not syn_ok:
         _revert_changes()
         _write_history(
@@ -1133,21 +1182,23 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
             history_body + f"VALIDATION FAILED:\n```\n{syn_msg}\n```\n",
         )
         _append_state(f"- {_now()} `{rel}` — reverted ({syn_msg[:60]})\n")
-        return f"validation_failed:{rel}"
+        return _finish(f"validation_failed:{rel}")
 
     summary_line = issue.splitlines()[0][:72]
     commit_msg = f"fix({rel.as_posix()}): {summary_line}"
-    if _commit_and_push(commit_msg, push):
+    with _PhaseTimer(phases, "commit_push"):
+        committed = _commit_and_push(commit_msg, push)
+    if committed:
         _write_history(
             f"{int(time.time())}-applied.md",
             history_body + "APPLIED + COMMITTED\n",
         )
         _append_state(f"- {_now()} `{rel}` — applied: {summary_line}\n")
-        return f"applied:{rel}"
+        return _finish(f"applied:{rel}")
 
     _revert_changes()
     _append_state(f"- {_now()} `{rel}` — commit/push failed, reverted\n")
-    return f"commit_failed:{rel}"
+    return _finish(f"commit_failed:{rel}")
 
 
 def main() -> None:

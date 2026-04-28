@@ -1083,3 +1083,14 @@ kwarg actually forwarded. Existing tests still pass.
 - DEVIL: pure regression coverage; cost ~zero.
 - ACT: 306 passed, 1 skipped.
 - COMMIT: pending.
+
+## Loop 48 — per-phase timing log
+- OBSERVE: No telemetry on where wallclock goes per iteration. Tuning `QWEN_CHAT_BUDGET_S` / `QWEN_LOOP_ITER_BUDGET_S` requires guesswork. With 5+ phases (find_bugs, propose_fix, devils_advocate, apply_diff, validate, commit_push) and unknown vLLM latency, blind-tuning is wrong.
+- ORIENT: pure observability. Cause-level: enables data-driven budget tuning.
+- DECIDE: `_PhaseTimer` context manager + `_write_timing` JSONL appender to `.loop/timing.log`. Wrap the 3 LLM calls + apply + validate + commit. Timing failures are swallowed.
+- DEVIL:
+  - Correctness: `__exit__` records elapsed even on exception (verified by test).
+  - Scope: zero behavior change to the loop's logic; only adds I/O.
+  - Priority: bucket 8 (helps the next person who tunes); but it unblocks data-driven future loops, so net high-leverage.
+- ACT: 4 new tests, all phases instrumented, all `return`s replaced with `_finish()` so timing always flushes. 310 passed, 1 skipped.
+- COMMIT: pending.
