@@ -1764,6 +1764,11 @@ def _build_app(
                     lines = diff.count("\n")
                     check = call.args.get("check_only", False)
                     summary = f"diff_lines={lines} check_only={check}"
+                elif call.name == "run_shell":
+                    cmd = str(call.args.get("cmd") or call.args.get("command") or "")
+                    if len(cmd) > 200:
+                        cmd = cmd[:200] + "…"
+                    summary = f"$ {cmd}"
                 else:
                     summary = repr(call.args)[:120]
                 self.call_from_thread(

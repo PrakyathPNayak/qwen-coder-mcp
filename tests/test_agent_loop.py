@@ -557,3 +557,65 @@ class TestConfirmHook:
         assert results and "denied" in results[0].text.lower()
         assert seen == ["fs_write"]
         assert not (tmp_path / "z.txt").exists()
+
+
+# ----------------------------------------------------------- run_shell tool
+class TestRunShellTool:
+    def test_run_shell_in_write_registry_only(self) -> None:
+        assert "run_shell" in agent_loop.WRITE_TOOLS
+        assert "run_shell" in agent_loop.ALL_TOOLS
+        assert "run_shell" in agent_loop.DESTRUCTIVE_TOOLS
+        assert "run_shell" not in agent_loop.DEFAULT_TOOLS
+
+    def test_run_shell_basic(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = agent_loop._tool_run_shell({"cmd": "echo hello"}, cfg)
+        assert "hello" in out
+        assert "$ echo hello" in out
+
+    def test_run_shell_empty_cmd(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = agent_loop._tool_run_shell({"cmd": ""}, cfg)
+        assert out.startswith("error:")
+
+    def test_run_shell_denylist_blocks(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = agent_loop._tool_run_shell({"cmd": "rm -rf /"}, cfg)
+        # ShellError is caught and returned as a denied message.
+        assert out.startswith("denied:")
+
+    def test_run_shell_through_run_tool_with_confirm(
+        self, tmp_path: Path
+    ) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        seen: list[str] = []
+
+        def deny(call: agent_loop.ToolCall) -> bool:
+            seen.append(call.name)
+            return False
+
+        call = agent_loop.ToolCall(
+            name="run_shell", args={"cmd": "echo nope"}, raw=""
+        )
+        res = agent_loop.run_tool(
+            call, fs_cfg=cfg, tools=agent_loop.ALL_TOOLS, confirm=deny
+        )
+        assert res.error
+        assert "denied" in res.output.lower()
+        assert seen == ["run_shell"]
+
+    def test_run_shell_unavailable_in_default_registry(
+        self, tmp_path: Path
+    ) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        client = _ScriptedClient(
+            [
+                '<tool_call>{"name":"run_shell","args":{"cmd":"echo x"}}</tool_call>',
+                "ok",
+            ]
+        )
+        events = list(
+            agent_loop.run_agent([], "run", client=client, fs_cfg=cfg)
+        )
+        results = [e for e in events if e.kind == "tool_result"]
+        assert results and "unknown tool" in results[0].text.lower()

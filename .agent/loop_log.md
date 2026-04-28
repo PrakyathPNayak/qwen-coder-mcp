@@ -2370,3 +2370,35 @@ default-deny). Add `agent_confirm_writes: bool = True` flag plus
   default flag values on a fresh App, HELP_TEXT, and completions.
 
 **Result**: 996 passed (+7), 1 skipped.
+
+## Loop 168 — run_shell tool (write-mode + confirm-gated)
+
+**Observe**: 996 green from loop 167. The agent could read, search, fetch
+URLs, write files, and apply patches but couldn't actually run anything --
+no way for it to verify a fix with pytest/ruff/git diff before claiming
+success. next.md flagged this as #1.
+
+**Decide**: add a `run_shell(cmd, timeout=30, cwd=None)` tool that
+delegates to the existing `shell_tools.run_shell` (already has denylist
++ sandbox + truncation + timeout). Register it in WRITE_TOOLS so it's
+opt-in via `--write` and automatically gated by the confirm modal from
+loop 167. TUI's confirm summary shows `$ <cmd>` so the user sees what
+will run before approving. Update TOOL_PROTOCOL_DOC.
+
+**Devil's advocate**:
+- Correctness: `ShellError` (deny-list trip / cwd escape) is caught and
+  becomes a `denied:` tool result. The model sees the failure and can
+  adapt. Test confirms `rm -rf /` is blocked.
+- Scope: this *is* the symptom and the cause -- the agent needs to run
+  commands to be useful. Future loops can extend the denylist or add a
+  per-command policy file.
+- Priority: confirm modal landed last loop, so the safety story is
+  in place. Without it, shipping run_shell would be reckless.
+
+**Act**: agent_loop.py adds `_tool_run_shell` + WRITE_TOOLS entry +
+TOOL_PROTOCOL_DOC line. tui.py extends `_confirm_write` summary with a
+`$ cmd` branch. tests/test_agent_loop.py adds `TestRunShellTool` (6 tests):
+registry membership, basic echo, empty cmd error, denylist trip, deny
+through run_tool with confirm, and absence from DEFAULT_TOOLS.
+
+**Result**: 1002 passed (+6), 1 skipped.

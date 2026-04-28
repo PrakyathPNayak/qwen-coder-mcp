@@ -168,6 +168,25 @@ def _tool_apply_patch(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     return str(res)
 
 
+def _tool_run_shell(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    cmd = args.get("cmd") or args.get("command") or ""
+    if not isinstance(cmd, str) or not cmd.strip():
+        return "error: run_shell needs a 'cmd' arg"
+    timeout = args.get("timeout", 30.0)
+    try:
+        timeout = float(timeout)
+    except (TypeError, ValueError):
+        timeout = 30.0
+    cwd = args.get("cwd")
+    if cwd is not None and not isinstance(cwd, str):
+        cwd = None
+    try:
+        res = shell_tools.run_shell(cfg, cmd, timeout=timeout, cwd=cwd)
+    except shell_tools.ShellError as exc:
+        return f"denied: {exc}"
+    return shell_tools.format_run_result(res)
+
+
 DEFAULT_TOOLS: dict[str, ToolFn] = {
     "web_search": _tool_web_search,
     "web_fetch": _tool_web_fetch,
@@ -183,6 +202,7 @@ DEFAULT_TOOLS: dict[str, ToolFn] = {
 WRITE_TOOLS: dict[str, ToolFn] = {
     "fs_write": _tool_fs_write,
     "apply_patch": _tool_apply_patch,
+    "run_shell": _tool_run_shell,
 }
 
 ALL_TOOLS: dict[str, ToolFn] = {**DEFAULT_TOOLS, **WRITE_TOOLS}
@@ -227,6 +247,9 @@ Available tools:
   file (only available when the user has opted into write mode)
 - apply_patch(diff: str, check_only: bool=False) -- apply a unified diff
   via git apply (only available in write mode; prefer check_only=true first)
+- run_shell(cmd: str, timeout: float=30, cwd: str|None=None) -- run a
+  shell command inside the workspace sandbox (only in write mode; the
+  command is screened against a denylist; rm/mv/curl/etc are blocked)
 
 Rules:
 - Use tools when you need information you don't already have. Do not
