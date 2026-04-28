@@ -1695,3 +1695,20 @@ class TestRevertChangesRateLimited:
         assert L._revert_changes() is True
         assert any("recovered via reset --hard" in l for l in log_lines)
         L._REVERT_SWALLOW_LOG.reset()
+
+
+class TestModuleDocstringRecoveryContract:
+    """Loop 79: keep the recovery contract documented at module level."""
+
+    def test_docstring_mentions_revert_cascade(self):
+        from agent import loop as L
+        doc = L.__doc__ or ""
+        assert "_abort_rebase_if_any" in doc
+        assert "_revert_changes" in doc
+        assert "origin/main" in doc
+
+    def test_docstring_lists_swallow_logger_sinks(self):
+        from agent import loop as L
+        doc = L.__doc__ or ""
+        for label in {lg.label for lg in L._swallow_loggers()}:
+            assert label in doc, f"missing logger label {label!r} in module docstring"

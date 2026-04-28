@@ -9,6 +9,53 @@ For each iteration:
      for *.py), apply, commit, and push.
   6. Append to STATE.md and .loop/history/<timestamp>.md.
   7. Sleep and repeat. Errors never break the loop.
+
+Recovery contract
+-----------------
+Two helpers cooperate to guarantee every iteration starts from a clean,
+known-good working tree no matter how badly a previous iteration ended:
+
+* ``_abort_rebase_if_any()`` runs at the very start of ``_iteration`` and
+  unconditionally clears any in-flight rebase state by calling
+  ``git rebase --abort`` (best-effort; ignored if no rebase is in flight),
+  then ``git reset --hard HEAD`` to drop any half-applied tree changes.
+  This handles the case where a prior push-rebase-conflict left files
+  partially merged.
+
+* ``_revert_changes()`` is the iteration's mid-stream rollback. It runs
+  whenever ``_apply_diff`` produced changes that we do not want to keep
+  (test failure, devil-rejection-after-apply, etc.). It cascades through
+  four progressively more aggressive fallbacks:
+
+    1. ``git checkout -- .`` (drop unstaged edits).
+    2. ``git clean -fd`` (drop untracked files/dirs).
+    3. ``git reset --hard HEAD`` if either of the above failed.
+    4. ``git reset --hard origin/main`` if HEAD itself is broken.
+
+  ``origin/main`` is the final ground truth because the loop is the sole
+  writer to that ref; resetting to it can only ever discard a failed
+  commit/push attempt this loop just produced. All four failure paths
+  funnel through ``_REVERT_SWALLOW_LOG`` so a persistently corrupt repo
+  doesn't spam four log lines per iteration; the two success info logs
+  ("recovered via reset --hard" / "...origin/main") are intentionally
+  bare ``_log`` calls so successful recoveries stay visible.
+
+Together these two helpers form the loop's "never wedged" contract:
+even if iteration N crashed mid-apply, iteration N+1 starts on a clean
+HEAD that matches origin/main.
+
+Observability swallow loggers
+-----------------------------
+``_RateLimitedSwallowLogger`` instances wrap every per-iteration sink that
+catches and swallows exceptions to keep the loop alive. A persistent
+fault (disk full, network down, perm-denied) at any of these sinks would
+otherwise emit one log line per iteration. The instances cover:
+``_write_timing``, ``_append_state``, ``_write_history``,
+``_prune_dir_oldest``, ``_save_cursor``, ``_commit_and_push`` (split into
+``git_local`` and ``git_remote``), and ``_revert_changes``. Each one is
+registered in ``_swallow_loggers()`` and gets a per-iteration summary
+emitted from ``_finish`` whenever its count has grown since the last
+summary.
 """
 from __future__ import annotations
 

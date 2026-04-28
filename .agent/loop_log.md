@@ -1430,3 +1430,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Edge: existing loop-73 test asserted exact "reset --hard fallback FAILED" text which no longer exists. Updated assertions to substring "reset --hard HEAD" / "reset --hard origin/main" + forced linear cadence in the test so all 4 failures still log there.
 - ACT: 3 new tests (registration, repeated-failures rate-limited, success recovery info still logs). Migrated 1 loop-73 test. 444 passed.
 - COMMIT: pending.
+
+## Loop 79 — document recovery contract + swallow-logger sinks at module level
+- OBSERVE: After 11 loops of cumulative observability work, the contract is undocumented at the module level. Future contributors (and future-self) need to know the "never wedged" guarantee and which sinks are rate-limited.
+- ORIENT: Promote tribal-knowledge from loop_log into module docstring, and add a drift audit so any new logger label registered in `_swallow_loggers()` must also appear in the docstring.
+- DECIDE: Add a "Recovery contract" section explaining `_abort_rebase_if_any` + `_revert_changes` cascade and an "Observability swallow loggers" section listing every wrapped sink.
+- DEVIL:
+  - Correctness: docstring is non-load-bearing, can drift from code. Solution: `test_docstring_lists_swallow_logger_sinks` iterates over `_swallow_loggers()` and asserts every label is in the docstring; CI fails if a new logger is added without docstring update.
+  - Scope: doesn't fix a runtime bug — but addresses the "code that is correct but will break the next person who touches it" priority bucket from the operating doctrine. This *is* high-leverage when 7 distinct loggers all share the same shape; without docstring, the pattern looks ad-hoc.
+  - Priority: bucket 8.
+- ACT: 2 new tests (cascade mention + label drift). 446 passed.
+- COMMIT: pending.
