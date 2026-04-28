@@ -2240,3 +2240,13 @@ kwarg actually forwarded. Existing tests still pass.
 - *Priority*: footer indicator is the smallest leftover from loop 159. /search --max was already in next.md.
 **ACT:** dispatcher branch rewritten with `--max` parser + integer/clamp errors. `_refresh_status` extended. `_start_streaming_turn` now refreshes status with streaming=True. 6 new tests covering `--max` (space, equals, clamp, invalid, missing query) + indicator.
 **RESULT:** 936 passed (+6). Commit pending.
+
+## Loop 162 -- @@<path> full-file mention + /grep --count
+**OBSERVE:** From next.md: 8KB cap on @-mentions silently truncates; users had no count summary for grep.
+**DECIDE:** Add `@@<path>` regex that expands BEFORE the regular `@<path>` and skips the truncation cap. Add `--count` / `-c` flag to `_split_grep_flags` (now returns 3-tuple) and a count-summary code path in `_render_grep`.
+**DEVIL:**
+- *Correctness*: would `@@foo` also match `@foo` due to the existing regex? Original regex used `r"@([\w./\-]+)"` which would match the second `@`. Added `(?<!@)` look-behind so single-`@` no longer matches inside `@@`.
+- *Scope*: should `@@<path>` also dodge `FsConfig.max_read_bytes`? No -- that's the actual sandbox limit. "No truncation" means no client-side 8KB cap; the read is still bounded server-side.
+- *Priority*: the truncation cap was actively misleading -- the model answered as if it had seen the whole file when it had only the first 8KB. This is correctness-adjacent.
+**ACT:** Added `_AT_FULL_FILE_RE`, look-behind on `_AT_FILE_RE`. Process `@@` first, dedupe so `@@x and @x` only inlines once. `_split_grep_flags` now returns `(positionals, suffix, count_only)`; existing callers (1 dispatch site + 3 tests) updated. Help blocks updated. 8 new tests for both features.
+**RESULT:** 944 passed (+8). Tree clean.

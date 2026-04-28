@@ -149,6 +149,7 @@ Slash commands:
   /quit                Exit
 
 @<path> tokens in plain chat are expanded inline as file contents.
+@@<path> tokens inline the FULL file (no 8KB cap, sandbox limits still apply).
 @web:<url> tokens fetch a URL and inline its body.
 @search:<query> tokens run a DuckDuckGo search and inline the top results.
 Anything not starting with `/` is sent to Qwen as a chat message.
@@ -431,11 +432,37 @@ def _render_sysinfo(    client: QwenClient,
     return "\n".join(lines)
 
 
+def _split_grep_flags(args: list[str]) -> tuple[list[str], str | None, bool]:
+    """Strip leading-dash flags from ``args`` and return positionals,
+    optional language suffix, and a ``count_only`` flag.
+
+    Recognised flags: ``--<lang>`` for ext filter; ``--count`` / ``-c``
+    to render a per-file hit count summary instead of every match.
+    Unrecognised long flags are dropped so a typo like ``--pyhton``
+    does not silently match every line as a pattern.
+    """
+    positionals: list[str] = []
+    suffix: str | None = None
+    count_only = False
+    for arg in args:
+        if arg in ("--count", "-c"):
+            count_only = True
+        elif arg.startswith("--") and len(arg) > 2:
+            suffix = arg[2:]
+        elif arg.startswith("-") and len(arg) > 1 and not arg[1].isdigit():
+            continue
+        else:
+            positionals.append(arg)
+    return positionals, suffix, count_only
+
+
 def _render_grep(
     cfg: fs_tools.FsConfig,
     pattern: str,
     path: str = ".",
     suffix: str | None = None,
+    *,
+    count_only: bool = False,
 ) -> str:
     """Recursive grep with optional file-suffix filter.
 
@@ -445,6 +472,9 @@ def _render_grep(
     applied here rather than in shell_tools.grep so the public grep API
     stays minimal -- the TUI is the only caller that needs language
     filtering today.
+
+    When ``count_only`` is true, return a per-file count summary like
+    ``src/foo.py: 7`` lines, sorted descending, plus a total tail.
     """
     try:
         hits = shell_tools.grep(cfg, pattern, path=path)
@@ -455,28 +485,17 @@ def _render_grep(
     if suffix:
         suffix_dot = "." + suffix.lstrip(".")
         hits = [h for h in hits if h.path.endswith(suffix_dot)]
+    if count_only:
+        counts: dict[str, int] = {}
+        for h in hits:
+            counts[h.path] = counts.get(h.path, 0) + 1
+        if not counts:
+            return "(no matches)"
+        ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        lines = [f"{p}: {n}" for p, n in ordered]
+        lines.append(f"-- {sum(counts.values())} matches across {len(counts)} files")
+        return "\n".join(lines)
     return shell_tools.format_grep(hits)
-
-
-def _split_grep_flags(args: list[str]) -> tuple[list[str], str | None]:
-    """Strip leading-dash flags from ``args`` and return positionals plus
-    the language suffix (without the dot) if a ``--<lang>`` flag appears.
-
-    Pure helper so the dispatcher stays trivial and the parsing is unit
-    testable. Unrecognised long flags are dropped so a typo like
-    ``--pyhton`` does not silently match every line as a pattern.
-    """
-    positionals: list[str] = []
-    suffix: str | None = None
-    for arg in args:
-        if arg.startswith("--") and len(arg) > 2:
-            suffix = arg[2:]
-        elif arg.startswith("-") and len(arg) > 1 and not arg[1].isdigit():
-            # Single-dash short flags currently unused but reserved.
-            continue
-        else:
-            positionals.append(arg)
-    return positionals, suffix
 
 
 def _render_find(
@@ -657,7 +676,8 @@ def _render_tests(cfg: fs_tools.FsConfig, args: list[str]) -> str:
 
 
 # ----------------------------------------------------------- @file expansion
-_AT_FILE_RE = __import__("re").compile(r"@([\w./\-]+)")
+_AT_FILE_RE = __import__("re").compile(r"(?<!@)@([\w./\-]+)")
+_AT_FULL_FILE_RE = __import__("re").compile(r"@@([\w./\-]+)")
 _AT_WEB_RE = __import__("re").compile(r"@web:(\S+)")
 _AT_SEARCH_RE = __import__("re").compile(r"@search:([^\s][^\n]*?)(?=\s+@|\s*$)")
 
@@ -741,11 +761,29 @@ def expand_at_mentions(
             search_count += 1
 
     seen: list[str] = []
+    full_seen: list[str] = []
+    for m in _AT_FULL_FILE_RE.finditer(text):
+        token = m.group(1)
+        if token in full_seen:
+            continue
+        full_seen.append(token)
+        if len(full_seen) >= max_files:
+            break
+    for token in full_seen:
+        try:
+            res = fs_tools.read_file(cfg, token)
+        except fs_tools.FsError:
+            continue
+        body = str(res.get("text", ""))
+        # @@<path> means "the whole file" -- no truncation. We still
+        # respect FsConfig.max_read_bytes (enforced inside read_file)
+        # so this can't be used to dodge the sandbox.
+        appended.append(f"\n# @@{token} (full)\n```\n{body}\n```")
     for m in _AT_FILE_RE.finditer(text):
         token = m.group(1)
         if token.startswith("web:") or token.startswith("search:"):
             continue
-        if token in seen:
+        if token in seen or token in full_seen:
             continue
         seen.append(token)
         if len(seen) >= max_files:
@@ -868,13 +906,18 @@ def dispatch_slash(
         return _render_run(fs_cfg, cmd.rest), False
     if name == "grep":
         if not cmd.args:
-            return "usage: /grep <pattern> [path] [--ext]", False
-        positionals, suffix = _split_grep_flags(list(cmd.args))
+            return "usage: /grep <pattern> [path] [--ext] [--count]", False
+        positionals, suffix, count_only = _split_grep_flags(list(cmd.args))
         if not positionals:
-            return "usage: /grep <pattern> [path] [--ext]", False
+            return "usage: /grep <pattern> [path] [--ext] [--count]", False
         pattern = positionals[0]
         path = positionals[1] if len(positionals) >= 2 else "."
-        return _render_grep(fs_cfg, pattern, path, suffix=suffix), False
+        return (
+            _render_grep(
+                fs_cfg, pattern, path, suffix=suffix, count_only=count_only
+            ),
+            False,
+        )
     if name == "find":
         if not cmd.args:
             return "usage: /find <glob> [path]", False

@@ -1825,17 +1825,17 @@ class TestCdSlash:
 # ----------------------------------------------------------- Loop 152
 class TestGrepTypeFilter:
     def test_split_extracts_suffix(self) -> None:
-        positionals, suffix = tui._split_grep_flags(["TODO", "src", "--py"])
+        positionals, suffix, _ = tui._split_grep_flags(["TODO", "src", "--py"])
         assert positionals == ["TODO", "src"]
         assert suffix == "py"
 
     def test_split_no_suffix(self) -> None:
-        positionals, suffix = tui._split_grep_flags(["TODO", "src"])
+        positionals, suffix, _ = tui._split_grep_flags(["TODO", "src"])
         assert positionals == ["TODO", "src"]
         assert suffix is None
 
     def test_split_only_pattern(self) -> None:
-        positionals, suffix = tui._split_grep_flags(["TODO", "--md"])
+        positionals, suffix, _ = tui._split_grep_flags(["TODO", "--md"])
         assert positionals == ["TODO"]
         assert suffix == "md"
 
@@ -2337,3 +2337,74 @@ class TestStreamingStatusIndicator:
         app._refresh_status(streaming=False)
         assert any("streaming" in s for s in captured)
         assert any("streaming" not in s for s in captured)
+
+
+# -------------------------------------------------- Loop 162: @@<path> + grep --count
+class TestAtMentionFullFile:
+    def test_double_at_inlines_full_file(self, tmp_path: Path) -> None:
+        big = "x" * 30000
+        (tmp_path / "big.txt").write_text(big)
+        cfg = fs_tools.FsConfig(root=tmp_path, max_read_bytes=200_000)
+        out = tui.expand_at_mentions(
+            cfg, "show me @@big.txt", max_bytes_each=1000
+        )
+        assert "[truncated]" not in out, "@@ must not truncate"
+        assert out.count("x") >= 30000
+
+    def test_single_at_still_truncates(self, tmp_path: Path) -> None:
+        big = "y" * 30000
+        (tmp_path / "big.txt").write_text(big)
+        cfg = fs_tools.FsConfig(root=tmp_path, max_read_bytes=200_000)
+        out = tui.expand_at_mentions(
+            cfg, "show me @big.txt", max_bytes_each=1000
+        )
+        assert "[truncated]" in out
+
+    def test_double_at_does_not_double_inline(self, tmp_path: Path) -> None:
+        """If the user writes both @@foo and @foo we should only inline once."""
+        (tmp_path / "src.py").write_text("def f(): pass\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = tui.expand_at_mentions(cfg, "see @@src.py and @src.py")
+        assert out.count("def f()") == 1
+        assert "@@src.py (full)" in out
+
+
+class TestGrepCountFlag:
+    def test_split_count_flag(self) -> None:
+        positionals, suffix, count_only = tui._split_grep_flags(
+            ["pat", "src", "--py", "--count"]
+        )
+        assert positionals == ["pat", "src"]
+        assert suffix == "py"
+        assert count_only is True
+
+    def test_split_short_count_flag(self) -> None:
+        _, _, count_only = tui._split_grep_flags(["pat", "-c"])
+        assert count_only is True
+
+    def test_grep_count_renders_summary(self, tmp_path: Path) -> None:
+        (tmp_path / "a.py").write_text("hit\nhit\nmiss\n")
+        (tmp_path / "b.py").write_text("hit\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = tui._render_grep(cfg, "hit", path=".", count_only=True)
+        # Sorted descending by count.
+        lines = out.splitlines()
+        assert lines[0].startswith("a.py: 2") or lines[0].startswith("./a.py: 2")
+        assert any("b.py: 1" in line for line in lines)
+        assert "3 matches across 2 files" in out
+
+    def test_grep_count_no_matches(self, tmp_path: Path) -> None:
+        (tmp_path / "a.py").write_text("nope\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        out = tui._render_grep(cfg, "missing", path=".", count_only=True)
+        assert "no matches" in out
+
+    def test_dispatch_grep_count(self, tmp_path: Path) -> None:
+        (tmp_path / "a.py").write_text("hit\nhit\n")
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/grep hit . --py --count"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+        )
+        assert "a.py: 2" in text
