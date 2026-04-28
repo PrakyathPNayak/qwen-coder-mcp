@@ -68,20 +68,32 @@ def _log(msg: str) -> None:
 _GIT_CMD_TIMEOUT_SECONDS = 60
 
 
+_LOOP_ITER_BUDGET_DEFAULT = 600.0
+_LOOP_ITER_BUDGET_MAX = 24 * 60 * 60.0  # 24 hours
+
+
 def _iteration_budget_seconds() -> float:
     """Wall-clock ceiling for one `_iteration` call. Three Qwen calls can
     each retry several times with backoff (~120s timeout × ~3 attempts +
     sleeps), so a single iteration could otherwise burn ~20 minutes if
     the backend is flapping. The budget is checked *between* phases so
-    one in-flight network call may still complete after the deadline."""
-    raw = os.environ.get("QWEN_LOOP_ITER_BUDGET_S", "600")
+    one in-flight network call may still complete after the deadline.
+
+    Values are clamped to (0, 24h]. Bad input or non-positive values
+    fall back to the default. Absurdly large values are capped so a
+    typo (`6000000` instead of `600`) cannot effectively disable the
+    budget.
+    """
+    raw = os.environ.get("QWEN_LOOP_ITER_BUDGET_S", str(_LOOP_ITER_BUDGET_DEFAULT))
     try:
         v = float(raw)
-        if v <= 0:
-            return 600.0
-        return v
     except (TypeError, ValueError):
-        return 600.0
+        return _LOOP_ITER_BUDGET_DEFAULT
+    if v <= 0:
+        return _LOOP_ITER_BUDGET_DEFAULT
+    if v > _LOOP_ITER_BUDGET_MAX:
+        return _LOOP_ITER_BUDGET_MAX
+    return v
 
 
 def _run_git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:

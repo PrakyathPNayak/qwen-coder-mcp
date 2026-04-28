@@ -453,3 +453,15 @@ def test_chat_succeeds_within_budget():
     """Sanity: a successful first-try call doesn't trip the budget."""
     c = _client_with(lambda _r: _ok_response("ok"))
     assert c.chat([ChatMessage("user", "hi")]) == "ok"
+
+
+def test_chat_budget_clamps_absurd_value(monkeypatch):
+    from qwen_coder_mcp import qwen_client as Q
+    monkeypatch.setenv("QWEN_CHAT_BUDGET_S", "99999")
+    assert Q._chat_total_budget_seconds() == 3600.0
+
+
+def test_chat_budget_at_cap(monkeypatch):
+    from qwen_coder_mcp import qwen_client as Q
+    monkeypatch.setenv("QWEN_CHAT_BUDGET_S", "3600")
+    assert Q._chat_total_budget_seconds() == 3600.0

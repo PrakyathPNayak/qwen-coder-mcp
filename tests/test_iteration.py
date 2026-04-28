@@ -256,3 +256,23 @@ def test_iteration_aborts_on_budget_after_find_bugs(env, monkeypatch):
     assert "after_find_bugs" in out
     # Only the first call was issued.
     assert len(client.calls) == 1
+
+
+# ---------- iteration budget clamp (loop 39)
+def test_iteration_budget_clamps_absurd_value(monkeypatch):
+    from agent import loop
+    monkeypatch.setenv("QWEN_LOOP_ITER_BUDGET_S", "999999999")
+    # 24 hours = 86400 seconds
+    assert loop._iteration_budget_seconds() == 24 * 60 * 60.0
+
+
+def test_iteration_budget_at_cap_is_kept(monkeypatch):
+    from agent import loop
+    monkeypatch.setenv("QWEN_LOOP_ITER_BUDGET_S", str(24 * 60 * 60))
+    assert loop._iteration_budget_seconds() == 24 * 60 * 60.0
+
+
+def test_iteration_budget_just_under_cap(monkeypatch):
+    from agent import loop
+    monkeypatch.setenv("QWEN_LOOP_ITER_BUDGET_S", "3600")
+    assert loop._iteration_budget_seconds() == 3600.0

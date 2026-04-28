@@ -44,16 +44,22 @@ def _chat_total_budget_seconds() -> float:
     """Wall-clock ceiling for one `chat()` call across all retries.
     Per-request httpx timeout protects individual attempts; this cap
     bounds the *aggregate* time including backoff sleeps so a flaky
-    backend can't exhaust the per-iteration budget on a single call."""
+    backend can't exhaust the per-iteration budget on a single call.
+
+    Clamped to (0, 1h]. Bad / non-positive input falls back to default;
+    absurdly large values are capped so a typo cannot disable the cap.
+    """
     import os as _os
     raw = _os.environ.get("QWEN_CHAT_BUDGET_S", "300")
     try:
         v = float(raw)
-        if v <= 0:
-            return 300.0
-        return v
     except (TypeError, ValueError):
         return 300.0
+    if v <= 0:
+        return 300.0
+    if v > 3600.0:
+        return 3600.0
+    return v
 
 
 class QwenClient:
