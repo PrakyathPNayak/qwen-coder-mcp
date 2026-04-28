@@ -989,3 +989,100 @@ class TestModelSlash:
             history=[],
         )
         assert "no settings" in text
+
+
+# ----------------------------------------------------------- Loop 139
+class TestUndoSlash:
+    def test_pops_last_pair(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history = [
+            ChatMessage(role="system", content="s"),
+            ChatMessage(role="user", content="u1"),
+            ChatMessage(role="assistant", content="a1"),
+        ]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/undo"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "popped 2" in text
+        assert len(history) == 1
+        assert history[0].role == "system"
+
+    def test_pops_dangling_user_only(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history = [
+            ChatMessage(role="system", content="s"),
+            ChatMessage(role="user", content="u1"),
+        ]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/undo"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "popped 1" in text
+        assert len(history) == 1
+
+    def test_nothing_to_undo(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history = [ChatMessage(role="system", content="s")]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/undo"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "nothing to undo" in text
+
+
+class TestRetrySlash:
+    def test_retry_emits_sentinel(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history = [
+            ChatMessage(role="system", content="s"),
+            ChatMessage(role="user", content="hello qwen"),
+            ChatMessage(role="assistant", content="hi"),
+        ]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/retry"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert text.startswith("__RETRY__")
+        assert text.endswith("hello qwen")
+        # History rolled back to before the user message.
+        assert len(history) == 1
+        assert history[0].role == "system"
+
+    def test_retry_no_user(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history = [ChatMessage(role="system", content="s")]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/retry"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert "no prior user message" in text
+
+    def test_retry_drops_trailing_assistant_only(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        history = [
+            ChatMessage(role="user", content="u1"),
+            ChatMessage(role="assistant", content="a1"),
+            ChatMessage(role="user", content="u2"),
+            ChatMessage(role="assistant", content="a2"),
+        ]
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/retry"),
+            client=_FakeClient(),
+            fs_cfg=cfg,
+            history=history,
+        )
+        assert text == "__RETRY__u2"
+        # Only the u2/a2 pair was stripped; u1/a1 still there.
+        assert len(history) == 2
+        assert history[-1].content == "a1"

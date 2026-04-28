@@ -87,6 +87,8 @@ Slash commands:
   /tokens              Estimate total tokens in current chat history
   /sysprompt [text]    Show or replace the system prompt
   /model [id]          Show or switch the served model id
+  /undo                Pop the last user/assistant exchange
+  /retry               Re-send the last user message
   /quit                Exit
 
 @<path> tokens in plain chat are expanded inline as file contents.
@@ -504,6 +506,39 @@ def dispatch_slash(
         except Exception as exc:  # noqa: BLE001
             return f"could not set model: {type(exc).__name__}: {exc}", False
         return f"(model set: {new_model})", False
+    if name == "undo":
+        if history is None:
+            return "no history available", False
+        # Drop trailing assistant if present, then trailing user.
+        # System message is preserved. Returns count popped.
+        popped = 0
+        if history and history[-1].role == "assistant":
+            history.pop()
+            popped += 1
+        if history and history[-1].role == "user":
+            history.pop()
+            popped += 1
+        if popped == 0:
+            return "(nothing to undo)", False
+        return f"(popped {popped} message(s))", False
+    if name == "retry":
+        if history is None:
+            return "no history available", False
+        # Find the most recent user message; strip everything after it
+        # (including any assistant reply that followed) so a re-send
+        # produces a fresh answer to the same prompt. Returns the
+        # restored prompt; the caller is expected to actually re-send.
+        last_user_idx: int | None = None
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].role == "user":
+                last_user_idx = i
+                break
+        if last_user_idx is None:
+            return "(no prior user message to retry)", False
+        prompt = history[last_user_idx].content
+        # Strip the user message and any assistant reply that came after.
+        del history[last_user_idx:]
+        return f"__RETRY__{prompt}", False
     return f"unknown command: /{name}  (try /help)", False
 
 
@@ -710,10 +745,17 @@ def _build_app(
                     fs_cfg=self.fs_cfg,
                     history=self.history,
                 )
-                log.write(text)
-                if quit_now:
-                    self.exit()
-                return
+                if isinstance(text, str) and text.startswith("__RETRY__"):
+                    # Retry sentinel: the dispatcher already stripped the
+                    # last turn off history; replay the prompt as if the
+                    # user typed it again.
+                    line = text[len("__RETRY__"):]
+                    log.write(f"[yellow](retrying)[/yellow] {line}")
+                else:
+                    log.write(text)
+                    if quit_now:
+                        self.exit()
+                    return
             reply_parts: list[str] = []
             t0 = time.monotonic()
             try:

@@ -2006,3 +2006,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: P3 user-requested parity, no risk to core flow.
 - ACT: slash sysprompt with show / replace / insert behavior. slash model with show / set behavior using object dunder setattr to mutate the frozen settings dataclass. Seven new tests. Seven hundred eighty eight passed.
 
+
+## Loop 139 — /undo and /retry slash commands
+- DECIDE: claude code and copilot both expose undo plus retry so users can rewind a bad turn or re-roll an answer without restarting. Ship both.
+- DEVIL:
+  - Correctness: /undo pops trailing assistant if present then trailing user. Always preserves system at index zero. /retry walks history bottom up to find the most recent user message and trims everything from that index onward. Returns a __RETRY__ sentinel that the App layer detects and replays as a fresh user turn so the dispatcher stays pure.
+  - Scope: __RETRY__ sentinel is a string, not a tuple, because the public dispatch_slash signature is fixed at returning tuple of str and bool. Keep that and let the App layer recognize the prefix instead of changing the contract.
+  - Priority: P3 user-requested parity, no risk to chat path.
+- ACT: undo and retry dispatcher branches plus App layer detection of the retry sentinel. Six new tests covering undo of a full pair, undo of a dangling user, undo with nothing to pop, retry round trip, retry with no prior user, and retry trimming only the last pair when earlier pairs exist. Seven hundred ninety four passed.
+
