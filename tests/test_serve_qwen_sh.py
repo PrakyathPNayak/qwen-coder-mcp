@@ -68,7 +68,8 @@ class TestServeScriptDefaults:
     def test_default_oom_safe_kv_settings(self) -> None:
         argv = _argv_after_marker(_run())
         # Loop 171 raised the long-context defaults: 64k context, fp8
-        # KV, 0.95 GPU util, single sequence.
+        # KV, 0.88 GPU util (loop 227, lowered from 0.95 after the
+        # GDN/mamba forward-path OOM), single sequence.
         # Loop 205 migrated --swap-space to --kv-offloading-size when
         # vLLM 0.11 removed the legacy flag (see test_serve_qwen_help_validation.py).
         # Loop 215' (this loop): the default Qwen3.6 model is hybrid
@@ -79,7 +80,7 @@ class TestServeScriptDefaults:
         assert _flag_value(argv, "--max-model-len") == "65536"
         assert _flag_value(argv, "--max-num-seqs") == "1"
         assert _flag_value(argv, "--kv-cache-dtype") == "fp8"
-        assert _flag_value(argv, "--gpu-memory-utilization") == "0.95"
+        assert _flag_value(argv, "--gpu-memory-utilization") == "0.88"
         assert "--kv-offloading-size" not in argv
         assert "--kv-offloading-backend" not in argv
         assert "--disable-hybrid-kv-cache-manager" not in argv
@@ -87,7 +88,7 @@ class TestServeScriptDefaults:
     def test_default_enables_chunked_prefill(self) -> None:
         argv = _argv_after_marker(_run())
         assert "--enable-chunked-prefill" in argv
-        assert _flag_value(argv, "--max-num-batched-tokens") == "4096"
+        assert _flag_value(argv, "--max-num-batched-tokens") == "2048"
 
     def test_default_includes_enforce_eager(self) -> None:
         argv = _argv_after_marker(_run())
@@ -130,6 +131,30 @@ class TestServeScriptOverrides:
     def test_gpu_util_override(self) -> None:
         argv = _argv_after_marker(_run({"QWEN_SERVE_GPU_UTIL": "0.75"}))
         assert _flag_value(argv, "--gpu-memory-utilization") == "0.75"
+
+    def test_gpu_util_override_upward_still_forwards(self) -> None:
+        # Loop 227: lowered the default from 0.95 to 0.88 to leave
+        # transient headroom for the GDN/mamba forward-path scratch
+        # bulge. Users with a 48GB+ card who want the old aggressive
+        # KV budget can still set QWEN_SERVE_GPU_UTIL=0.95 and the
+        # script forwards it verbatim with no clamp.
+        argv = _argv_after_marker(_run({"QWEN_SERVE_GPU_UTIL": "0.95"}))
+        assert _flag_value(argv, "--gpu-memory-utilization") == "0.95"
+
+    def test_max_batched_override_upward_still_forwards(self) -> None:
+        # Loop 227 mirror: default lowered 4096 -> 2048 for the same
+        # GDN-scratch reason. Override path stays unclamped.
+        argv = _argv_after_marker(_run({"QWEN_SERVE_MAX_BATCHED": "4096"}))
+        assert _flag_value(argv, "--max-num-batched-tokens") == "4096"
+
+    def test_loop_227_oom_safe_defaults_combined(self) -> None:
+        # Loop 227 regression pin: a stock invocation must produce
+        # BOTH lowered defaults (0.88 gpu_util AND 2048 max_batched)
+        # in the same argv. If a future loop tunes one without the
+        # other, this fires immediately.
+        argv = _argv_after_marker(_run())
+        assert _flag_value(argv, "--gpu-memory-utilization") == "0.88"
+        assert _flag_value(argv, "--max-num-batched-tokens") == "2048"
 
     def test_kv_dtype_override(self) -> None:
         argv = _argv_after_marker(_run({"QWEN_SERVE_KV_DTYPE": "auto"}))

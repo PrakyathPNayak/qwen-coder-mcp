@@ -3665,3 +3665,59 @@ _write_timing_exit semantics (record shape, iteration_count, all
 four reasons, zero-iter edge case, swallow-on-error).
 
 Verify: full suite 1477 passed, 6 skipped (was 1469 + 8).
+
+## Loop 227 - serve_qwen.sh: lower OOM-safe defaults for the GDN forward bulge
+
+Live regression on the user's RTX 4090: vLLM 0.11 booted clean,
+/v1/models 200, /health 200, then the first chat completion died
+with torch.OutOfMemoryError inside chunk_gated_delta_rule_fwd_h
+(the chunked gated-delta-rule forward path used by Qwen3-Next's
+mamba/GDN linear-attention layers). The allocation that failed was
+just 96 MiB but only 73 MiB was free -- 23.15 GiB was already in
+use by weights + static KV cache. The static KV cache budget,
+sized from gpu_util * total_vram - weights, was respected at init
+but the forward-pass scratch space pushed over the edge.
+
+Loops 205/211/216 were KV-cache-shape regressions (flag rename,
+HMA conflict, hybrid model detection). Loop 227 is the first
+runtime-bulge regression in this catalog: a tensor allocated
+INSIDE a forward pass, not at init.
+
+Fix: lower two defaults that together leave ~3 GiB of transient
+headroom for the GDN scratch.
+
+  * QWEN_SERVE_GPU_UTIL: 0.95 -> 0.88. Static KV budget shrinks
+    by ~1.7 GiB on a 24 GB card, but this is exactly the budget
+    the GDN forward needs.
+  * QWEN_SERVE_MAX_BATCHED: 4096 -> 2048. The chunked-prefill
+    chunk size feeds the GDN per-chunk scratch allocation
+    directly; halving the chunk halves the bulge.
+
+Both env-var docstrings updated with the loop-227 rationale so
+future ops surgery can read why these are not 0.95/4096.
+
+Devil step. Why both knobs together instead of just GPU_UTIL?
+Because GPU_UTIL caps the static budget but doesn't bound the
+forward scratch ceiling -- a 64K-token chunk would still try to
+allocate the same multi-hundred-MiB tensor regardless of
+gpu_util. Halving MAX_BATCHED is the actual bulge bound; lowering
+GPU_UTIL is the headroom buffer. Together they're defense in
+depth.
+
+Why not lower MAX_LEN? Same context length is exactly what makes
+this a coding model worth running. Don't shrink the user-facing
+window to fix a runtime-tensor-shape problem.
+
+Three new tests:
+  * Combined regression pin asserts BOTH lowered defaults appear
+    in stock argv (catches a future loop tuning one without the
+    other).
+  * GPU_UTIL=0.95 still forwards verbatim (no clamping; users on
+    48GB+ cards keep the option).
+  * MAX_BATCHED=4096 still forwards verbatim (same).
+
+The existing test that pinned the old 0.95/4096 defaults updated
+in the same commit (the contract was wrong; the test was its
+canary).
+
+Verify: full suite 1480 passed, 6 skipped (was 1477 + 3).

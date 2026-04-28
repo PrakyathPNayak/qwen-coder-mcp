@@ -14,7 +14,17 @@
 #   QWEN_SERVE_PORT         port (default 8000)
 #   QWEN_SERVE_HOST         bind host (default 127.0.0.1)
 #   QWEN_SERVE_MAX_LEN      max model context (default 65536)
-#   QWEN_SERVE_GPU_UTIL     gpu memory utilization (default 0.95)
+#   QWEN_SERVE_GPU_UTIL     gpu memory utilization (default 0.88).
+#                           Loop 227: lowered from 0.95 after a live
+#                           OOM in chunk_gated_delta_rule_fwd_h on a
+#                           24GB 4090 -- the GDN/mamba forward path
+#                           has a runtime memory bulge (per-chunk
+#                           scratch tensor, ~96MiB+) that the static
+#                           KV budget didn't account for. 0.88 leaves
+#                           ~3GiB transient headroom for that scratch
+#                           space while still using the bulk of VRAM
+#                           for weights+KV. Override upward at your
+#                           own risk on hybrid models.
 #   QWEN_SERVE_MAX_SEQS     max concurrent sequences (default 1)
 #   QWEN_SERVE_KV_DTYPE     kv cache dtype (default fp8)
 #   QWEN_SERVE_EAGER        enforce eager mode (default 1)
@@ -28,7 +38,12 @@
 #                           bypass this guard (e.g. for a misnamed dense
 #                           model whose HF id triggers the substring match).
 #   QWEN_SERVE_CHUNKED_PREFILL  chunked prefill on long prompts (default 1)
-#   QWEN_SERVE_MAX_BATCHED  per-step batched-token cap (default 4096)
+#   QWEN_SERVE_MAX_BATCHED  per-step batched-token cap (default 2048).
+#                           Loop 227: lowered from 4096 after a live
+#                           OOM. The chunked-prefill chunk size feeds
+#                           directly into the GDN forward's per-chunk
+#                           scratch allocation, so halving this halves
+#                           the transient bulge.
 #   QWEN_SERVE_LIMIT_MM     --limit-mm-per-prompt JSON; default disables
 #                           image+video to free 1-2 GiB of encoder cache.
 #                           Export an empty string to re-enable multimodal.
@@ -57,7 +72,7 @@ HOST="${QWEN_SERVE_HOST:-127.0.0.1}"
 # its env var if your card has more memory or you need a different
 # context budget.
 MAX_LEN="${QWEN_SERVE_MAX_LEN:-65536}"
-GPU_UTIL="${QWEN_SERVE_GPU_UTIL:-0.95}"
+GPU_UTIL="${QWEN_SERVE_GPU_UTIL:-0.88}"
 MAX_SEQS="${QWEN_SERVE_MAX_SEQS:-1}"
 KV_DTYPE="${QWEN_SERVE_KV_DTYPE:-fp8}"
 EAGER="${QWEN_SERVE_EAGER:-1}"
@@ -113,7 +128,7 @@ fi
 CHUNKED_PREFILL="${QWEN_SERVE_CHUNKED_PREFILL:-1}"
 # Per-step batched-token budget when chunked prefill is on. 4096 keeps
 # peak prefill memory bounded even for a 200k-token prompt.
-MAX_BATCHED="${QWEN_SERVE_MAX_BATCHED:-4096}"
+MAX_BATCHED="${QWEN_SERVE_MAX_BATCHED:-2048}"
 # Multimodal encoder cache eats 1-2 GiB on a vision-capable Qwen build
 # even when the user only sends text. Disable image/video by default so
 # the int4 27B + KV cache fits on a single 24 GiB 4090. Override by
