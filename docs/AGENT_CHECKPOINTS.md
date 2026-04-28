@@ -24,6 +24,11 @@ After a crash:
 4. `/resume` rehydrates `history` from `.agent/agent_state.json`, falling
    back to the newest readable rotation in `.agent/checkpoints/` if the
    primary is missing or corrupt.
+5. To resume *and immediately continue* the work in one step, use
+   `/agent --resume <task>` — it pre-loads the latest checkpoint into
+   chat history and then runs an agent turn with the given task. A
+   missing or empty checkpoint is reported as a notice, not a fatal,
+   so the turn still runs against existing history.
 
 ## Slash commands
 
@@ -34,6 +39,7 @@ After a crash:
 | `/checkpoints load N` | Rehydrate snapshot N (1-based) into chat history. |
 | `/checkpoints prune K` | Delete all but the newest K rotated snapshots. |
 | `/lat` | Print the last agent turn's timing breakdown (TTFT, per-tool latencies, summary). |
+| `/agent --resume <task>` | Run an agent turn after pre-loading the latest checkpoint into chat history. Combinable with `--write` and `--max`. |
 
 ## Configuration
 

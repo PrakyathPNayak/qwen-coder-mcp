@@ -2722,3 +2722,20 @@ read-only operation, no state changes.
 **Act.** Refactored `_decode_agent_body` to handle leading flag lines in any order, returning a 3-tuple. Updated four existing test call sites to unpack the new tuple. Extended `/agent` parser with `--resume`. Both sentinel branches in `on_input_submitted` now decode the 3-tuple and call `self._apply_agent_resume(log)` when set. New `_apply_agent_resume` method. HELP_TEXT updated. Twelve tests in `test_agent_resume_flag.py` covering the decoder matrix (no flags, max only, resume only, both orders, unparseable max), the parser (resume alone, with write, with max, with both), the no-task error path, and HELP_TEXT advertisement.
 
 **Verify.** `pytest -x -q` → ~1.1k passed, 1 skipped.
+
+## Loop 187 — document `/agent --resume` in AGENT_CHECKPOINTS.md
+
+**Observe.** Loop 186 shipped `/agent --resume` but the doc page was written one loop earlier and doesn't mention it.
+
+**Orient.** Tiny doc gap. The recovery flow section already documented `/resume` as step 4; `/agent --resume` is the natural step 5 for users who want to keep working immediately after recovery. The slash-command table needs the new row.
+
+**Decide.** Add row to the slash-command table for `/agent --resume`. Add step 5 to the recovery flow describing the one-shot resume-and-run path and noting that a missing checkpoint is non-fatal.
+
+**Devil.**
+- *Correctness:* Did I describe the missing-checkpoint behaviour accurately? `_apply_agent_resume` writes a yellow notice and proceeds; the doc says "reported as a notice, not a fatal". Matches. ✅
+- *Scope:* Should this loop also touch the `--resume` README mention? README points users at the doc page; updating the page is enough. ✅
+- *Priority:* Doc-only loop right after the feature loop is the right cadence — keeps documentation drift to one loop max. ✅
+
+**Act.** Two edits to `docs/AGENT_CHECKPOINTS.md`: new table row, new step 5. No code changes.
+
+**Verify.** `pytest -x -q` → ~1.1k passed, 1 skipped (unchanged).
