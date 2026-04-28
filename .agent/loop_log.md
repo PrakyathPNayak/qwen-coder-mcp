@@ -1841,3 +1841,17 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: should the JSON output include the new key? Yes -- tests assert against `out["category_wall_s_delta_phases"]`. format_report drives off it too.
   - Priority: P5 -- sharper signal for ops triage.
 - ACT: Extended `analyze()` and `format_report()`, added 3 tests. 578 passed.
+
+## Loop 119 — Document 60-char truncation of `apply_failed` `<msg>`
+- DECIDE: README expansion + 2 audits: one asserts README mentions 60+truncated+apply_failed; one asserts production source still has `msg[:60]`.
+- DEVIL: linking README claim to source ensures docs and behavior stay coupled. If a future loop changes the truncation length the source-side audit fires.
+- ACT: README updated, 2 tests. 580 passed.
+
+## Loop 120 — Document why `_abort_rebase_if_any` is deliberately untimed
+- OBSERVE: candidate said "wrap in `precheck` phase OR document why deliberately untimed". Wrapping requires moving `iter_monotonic` capture earlier or re-architecting -- both risk regressions in well-tested code paths. Documenting is the lower-risk equivalent.
+- DECIDE: Multi-line comment above the call explaining (a) it must precede iter_monotonic (b) it's a no-op on the happy path (c) wrapping would pollute phase distributions with effectively-zero values for 99% of iters. 2 audits: position vs iter_monotonic, and "no PhaseTimer precheck" + comment marker.
+- DEVIL:
+  - Correctness: if a future loop wants to add a precheck phase it would have to delete the marker comment, satisfying both audits and forcing reflection.
+  - Scope: the audit checks structural invariants, not just the comment text -- text drift would let through silent removals.
+  - Priority: P5 long-term hygiene, prevents a class of "why is precheck phase always 0?" debugging.
+- ACT: Comment + 2 audits. 582 passed.

@@ -130,7 +130,7 @@ is `OUTER_OUTCOME_CATEGORIES` in `agent/loop.py`. The categories are:
 | `commit_failed` | Local commit failed after a clean apply. |
 | `commit_skipped_empty` | Apply produced no committable changes (empty staged tree). |
 | `revert_failed` | After a rejection or validation failure, the revert path (clean + reset) couldn't restore a clean state. |
-| `apply_failed` | `git apply` rejected the diff. The outcome is shaped `apply_failed:<sub_category>:<file>:<msg>` where `<sub_category>` is one of the values in `agent.loop.APPLY_ERROR_CATEGORIES`: `not_a_unified_diff`, `oversized_diff`, `unsafe_path`, `binary_patch`, `unsafe_mode`, `malformed_diff`, `dir_conflict`, `apply_check_failed`, `apply_failed`. |
+| `apply_failed` | `git apply` rejected the diff. The outcome is shaped `apply_failed:<sub_category>:<file>:<msg>` where `<sub_category>` is one of the values in `agent.loop.APPLY_ERROR_CATEGORIES`: `not_a_unified_diff`, `oversized_diff`, `unsafe_path`, `binary_patch`, `unsafe_mode`, `malformed_diff`, `dir_conflict`, `apply_check_failed`, `apply_failed`. The `<msg>` tail is truncated to the first 60 characters of the underlying error so the outcome stays single-line. |
 | `qwen_error_find_bugs` / `qwen_error_propose_fix` / `qwen_error_devils_advocate` | Backend failure on one of the three Qwen calls. |
 | `budget_exceeded` | Per-iteration wall-clock budget (`QWEN_LOOP_ITER_BUDGET_S`) was exceeded between phases. |
 | `no_candidate_files` | `_candidate_files()` returned an empty list (no eligible files). |

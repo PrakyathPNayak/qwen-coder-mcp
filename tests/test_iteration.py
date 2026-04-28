@@ -3481,3 +3481,42 @@ class TestReadmeDocumentsApplyErrorSubcategories:
     def test_readme_mentions_apply_error_categories_constant(self):
         readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
         assert "APPLY_ERROR_CATEGORIES" in readme
+
+
+class TestReadmeDocumentsApplyFailedMsgTruncation:
+    """Loop 119: README explains that `<msg>` in
+    `apply_failed:<cat>:<file>:<msg>` is truncated to 60 chars so
+    operators don't assume the line carries the full git error."""
+
+    def test_readme_mentions_60_char_truncation(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
+        assert "60" in readme and "apply_failed" in readme
+        assert "truncated" in readme.lower()
+
+    def test_production_actually_truncates_to_60(self):
+        from agent import loop as L
+        import inspect
+        src = inspect.getsource(L)
+        assert "msg[:60]" in src, "production no longer truncates to 60 chars; update README"
+
+
+class TestAbortRebaseDeliberatelyUntimed:
+    """Loop 120: documents that `_abort_rebase_if_any` runs before
+    `iter_monotonic` and is intentionally not wrapped in a phase. Audit
+    catches a future loop accidentally adding it as a phase without
+    deleting this opt-out comment."""
+
+    def test_abort_rebase_runs_before_iter_monotonic(self):
+        from agent import loop as L
+        import inspect
+        src = inspect.getsource(L._iteration)
+        i_abort = src.index("_abort_rebase_if_any()")
+        i_mono = src.index("iter_monotonic = time.monotonic()")
+        assert i_abort < i_mono
+
+    def test_abort_rebase_not_wrapped_in_phase_timer(self):
+        from agent import loop as L
+        import inspect
+        src = inspect.getsource(L._iteration)
+        assert '_PhaseTimer(phases, "precheck")' not in src
+        assert "deliberately *not* wrapped in a `_PhaseTimer`" in src

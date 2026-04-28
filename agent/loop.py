@@ -1653,6 +1653,17 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
     # (revert failed, crash, etc), reset before reading any file so the
     # current iteration cannot read a stale modification as if it were
     # the canonical source.
+    #
+    # Loop 120: this call is deliberately *not* wrapped in a `_PhaseTimer`.
+    # It runs before `iter_monotonic` is captured because (a) it must
+    # execute before any cross-iteration state could leak into the
+    # discovery phase and (b) it's a recovery-path no-op on the happy
+    # path (cost dominated by a single `git rev-parse` invocation, well
+    # under 50ms in practice). Adding a `precheck` phase would force
+    # every analytics consumer to handle a phase that's effectively zero
+    # for ~99% of iterations, polluting the per-phase distributions
+    # without surfacing real signal. If a future bug makes rebase abort
+    # itself slow, surface it via runtime.log, not phases.
     _abort_rebase_if_any()
 
     # Cache one timestamp per iteration so all state.md / history-md
