@@ -206,6 +206,11 @@ def _apply_diff(diff_text: str) -> tuple[bool, str]:
     diff = _strip_fence(diff_text)
     if not diff.lstrip().startswith(("diff --git", "--- ")):
         return False, "not_a_unified_diff"
+    # Normalise line endings. Some models emit CRLF, which `git apply`
+    # rejects with "patch with CRLF line endings" by default. We never
+    # want CRs in unified-diff metadata lines, and content-line CRs in
+    # the working tree are independently encoded by the patch hunks.
+    diff = diff.replace("\r\n", "\n").replace("\r", "\n")
     if not diff.endswith("\n"):
         diff += "\n"
     proc = subprocess.run(

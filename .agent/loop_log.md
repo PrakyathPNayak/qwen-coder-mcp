@@ -266,3 +266,24 @@ no leftover tmp, missing file, empty file (simulated crash), corrupt
 JSON, atomicity under simulated rename failure, deep parent creation.
 
 **Result**: 77/77 green. Commit `<filled by git>`.
+
+## Loop 9 — Normalise CRLF in `_apply_diff`
+**Bug**: many code-tuned models emit Windows line endings (CRLF) or even
+bare CR. `git apply` rejects "patch with CRLF line endings" by default,
+so otherwise-correct fixes silently failed at the apply step.
+
+**Devil**: stripping `\r` could destroy a legitimate patch encoding CRs in
+file content. Counter: git apply itself refuses CRLF in patches; normalising
+to LF is the documented workaround. Hunk *content* lines that need a literal
+CR can encode it via the patch byte content (the patch format is
+LF-line-oriented). Acceptable.
+
+**Fix**: in `_apply_diff`, after `_strip_fence`, run
+`diff.replace("\\r\\n", "\\n").replace("\\r", "\\n")` before piping to git.
+
+**Tests**: `tests/test_apply_diff.py`, 6 cases on a real per-test git repo:
+plain LF diff applies, CRLF diff applies after normalisation, bare-CR diff
+applies, CRLF inside a markdown fence applies, non-diff input rejected,
+mismatched-base diff fails at apply-check with a structured message.
+
+**Result**: 83/83 green. Commit `<filled by git>`.

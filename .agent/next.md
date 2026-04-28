@@ -1,26 +1,29 @@
 # Next loop seed
 
 ## Candidates ranked
-1. **(P3) `_call_model` / `client.system_user` round-trip has no test.** Wire
-   in a fake QwenClient (already easy via `httpx.MockTransport`) and exercise
-   one full `_iteration` happy path: file picked → bug found → fix proposed →
-   accepted → applied → committed. Currently the orchestrator is unverified.
+1. **(P3) `_iteration` orchestrator has no end-to-end test.** Wire a fake
+   `QwenClient` (or directly inject a stub via dependency-style monkeypatch),
+   feed it a scripted (issues, diff, verdict) tuple, and verify the happy
+   path commits one change. Then verify each rejection path: not-a-diff,
+   out-of-scope, validation-fails, devil-rejects.
 
-2. **(P3) `prompts.py` strings are never validated.** A regression that drops
-   the "must be a unified diff inside ```diff fences" sentence would make
-   every fix `not_a_unified_diff`. Snapshot/contract tests on the prompt
-   builders.
+2. **(P3) `prompts.py` builders are uncovered.** A regression that drops the
+   "respond ONLY with a unified diff inside ```diff fences" sentence makes
+   every fix `not_a_unified_diff`. Add contract tests that assert each
+   prompt builder returns a string containing the critical instructions.
 
-3. **(P5) `_apply_diff` does not normalise CRLF in model output.** Some
-   models emit Windows line endings; `git apply` then complains about
-   "patch with CRLF line endings". Strip `\r` before `git apply --check`.
+3. **(P5) `_apply_diff` does not validate that the diff touches files inside
+   the repo.** A path-traversal diff (`a/../../etc/passwd`) is currently
+   defended against only by `_diff_in_scope` AFTER apply. Sanity-check the
+   diff text itself for `../` segments before invoking `git apply --check`.
+   Probably git already refuses, but worth a unit test.
 
-4. **(P6) `server.py` builds `QwenClient` at `_build_server`.** Defer + smoke
+4. **(P6) `server.py` builds `QwenClient` at import path.** Defer + smoke
    import test.
 
 5. **(P8) `STATE.md` and `.agent/loop_log.md` rotation.**
 
 ## Reminder
-- Verify vLLM (`tail .loop/serve.log`, `ps -p 1493`) every few loops.
+- vLLM check (`tail .loop/serve.log`, `ps -p 1493`) every few loops.
 - Never end output with a question. Never pause. Always start the next OBSERVE
   immediately after commit+push.
