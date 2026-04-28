@@ -332,7 +332,31 @@ async def _run() -> None:
         client.close()
 
 
-def main() -> None:  # entry point
+def main(argv: list[str] | None = None) -> None:  # entry point
+    """Run the qwen-coder MCP stdio server.
+
+    Accepts ``--help`` / ``--version`` without spinning up the asyncio
+    runtime so a user can probe the binary in a shell. Any unknown flag
+    yields argparse's standard ``error: unrecognized arguments`` rather
+    than being swallowed by the asyncio loop.
+    """
+    import argparse
+    from . import __version__
+
+    parser = argparse.ArgumentParser(
+        prog="qwen-coder-mcp",
+        description=(
+            "qwen-coder-mcp stdio MCP server. Exposes shell, fs, grep, "
+            "diff, web search, and chat tools backed by a local Qwen "
+            "OpenAI-compatible endpoint to MCP clients."
+        ),
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"qwen-coder-mcp {__version__}",
+    )
+    parser.parse_args(argv)
     asyncio.run(_run())
 
 

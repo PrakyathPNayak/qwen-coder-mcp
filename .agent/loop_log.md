@@ -2156,3 +2156,14 @@ kwarg actually forwarded. Existing tests still pass.
   - docs/LOCAL_SERVE.md: rewrote the OOM troubleshooting block to describe the new defaults and the multimodal disable mechanism. Removed the now obsolete max_seqs=1/max_len=2048 dropdown advice because those are the new defaults.
 - VERIFY: `bash -n scripts/serve_qwen.sh` clean. `pytest tests/test_serve_qwen_sh.py -v` shows all 21 passing. Full suite: eight hundred eighty three passed one skipped.
 
+
+## Loop 155 - tui and server cli get help and version flags
+- OBSERVE: end to end smoke pass after loop 154 revealed that `qwen-coder-tui --help` hangs because Textual swallows argv and the same goes for `qwen-coder-mcp --help` which calls asyncio.run before parsing anything. user said end to end check was not made; this is exactly that gap.
+- DECIDE: add argparse to both entry points before any heavy import. P3 because it is a real ux bug a user hits the first time they install the package and want to verify the binary is wired up.
+- DEVIL:
+  - Correctness: argparse SystemExit is the correct contract for --help; tests catch it explicitly. argparse parses argv before _build_app runs so the textual ImportError path is unaffected.
+  - Scope: real symptom is that the user could not probe the binary. Real cause is no argparse layer. Adding argparse fixes both.
+  - Priority: writing a streaming RichLog is sexier but the user explicitly called out missing end to end checks. Closing that hole first.
+- ACT: tui.main and server.main both grew an argparse layer with --version backed by qwen_coder_mcp.__version__ and a description string. main now accepts an optional argv arg defaulting to sys.argv so tests can inject without monkeypatching sys.argv. seven new tests in tests/test_cli_entry_points.py: tui --help exits zero without calling _build_app (verified by monkeypatching _build_app to raise), tui --version prints the version, tui unknown flag errors. mirror three tests for server plus a help-does-not-call-asyncio.run check via monkeypatch on server.asyncio.run.
+- VERIFY: eight hundred ninety passed one skipped. python -m qwen_coder_mcp.tui --version prints `qwen-coder-tui 0.1.0`. python -m qwen_coder_mcp.server --version prints `qwen-coder-mcp 0.1.0`. Both exit immediately.
+

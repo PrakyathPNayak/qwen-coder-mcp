@@ -1320,8 +1320,34 @@ def _build_app(
     return QwenTUI
 
 
-def main() -> None:
-    """Console entry point. Requires the `tui` extra installed."""
+def main(argv: list[str] | None = None) -> None:
+    """Console entry point. Requires the `tui` extra installed.
+
+    Accepts ``--help`` and ``--version`` without launching the Textual app
+    so users can probe the binary in a CI shell or sanity-check that the
+    extra is wired up. Any unknown flag is forwarded to argparse and
+    yields the usual ``error: unrecognized arguments`` message rather than
+    being swallowed by Textual.
+    """
+    import argparse
+    from . import __version__
+
+    parser = argparse.ArgumentParser(
+        prog="qwen-coder-tui",
+        description=(
+            "Interactive Textual chat UI for the qwen-coder-mcp project. "
+            "Connects to a local OpenAI-compatible Qwen server (default "
+            "http://127.0.0.1:8000/v1) and exposes slash commands for "
+            "shell, fs, grep, diff, pin, history, and more."
+        ),
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"qwen-coder-tui {__version__}",
+    )
+    parser.parse_args(argv)
+
     try:
         AppCls = _build_app()
     except ImportError as exc:
