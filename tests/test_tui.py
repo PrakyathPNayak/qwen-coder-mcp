@@ -1343,6 +1343,39 @@ class TestSysInfoSlash:
         )
         assert "kaboom" in text
 
+    def test_health_check_hint_rendered(self, tmp_path: Path) -> None:
+        from qwen_coder_mcp.config import Settings
+        cfg = fs_tools.FsConfig(root=tmp_path)
+
+        class C:
+            settings = Settings(
+                base_url="http://localhost:8000/v1",
+                api_key="k",
+                model="qwen-foo",
+                timeout=5.0,
+                max_tokens=10,
+                loop_interval_seconds=1,
+                loop_max_file_bytes=1000,
+                loop_push=False,
+            )
+            def health_check(self):
+                return {
+                    "ok": False,
+                    "error": "connection refused: [Errno 111]",
+                    "hint": "is the qwen server running? start it with scripts/serve_qwen.sh",
+                }
+
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/sysinfo"),
+            client=C(),
+            fs_cfg=cfg,
+            history=[],
+        )
+        assert "unavailable" in text
+        assert "connection refused" in text
+        assert "scripts/serve_qwen.sh" in text
+        assert "hint:" in text
+
 
 # ----------------------------------------------------------- Loop 144
 class TestExportSlash:

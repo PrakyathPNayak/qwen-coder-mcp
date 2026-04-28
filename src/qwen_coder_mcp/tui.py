@@ -407,9 +407,11 @@ def _render_sysinfo(    client: QwenClient,
         models = ", ".join((check.get("models") or [])[:3]) or "(none)"
         health_line = f"backend ok  models: {models}"
     else:
-        health_line = (
-            f"backend unavailable: {check.get('error') or 'unknown'}"
-        )
+        err = check.get("error") or "unknown"
+        hint = check.get("hint")
+        health_line = f"backend unavailable: {err}"
+        if hint:
+            health_line = f"{health_line}\n  hint:     {hint}"
     msgs = len(history) if history is not None else 0
     tokens = (
         sum(estimate_tokens(m.content) for m in history)

@@ -14,3 +14,5 @@ venv/
 dist/
 build/
 .loop/
+.agent/tui_history.jsonl
+.agent/*.tmp
