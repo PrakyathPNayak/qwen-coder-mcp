@@ -3415,3 +3415,46 @@ eventual-ok, deadline-exceeded, env-disable, missing-method,
 exception-swallow, zero-deadline.
 
 **Verify.** Full suite 1416 passed, 6 skipped (was 1409 + 7).
+
+## Loop 220 — TUI startup engine-readiness banner
+
+**Observe.** The TUI startup banner uses `QwenClient.health_check()`
+which probes `/v1/models`. That only catches "API server down" or
+"bad API key". It cannot catch the loops 211 / 216 bug class where
+the API server is up but the engine failed to initialise (the user's
+actual reported regression). Loop 219 wired `vllm_health_probe()`
+into the headless agent loop; loop 220 wires it into the TUI's
+banner.
+
+**Orient.** Don't replace the existing API-side banner — keep it
+(catches different failures). Append an optional engine line
+underneath when the API probe is OK but the engine probe reports
+trouble. Silent on the happy path (no banner spam). Silent when the
+client lacks the probe method (test stubs, older clients).
+
+Extracted a pure-function helper `format_engine_probe_lines(probe)`
+so the rendering can be pinned without spinning up the full Textual
+App. App method just iterates the helper's output.
+
+**Devil.**
+- *Correctness — when both probes are OK?* Helper returns `[]`,
+  banner stays silent. ✅
+- *Correctness — when probe raises?* App-side wrapper catches
+  Exception and emits a one-line "engine probe raised: TypeError: x"
+  message. Observability never breaks UI. ✅
+- *Correctness — when probe missing on client?* `getattr(...,
+  callable=True)` guard. Silent. ✅
+- *Scope — should we run the API-side check too if engine is bad?*
+  Already do; both probes run unconditionally on the OK path of the
+  API probe. On the FAIL path of the API probe (no /v1/models) we
+  skip the engine probe — meaningless to ask "is the engine ready?"
+  when we can't even reach the server. ✅
+- *Priority — P2.* Cosmetic / observability; the loop-219 work was
+  the load-bearing piece. This is the user-facing surfacing.
+
+**Act.** New `format_engine_probe_lines` module-level helper in
+`tui.py`; `_render_engine_probe_line` method on the App that calls
+it and writes each line. `_render_health_banner` calls
+`_render_engine_probe_line` only when the API probe succeeded.
+
+**Verify.** Full suite 1424 passed, 6 skipped (was 1416 + 8).

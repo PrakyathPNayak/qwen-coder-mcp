@@ -48,6 +48,30 @@ class SlashCommand:
     rest: str = ""
 
 
+def format_engine_probe_lines(probe: dict | None) -> list[str]:
+    """Format the loop-219/220 engine /health probe result into the
+    optional second-line banner the TUI shows underneath the
+    /v1/models check.
+
+    Returns a list of pre-styled (Rich-markup) lines:
+      * empty list when ``probe`` is None or already healthy -- the
+        first banner line already covered the happy path
+      * one or two lines describing the divergence when probe ok=False
+
+    Pure function so the test suite can pin every branch without
+    instantiating the Textual App.
+    """
+    if not probe:
+        return []
+    if probe.get("ok"):
+        # Both probes agreed -- the API-side line is enough.
+        return []
+    err = probe.get("error") or f"status {probe.get('status')!r}"
+    hint = probe.get("hint")
+    suffix = f"  [dim]({hint})[/dim]" if hint else ""
+    return [f"[yellow]⚠ engine not ready:[/yellow] {err}{suffix}"]
+
+
 def parse_slash(line: str) -> SlashCommand | None:
     """Return a `SlashCommand` if `line` begins with `/`, else `None`.
 
@@ -2608,7 +2632,23 @@ def _build_app(
             status.update(line)
 
         def _render_health_banner(self, log) -> None:  # type: ignore[no-untyped-def]
-            """Probe the backend and write a status banner."""
+            """Probe the backend and write a status banner.
+
+            Two probes, two questions:
+              * ``health_check()`` asks "is the OpenAI-compatible API
+                server answering on /v1/models?". Catches connection
+                failure and 4xx auth issues.
+              * ``vllm_health_probe()`` asks "did the engine actually
+                finish initialising?". Catches the loops 211 and 216
+                bug class -- the API server can answer 200 on
+                /v1/models long before the engine reaches readiness,
+                or after the engine has crashed but the API server
+                hasn't shut down yet.
+
+            When both succeed only the API-side line is shown to keep
+            the banner concise. When they diverge, the engine line is
+            the actionable signal and is appended in red.
+            """
             try:
                 check = self.client.health_check()
             except Exception as exc:  # noqa: BLE001
@@ -2621,12 +2661,36 @@ def _build_app(
                 models = check.get("models") or []
                 tag = ", ".join(models[:3]) or "(no models reported)"
                 log.write(f"[green]✓ backend ok[/green]  models: {tag}")
+                self._render_engine_probe_line(log)
                 return
             err = check.get("error") or "unknown error"
             hint = check.get("hint")
             log.write(f"[red]✗ backend unavailable:[/red] {err}")
             if hint:
                 log.write(f"[yellow]→ hint:[/yellow] {hint}")
+
+        def _render_engine_probe_line(self, log) -> None:  # type: ignore[no-untyped-def]
+            """If the engine /health probe is available and disagrees
+            with the API-server probe, surface the divergence.
+
+            Silent on the happy path (both ok) -- the API-side line
+            already told the user everything is fine. Silent when the
+            client has no probe method (test stubs, older clients).
+            """
+            probe_fn = getattr(self.client, "vllm_health_probe", None)
+            if not callable(probe_fn):
+                return
+            try:
+                probe = probe_fn() or {}
+            except Exception as exc:  # noqa: BLE001
+                # Probe is observability; never crash the banner.
+                log.write(
+                    f"[yellow]⚠ engine probe raised:[/yellow] "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                return
+            for line in format_engine_probe_lines(probe):
+                log.write(line)
 
         def on_input_submitted(self, event: Input.Submitted) -> None:  # type: ignore[override]
             if self._streaming:
