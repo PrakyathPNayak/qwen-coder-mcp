@@ -1327,3 +1327,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Priority: bucket 5, was next.md #1.
 - ACT: 4 tests (first-failure, rate-limit, every-Nth-with-different-N, success-doesn't-increment). 407 passed.
 - COMMIT: pending.
+
+## Loop 70 — generalise rate-limited swallow logger
+- OBSERVE: After loop 69, `_write_timing` had a rate-limited swallow-log but `_append_state` and `_write_history` (added in loop 68) still logged every failure. Same problem class, two more spam sources.
+- ORIENT: Cause-level fix: extract a helper. The honest design is one class with three module-level instances.
+- DECIDE: `_RateLimitedSwallowLogger(label, every=100)` with `report(exc)` and `reset()`. Three instances: `_TIMING_SWALLOW_LOG`, `_STATE_SWALLOW_LOG`, `_HISTORY_SWALLOW_LOG`. Refactor `_write_timing` to use the helper too, retiring the loop-69 module globals.
+- DEVIL:
+  - Correctness: refactor changes the "every" knob from a module global to an instance attribute. Loop-69 tests that monkeypatched `_TIMING_FAILURE_LOG_EVERY` need migration. ✓ migrated.
+  - Scope: addresses cause (no shared helper). _log itself can't use it (chicken/egg).
+  - Priority: bucket 5, was next.md #1.
+- ACT: New helper class, applied at 3 sites; loop-69 tests migrated; 5 new tests for the helper + cross-site usage. 412 passed.
+- COMMIT: pending.

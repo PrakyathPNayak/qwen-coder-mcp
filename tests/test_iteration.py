@@ -1016,13 +1016,14 @@ class TestObservabilityNeverRaises:
 
 
 class TestWriteTimingFailureCounter:
-    """Loop 69: `_write_timing` rate-limits its swallow-log so a
-    persistent disk fault doesn't spam runtime.log."""
+    """Loop 69 (refactored loop 70 to share `_RateLimitedSwallowLogger`):
+    `_write_timing` rate-limits its swallow-log so a persistent disk
+    fault doesn't spam runtime.log."""
 
     def test_first_failure_is_logged_with_count_1(self, tmp_path, monkeypatch):
         from agent import loop as L
         from pathlib import Path
-        monkeypatch.setattr(L, "_TIMING_FAILURE_COUNT", 0)
+        L._TIMING_SWALLOW_LOG.reset()
         monkeypatch.setattr(L, "TIMING_FILE", tmp_path / "x" / "timing.log")
         # Force failure: rotate raises.
         monkeypatch.setattr(L, "_rotate_timing_if_oversized", lambda: (_ for _ in ()).throw(OSError("disk full")))
@@ -1030,13 +1031,14 @@ class TestWriteTimingFailureCounter:
         monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
         L._write_timing(Path("a.py"), "applied:a.py", {})
         assert any("_write_timing failed" in l and "count=1" in l for l in log_lines)
-        assert L._TIMING_FAILURE_COUNT == 1
+        assert L._TIMING_SWALLOW_LOG.count == 1
+        L._TIMING_SWALLOW_LOG.reset()
 
     def test_repeated_failures_are_rate_limited(self, tmp_path, monkeypatch):
         from agent import loop as L
         from pathlib import Path
-        monkeypatch.setattr(L, "_TIMING_FAILURE_COUNT", 0)
-        monkeypatch.setattr(L, "_TIMING_FAILURE_LOG_EVERY", 100)
+        L._TIMING_SWALLOW_LOG.reset()
+        monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "every", 100)
         monkeypatch.setattr(L, "TIMING_FILE", tmp_path / "x" / "timing.log")
         monkeypatch.setattr(L, "_rotate_timing_if_oversized", lambda: (_ for _ in ()).throw(OSError("disk full")))
         log_lines = []
@@ -1045,13 +1047,14 @@ class TestWriteTimingFailureCounter:
             L._write_timing(Path("a.py"), "applied:a.py", {})
         # Only first failure logged — counts 2..50 are silent.
         assert len(log_lines) == 1
-        assert L._TIMING_FAILURE_COUNT == 50
+        assert L._TIMING_SWALLOW_LOG.count == 50
+        L._TIMING_SWALLOW_LOG.reset()
 
     def test_logs_every_nth_failure(self, tmp_path, monkeypatch):
         from agent import loop as L
         from pathlib import Path
-        monkeypatch.setattr(L, "_TIMING_FAILURE_COUNT", 0)
-        monkeypatch.setattr(L, "_TIMING_FAILURE_LOG_EVERY", 5)
+        L._TIMING_SWALLOW_LOG.reset()
+        monkeypatch.setattr(L._TIMING_SWALLOW_LOG, "every", 5)
         monkeypatch.setattr(L, "TIMING_FILE", tmp_path / "x" / "timing.log")
         monkeypatch.setattr(L, "_rotate_timing_if_oversized", lambda: (_ for _ in ()).throw(OSError("disk full")))
         log_lines = []
@@ -1064,12 +1067,74 @@ class TestWriteTimingFailureCounter:
         assert "count=5" in log_lines[1]
         assert "count=10" in log_lines[2]
         assert "count=15" in log_lines[3]
+        L._TIMING_SWALLOW_LOG.reset()
 
     def test_success_does_not_increment_counter(self, tmp_path, monkeypatch):
         from agent import loop as L
         from pathlib import Path
-        monkeypatch.setattr(L, "_TIMING_FAILURE_COUNT", 0)
+        L._TIMING_SWALLOW_LOG.reset()
         monkeypatch.setattr(L, "TIMING_FILE", tmp_path / "timing.log")
         L._write_timing(Path("a.py"), "applied:a.py", {"phase1": 0.5})
-        assert L._TIMING_FAILURE_COUNT == 0
+        assert L._TIMING_SWALLOW_LOG.count == 0
         assert (tmp_path / "timing.log").exists()
+
+
+class TestRateLimitedSwallowLogger:
+    """Loop 70: shared rate-limited swallow logger helper."""
+
+    def test_first_failure_logs_count_1(self, monkeypatch):
+        from agent import loop as L
+        logger = L._RateLimitedSwallowLogger("xyz", every=100)
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        logger.report(OSError("e1"))
+        assert log_lines == ["xyz failed (count=1): e1"]
+
+    def test_rate_limit_with_every(self, monkeypatch):
+        from agent import loop as L
+        logger = L._RateLimitedSwallowLogger("xyz", every=3)
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        for i in range(7):
+            logger.report(OSError(f"e{i}"))
+        # Logs at 1, 3, 6 → 3 total.
+        assert len(log_lines) == 3
+        assert logger.count == 7
+
+    def test_reset_resets_counter(self, monkeypatch):
+        from agent import loop as L
+        logger = L._RateLimitedSwallowLogger("xyz")
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        logger.report(OSError("e1"))
+        assert logger.count == 1
+        logger.reset()
+        assert logger.count == 0
+
+    def test_state_logger_used_by_append_state(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        L._STATE_SWALLOW_LOG.reset()
+        monkeypatch.setattr(L, "_rotate_state_if_needed", lambda: (_ for _ in ()).throw(OSError("disk full")))
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        for _ in range(3):
+            L._append_state("entry\n")
+        assert L._STATE_SWALLOW_LOG.count == 3
+        # Only first reported with default every=100.
+        assert len(log_lines) == 1
+        assert "_append_state failed" in log_lines[0]
+        L._STATE_SWALLOW_LOG.reset()
+
+    def test_history_logger_used_by_write_history(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        L._HISTORY_SWALLOW_LOG.reset()
+        bad_root = tmp_path / "blocker"
+        bad_root.write_text("not a dir")
+        monkeypatch.setattr(L, "HISTORY_DIR", bad_root / "history")
+        log_lines = []
+        monkeypatch.setattr(L, "_log", lambda m: log_lines.append(m))
+        for _ in range(3):
+            assert L._write_history("foo.md", "body") is None
+        assert L._HISTORY_SWALLOW_LOG.count == 3
+        assert len(log_lines) == 1
+        assert "_write_history failed" in log_lines[0]
+        L._HISTORY_SWALLOW_LOG.reset()

@@ -118,6 +118,30 @@ def _log(msg: str) -> None:
         pass
 
 
+class _RateLimitedSwallowLogger:
+    """Rate-limit log lines emitted by exception-swallowing observability sinks.
+
+    A persistent fault (disk full, permission denied) at a sink that runs
+    once per iteration would otherwise emit one swallow-log line per
+    iteration. We log the first failure (so the operator notices) and
+    every Nth subsequent failure (so the cumulative count is observable)
+    while suppressing the spam in between.
+    """
+
+    def __init__(self, label: str, every: int = 100) -> None:
+        self.label = label
+        self.every = every
+        self.count = 0
+
+    def report(self, exc: BaseException) -> None:
+        self.count += 1
+        if self.count == 1 or (self.every > 0 and self.count % self.every == 0):
+            _log(f"{self.label} failed (count={self.count}): {exc}")
+
+    def reset(self) -> None:
+        self.count = 0
+
+
 _GIT_CMD_TIMEOUT_SECONDS = 60  # legacy alias; use _git_cmd_timeout_seconds()
 
 
@@ -1160,7 +1184,7 @@ def _append_state(entry: str) -> None:
     """Append one entry to STATE.md. Observability — never raises.
 
     State persistence failures (disk full, permission denied, etc.) are
-    logged but do not break the iteration; they are best-effort.
+    rate-limit-logged but do not break the iteration; they are best-effort.
     """
     try:
         _rotate_state_if_needed()
@@ -1170,7 +1194,7 @@ def _append_state(entry: str) -> None:
         with STATE_FILE.open("a", encoding="utf-8") as fh:
             fh.write(entry)
     except Exception as exc:  # observability must never break the loop
-        _log(f"_append_state failed: {exc}")
+        _STATE_SWALLOW_LOG.report(exc)
 
 
 _HISTORY_MAX_FILES_DEFAULT = 500
@@ -1194,9 +1218,10 @@ def _prune_history(max_files: int) -> int:
 def _write_history(name: str, body: str) -> Path | None:
     """Write a history file under `.loop/history/`. Observability — never raises.
 
-    Returns the resulting path on success, or None on failure (logged).
-    Callers don't currently use the return value, but the contract is
-    explicit so future callers can branch on the failure case.
+    Returns the resulting path on success, or None on failure
+    (rate-limit-logged). Callers don't currently use the return value,
+    but the contract is explicit so future callers can branch on the
+    failure case.
     """
     try:
         HISTORY_DIR.mkdir(parents=True, exist_ok=True)
@@ -1205,8 +1230,12 @@ def _write_history(name: str, body: str) -> Path | None:
         _prune_history(_history_max_files())
         return path
     except Exception as exc:  # observability must never break the loop
-        _log(f"_write_history failed: {exc}")
+        _HISTORY_SWALLOW_LOG.report(exc)
         return None
+
+
+_STATE_SWALLOW_LOG = _RateLimitedSwallowLogger("_append_state")
+_HISTORY_SWALLOW_LOG = _RateLimitedSwallowLogger("_write_history")
 
 
 # -------------------------------------------------------------------- core
@@ -1284,8 +1313,7 @@ def _rotate_timing_if_oversized() -> None:
     _rotate_log_if_oversized(TIMING_FILE, _timing_max_bytes())
 
 
-_TIMING_FAILURE_COUNT = 0
-_TIMING_FAILURE_LOG_EVERY = 100
+_TIMING_SWALLOW_LOG = _RateLimitedSwallowLogger("_write_timing")
 
 
 def _write_timing(rel: Path, outcome: str, phases: dict[str, float]) -> None:
@@ -1295,13 +1323,12 @@ def _write_timing(rel: Path, outcome: str, phases: dict[str, float]) -> None:
     iteration produces a partial record. Failures are swallowed: timing
     is observability, not correctness, and must never break the loop.
 
-    Failure logging is rate-limited via a module-level counter so a
+    Failure logging is rate-limited via `_RateLimitedSwallowLogger` so a
     persistent fault (disk full, permission denied) doesn't fill
     runtime.log with one swallow line per iteration. The first failure
     and every Nth subsequent failure are logged together with the
     cumulative count.
     """
-    global _TIMING_FAILURE_COUNT
     try:
         import json
         TIMING_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -1316,14 +1343,7 @@ def _write_timing(rel: Path, outcome: str, phases: dict[str, float]) -> None:
         with TIMING_FILE.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record) + "\n")
     except Exception as exc:  # never break the loop on logging
-        _TIMING_FAILURE_COUNT += 1
-        if (
-            _TIMING_FAILURE_COUNT == 1
-            or _TIMING_FAILURE_COUNT % _TIMING_FAILURE_LOG_EVERY == 0
-        ):
-            _log(
-                f"_write_timing failed (count={_TIMING_FAILURE_COUNT}): {exc}"
-            )
+        _TIMING_SWALLOW_LOG.report(exc)
 
 
 class _PhaseTimer:
