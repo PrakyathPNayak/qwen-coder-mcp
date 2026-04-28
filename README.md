@@ -147,6 +147,8 @@ Each record in `.loop/timing.log` is a JSON line with:
 The named phases inside `phases` are: `discovery` (file selection +
 candidate read; emitted on iterations that find a real candidate),
 `find_bugs`, `propose_fix`, and `devils_advocate` (the three Qwen
-calls). Early-exit outcomes (`no_candidate_files`, `skip:...`,
-`crashed`) emit `phases: {}` -- no phase ran to completion in those
-records.
+calls), `apply_diff` (running `git apply` on the proposed diff),
+`validate` (post-apply syntax/structural checks on changed files),
+and `commit_push` (the final `git commit` and optional `git push`).
+Early-exit outcomes (`no_candidate_files`, `skip:...`, `crashed`)
+emit `phases: {}` -- no phase ran to completion in those records.

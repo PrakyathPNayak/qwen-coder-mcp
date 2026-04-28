@@ -3292,3 +3292,51 @@ class TestDiscoveryPhaseTiming:
         assert "`find_bugs`" in readme
         assert "`propose_fix`" in readme
         assert "`devils_advocate`" in readme
+
+
+class TestPhaseNameDriftAudit:
+    """Loop 109: every phase name passed to `_PhaseTimer(phases, "<name>")`
+    in production code must appear backticked in the README schema
+    section. Catches doc drift like loop 108 where `discovery` was
+    added but `apply_diff`, `validate`, `commit_push` were already
+    quietly missing from the docs."""
+
+    def _phase_names_in_source(self) -> set[str]:
+        from agent import loop as L
+        import ast
+        src = Path(L.__file__).read_text(encoding="utf-8")
+        names: set[str] = set()
+        for node in ast.walk(ast.parse(src)):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "_PhaseTimer"
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and isinstance(node.args[1].value, str)
+                and isinstance(node.args[0], ast.Name)
+            ):
+                names.add(node.args[1].value)
+        return names
+
+    def test_every_production_phase_documented_in_readme(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
+        for name in self._phase_names_in_source():
+            assert f"`{name}`" in readme, (
+                f"phase name {name!r} appears in agent/loop.py "
+                f"_PhaseTimer call but is not backticked in README"
+            )
+
+    def test_phase_set_is_the_expected_seven(self):
+        """Belt-and-suspenders: if a new phase is added without
+        updating this list, the test fails loudly. Forces the author
+        to also update the README schema section."""
+        assert self._phase_names_in_source() == {
+            "discovery",
+            "find_bugs",
+            "propose_fix",
+            "devils_advocate",
+            "apply_diff",
+            "validate",
+            "commit_push",
+        }

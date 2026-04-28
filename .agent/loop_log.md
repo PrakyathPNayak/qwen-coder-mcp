@@ -1747,3 +1747,13 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: Should I also wrap revert + commit in named phases? Worth doing but separate loop -- less obvious mapping (commit can fail in 4 places).
   - Priority: README must document the new phase or operators won't know to look for it. Updated.
 - ACT: Restructured discovery+read into a separate `discovery_phases` dict that only graduates into `phases` once a real candidate is found. README schema section now lists `discovery`/`find_bugs`/`propose_fix`/`devils_advocate` and notes that early-exit outcomes emit `phases={}`. 4 new tests, 536 passed.
+
+## Loop 109 — Phase-name drift audit + README catch-up
+- OBSERVE: Loop 108's README said the named phases were `discovery`/`find_bugs`/`propose_fix`/`devils_advocate`. Searching `_PhaseTimer` calls in agent/loop.py reveals 7 phases: those 4 plus `apply_diff`, `validate`, `commit_push`. The undocumented three predate loop 108 -- they were already silently missing from the docs. Loop 108's README addition merely codified the gap.
+- ORIENT: P5+ documentation correctness. Operators reading the schema would mis-attribute `apply_diff`/`validate`/`commit_push` time to `wall_s_delta_phases`.
+- DECIDE: Update README to list all 7 phases. Add an AST-based drift audit so any future `_PhaseTimer(_, "<name>")` call must also have a backticked `\`<name>\`` in the README. Plus a hard-coded set check so adding a new phase fails loudly until both are updated.
+- DEVIL:
+  - Correctness: AST walks every `_PhaseTimer(_, str)` call and intersects with README content. First implementation also asserted args[0] was the literal name `phases`, but loop 108 uses `discovery_phases` (a separate dict to avoid early-exit pollution) -- the audit missed it. Loosened the filter to any Name node first arg.
+  - Scope: Should the audit also assert each phase name appears in the timing.log JSON example? README doesn't have an example -- punt.
+  - Priority: This is the right fix because every future phase addition will now be guarded by the audit, not just loop 108's. The hard-coded set is brittle (must update on every new phase) but that's the point -- forces the author to also update README.
+- ACT: README schema section now lists all 7 phases with one-line descriptions. 2 new tests. 538 passed.
