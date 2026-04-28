@@ -4346,3 +4346,20 @@ logic), Priority (P2 -- diagnostic only, not behavioural). Suite
 - *Priority*: this was a multi-loop carry-over masquerading as "lots of fixes left" in the operator's ask. Closing it before tackling fs_regex_edit / two-phase preview / real-tokenizer because parity with the agent's tool registry matters more than incremental polish.
 
 **Suite**: 1897 passed, 7 skipped.
+
+---
+
+## Loop 261 — pytest no longer pollutes `.loop/runtime.log`
+
+**Why**: `/loop tail` against the real repo showed 853KB of test-fixture noise (`[Errno 17] File exists: /tmp/pytest-of-root/...`, `_revert_changes failed (count=2) [clean rc=1]: locked`, etc.). The test suite was triggering `agent.loop._log()` which writes to the module-level `LOG_FILE` constant -- and nobody was redirecting it. Result: every test run leaked hundreds of lines into the operator-facing log.
+
+**Change** (tests/conftest.py): new autouse fixture `_isolate_loop_runtime_log` that monkeypatches `agent.loop.LOG_FILE` and `agent.loop.TIMING_FILE` to a per-test `tmp_path_factory` directory before each test runs. Tests that explicitly want to inspect log contents can patch them again -- monkeypatch.setattr is layered correctly. Wrapped in try/except so a broken `agent.loop` import doesnt take down the whole session.
+
+**Tests** (3 new in tests/test_runtime_log_isolation.py): assert LOG_FILE points under a "looplog" tmp dir and not at `.loop/runtime.log`; assert that calling `_log("canary")` does NOT create a real `.loop/runtime.log` and that the canary lands in the tmp redirect target instead; assert TIMING_FILE is also redirected.
+
+**Devil step**:
+- *Correctness*: the existing `_reset_swallow_loggers` autouse fixture comes after this one in conftest, but pytest runs autouse fixtures in definition order so the LOG_FILE redirect is already in place before reset_swallow_loggers triggers any `_log` call. Verified by deleting the real `.loop/runtime.log` and running the full suite -- 1900 tests later, the file is still absent.
+- *Scope*: I deliberately did NOT redirect every other module-level path (`.agent/runs.log`, `.agent/agent_state.json`, `.agent/loop.pid`). Most tests already use `tmp_path`-based `FsConfig` for those. Only the global LOG_FILE/TIMING_FILE pattern was leaking. Adding more redirects without a documented leak would be cargo-culting.
+- *Priority*: this is invisible to a passive observer of the test suite (everything was green before too), but actively visible to the operator the moment they ran `/loop tail`. Closes a real UX bug.
+
+**Suite**: 1900 passed, 7 skipped. Real `.loop/runtime.log` stays absent through a full test run.

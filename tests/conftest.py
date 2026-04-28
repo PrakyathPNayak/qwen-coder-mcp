@@ -12,6 +12,33 @@ if str(_ROOT) not in sys.path:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_loop_runtime_log(tmp_path_factory, monkeypatch):
+    """Loop 261: keep the test suite from polluting the operator's
+    `.loop/runtime.log`.
+
+    `agent.loop._log` writes to the module-level `LOG_FILE` constant by
+    default (`<repo>/.loop/runtime.log`). Tests that exercise loop
+    helpers (failure swallowers, preflight probes, cursor saves) end up
+    appending hundreds of fixture-noise lines to the real log. That
+    confuses `/loop tail` for the operator the next time they look.
+
+    Redirect both `LOG_FILE` and `TIMING_FILE` to a per-test tmp dir so
+    nothing leaks into `<repo>/.loop/`. Tests that explicitly want to
+    inspect log contents can monkeypatch `LOG_FILE` themselves (this
+    fixture only runs when a test hasn't already done so).
+    """
+    try:
+        from agent import loop as L
+    except Exception:
+        yield
+        return
+    tmp = tmp_path_factory.mktemp("looplog")
+    monkeypatch.setattr(L, "LOG_FILE", tmp / "runtime.log", raising=False)
+    monkeypatch.setattr(L, "TIMING_FILE", tmp / "timing.log", raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_swallow_loggers():
     """Reset every registered rate-limited swallow logger before each test.
 
