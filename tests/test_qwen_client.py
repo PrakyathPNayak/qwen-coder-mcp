@@ -983,3 +983,39 @@ class TestRepetitionPenaltyLoop238:
         c = _client_with(handler)
         c.system_user("sys", "usr", repetition_penalty=1.20)
         assert seen["repetition_penalty"] == pytest.approx(1.20)
+
+
+# ============================================================ Loop 239
+# README drift tests for the env knobs added in loops 236-238.
+class TestReadmeKnobsLoop239:
+    """Loop 239: ensure the env knobs introduced/changed in loops
+    236-238 stay discoverable in the README. If a future commit
+    silently drops them the docs go stale and operators won't know
+    they can crank repetition_penalty when the model loops."""
+
+    @staticmethod
+    def _readme() -> str:
+        from pathlib import Path
+
+        return (Path(__file__).resolve().parents[1] / "README.md").read_text()
+
+    def test_readme_documents_qwen_max_tokens(self):
+        text = self._readme()
+        assert "`QWEN_MAX_TOKENS`" in text
+        # Must reflect the loop-236 default, not the stale 4096/8192.
+        assert "16384" in text
+
+    def test_readme_documents_repetition_penalty(self):
+        text = self._readme()
+        assert "`QWEN_REPETITION_PENALTY`" in text
+        # Default value must be discoverable.
+        assert "1.05" in text
+
+    def test_readme_documents_truncation_marker_behavior(self):
+        text = self._readme()
+        # The exact marker string the client appends.
+        assert "[truncated: model hit max_tokens]" in text
+
+    def test_readme_documents_disable_think_strip(self):
+        text = self._readme()
+        assert "`QWEN_DISABLE_THINK_STRIP`" in text
