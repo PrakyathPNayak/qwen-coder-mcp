@@ -3568,3 +3568,67 @@ class TestOuterOutcomeCategoriesAllReachable:
             f"OUTER_OUTCOME_CATEGORIES declares categories with no emit "
             f"site in agent/loop.py: {sorted(missing)}"
         )
+
+
+class TestEverySourceCategoryIsDeclared:
+    """Loop 122: sister to TestOuterOutcomeCategoriesAllReachable. The
+    inverse direction. `_outer_outcome_category` falls back to the raw
+    token if it isn't in the frozenset, so a typo like `applid:foo`
+    would silently produce an undeclared category in timing.log,
+    poisoning analytics. Walk the AST, collect every category prefix
+    from `_finish` / `_finish_no_file` / `_write_timing` literals, and
+    assert each appears in `OUTER_OUTCOME_CATEGORIES`."""
+
+    def test_every_emit_site_category_is_declared(self):
+        import ast
+        from agent import loop as L
+        src = (Path(L.__file__)).read_text("utf-8")
+        tree = ast.parse(src)
+        emitted: set[str] = set()
+        targets = {"_finish", "_finish_no_file", "_write_timing"}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+            if name not in targets:
+                continue
+            if not node.args:
+                continue
+            first = node.args[0] if name != "_write_timing" else (node.args[1] if len(node.args) > 1 else None)
+            literals: list[str] = []
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                literals.append(first.value)
+            elif isinstance(first, ast.JoinedStr):
+                for v in first.values:
+                    if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                        literals.append(v.value)
+                        break
+            for lit in literals:
+                head = lit.split(":", 1)[0]
+                if head:
+                    emitted.add(head)
+        undeclared = emitted - set(L.OUTER_OUTCOME_CATEGORIES)
+        assert not undeclared, (
+            f"emit sites produce categories not declared in "
+            f"OUTER_OUTCOME_CATEGORIES: {sorted(undeclared)}"
+        )
+
+
+class TestReadmeIncludesEarlyExitExample:
+    """Loop 123: README must include at least one JSON example whose
+    `phases` is the empty object, demonstrating an early-exit outcome
+    (no_candidate_files, skip, crashed). Without this, ops reading
+    only the schema text might assume `phases: {}` is malformed when
+    in fact it's the correct shape for early-exit records."""
+
+    def test_at_least_one_example_has_empty_phases(self):
+        import json, re
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
+        section = readme.split("## Iteration outcome schema", 1)[1]
+        fences = re.findall(r"```json\n(.*?)\n```", section, re.DOTALL)
+        empty_count = sum(
+            1 for f in fences
+            if isinstance(json.loads(f).get("phases"), dict) and json.loads(f)["phases"] == {}
+        )
+        assert empty_count >= 1, "no JSON example in README schema section has phases: {}"

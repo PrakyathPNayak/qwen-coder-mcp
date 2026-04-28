@@ -1864,3 +1864,17 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: `crashed` is emitted from `main()` not `_iteration`, but the AST walks the entire module so it's included.
   - Priority: P5 dead-code detection.
 - ACT: `TestOuterOutcomeCategoriesAllReachable` test class. 583 passed.
+
+## Loop 122 — Sister audit: every emit-site category is declared
+- DECIDE: mirror loop 121's AST walker but invert the assertion -- emitted set must be subset of `OUTER_OUTCOME_CATEGORIES`. Catches typo'd category strings since `_outer_outcome_category` falls back to raw token.
+- DEVIL: same f-string handling caveat; bad-pattern emit sites would dodge the audit but those are also flagged by review.
+- ACT: `TestEverySourceCategoryIsDeclared`. 584 passed.
+
+## Loop 123 — Third README example: early-exit outcome with empty phases
+- OBSERVE: schema text says early-exit outcomes emit `phases: {}` but the two JSON examples both have populated phases. Ops reading the examples might assume `phases: {}` is malformed.
+- DECIDE: Add a third ```json fence right after the validation_failed example showing a `no_candidate_files` early-exit -- empty `file`, empty `phases`, only wall_s and wall_s_delta_phases populated.
+- DEVIL:
+  - Correctness: existing loop-111 audit walks ALL fences and asserts each parses + has phase keys subset of AST set. Empty set is a subset of any set so the new example passes.
+  - Scope: new audit asserts at least one example has `phases == {}` so future README rewrites can't drop the early-exit example silently.
+  - Priority: P5 docs hardening.
+- ACT: New JSON fence + 1 audit. 585 passed.

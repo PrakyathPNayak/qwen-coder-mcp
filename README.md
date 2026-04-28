@@ -201,6 +201,21 @@ phase that doesn't appear on the happy path):
 }
 ```
 
+Example for a `no_candidate_files` early-exit (no file selected, so
+`phases` is empty -- only the iteration-level wall clock is recorded):
+
+```json
+{
+  "ts": "2026-04-28T05:02:09Z",
+  "file": "",
+  "outcome": "no_candidate_files",
+  "category": "no_candidate_files",
+  "phases": {},
+  "wall_s": 0.083,
+  "wall_s_delta_phases": 0.083
+}
+```
+
 ### Analysing timing.log
 
 The `agent.timing_analyze` module is a tiny CLI that summarises
