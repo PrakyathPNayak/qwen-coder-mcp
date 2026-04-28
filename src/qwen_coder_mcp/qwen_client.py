@@ -127,6 +127,55 @@ def _auto_compress_enabled() -> bool:
     return raw not in {"0", "false", "no", "off"}
 
 
+def _compression_summary_enabled() -> bool:
+    """Loop 243: leave a synthetic ``system`` message summarizing dropped
+    history so the model retains *some* signal about what was discussed
+    instead of silently forgetting. Default on; set
+    ``QWEN_COMPRESSION_SUMMARY=0`` to fall back to loop-240 silent
+    drops."""
+    raw = os.environ.get("QWEN_COMPRESSION_SUMMARY", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
+def _compression_summary_chars() -> int:
+    """Loop 243: max characters of each dropped message to keep in the
+    summary. Default 200; ``QWEN_COMPRESSION_SUMMARY_CHARS`` overrides.
+    Lower → more compact summary, less context preservation."""
+    raw = os.environ.get("QWEN_COMPRESSION_SUMMARY_CHARS", "200")
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return 200
+    return max(0, v)
+
+
+def _render_compression_summary(
+    payloads: list[tuple[str, str]], snippet_chars: int
+) -> str:
+    """Loop 243: render a compact ``[Earlier in conversation: ...]``
+    block summarizing dropped messages. The format is intentionally
+    plain text (not JSON) so the model parses it as natural-language
+    context rather than treating it as a tool result."""
+    if not payloads:
+        return ""
+    header = (
+        f"[Earlier in conversation ({len(payloads)} message(s) summarized "
+        f"to fit context cap):"
+    )
+    lines = [header]
+    for role, content in payloads:
+        snippet = (content or "").strip().replace("\n", " ").replace("\r", " ")
+        # Collapse runs of whitespace so each entry stays one line.
+        while "  " in snippet:
+            snippet = snippet.replace("  ", " ")
+        if snippet_chars > 0 and len(snippet) > snippet_chars:
+            snippet = snippet[:snippet_chars].rstrip() + "…"
+        lines.append(f"  - {role}: {snippet}")
+    lines.append("]")
+    return "\n".join(lines)
+
+
+
 _THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.DOTALL | re.IGNORECASE)
 _DANGLING_OPEN_THINK_RE = re.compile(r".*?</think\s*>", re.DOTALL | re.IGNORECASE)
 
@@ -327,8 +376,20 @@ class QwenClient:
         # the client is dropping history. Updated on every chat/stream.
         # Schema:
         #   {"dropped": int, "prompt_tokens": int,
-        #    "max_tokens": int, "cap": int, "kept": int}
+        #    "max_tokens": int, "cap": int, "kept": int,
+        #    "summarized": bool}
         self._last_compression: dict[str, int] | None = None
+        # Loop 244: optional persistent task memory whose to_system_prompt()
+        # block is auto-prepended to outgoing chats so the model never
+        # forgets its current task / open todos across turns or restarts.
+        # Default-loaded from env (QWEN_TASK_MEMORY=1 enables); attach
+        # a custom instance after construction to override.
+        try:
+            from qwen_coder_mcp.task_memory import load_default_task_memory
+
+            self.task_memory = load_default_task_memory()
+        except Exception:  # noqa: BLE001 -- never let memory crash the client
+            self.task_memory = None
 
     def close(self) -> None:
         self._client.close()
@@ -364,6 +425,37 @@ class QwenClient:
         return sum(
             _estimate_tokens(self._msg_content(m)) + overhead for m in messages
         )
+
+    def _inject_task_memory(
+        self,
+        messages: Sequence[ChatMessage | dict[str, str]],
+    ) -> list[Any]:
+        """Loop 244: when self.task_memory is non-empty, prepend its
+        to_system_prompt() rendering as a synthetic ``system`` message
+        AFTER any existing system role-prompts (so the role-prompt
+        still owns first-position framing) and BEFORE the live dialogue.
+
+        Returns a fresh list; never mutates the caller's. Returns the
+        input list unchanged when no memory is attached or it's empty.
+        """
+        tm = getattr(self, "task_memory", None)
+        if tm is None:
+            return list(messages)
+        try:
+            block = tm.to_system_prompt()
+        except Exception:  # noqa: BLE001 -- memory must never break chat
+            return list(messages)
+        if not block:
+            return list(messages)
+        msgs = list(messages)
+        insert_idx = 0
+        for i, m in enumerate(msgs):
+            if self._msg_role(m) == "system":
+                insert_idx = i + 1
+            else:
+                break
+        msgs.insert(insert_idx, ChatMessage("system", block))
+        return msgs
 
     def _compress_messages_to_fit(
         self,
@@ -408,6 +500,9 @@ class QwenClient:
             return msgs, max(1, target if cap <= 0 else self._resolve_max_tokens(msgs, target))
 
         reserve = _context_reserve_tokens()
+        summary_enabled = _compression_summary_enabled()
+        snippet_chars = _compression_summary_chars()
+        per_msg_overhead = _per_message_overhead_tokens()
 
         def _protected_indices(ms: list[Any]) -> set[int]:
             keep = {i for i, m in enumerate(ms) if self._msg_role(m) == "system"}
@@ -417,25 +512,61 @@ class QwenClient:
                     break
             return keep
 
-        dropped = 0
+        # Loop 243: track *what* we drop so we can prepend a synthetic
+        # system summary of the dropped content. Plain list-of-tuples
+        # (role, content) preserves order so the rendered summary reads
+        # in the right direction.
+        dropped_payloads: list[tuple[str, str]] = []
+
+        def _summary_cost() -> int:
+            if not summary_enabled or not dropped_payloads:
+                return 0
+            text = _render_compression_summary(dropped_payloads, snippet_chars)
+            # +overhead for the synthetic system message wrapper itself.
+            return _estimate_tokens(text) + per_msg_overhead
+
         # Loop until the request fits OR we have no more droppable msgs.
+        # The summary itself costs tokens, so we account for it on every
+        # iteration -- otherwise we could under-drop and still overflow.
         while True:
-            prompt_t = self._prompt_tokens(msgs)
-            # We want: prompt + target + reserve <= cap.
+            prompt_t = self._prompt_tokens(msgs) + _summary_cost()
             if prompt_t + target + reserve <= cap:
                 break
             keep = _protected_indices(msgs)
             droppable = [i for i in range(len(msgs)) if i not in keep]
             if not droppable:
                 break
-            msgs.pop(droppable[0])
-            dropped += 1
+            idx = droppable[0]
+            dropped_payloads.append(
+                (self._msg_role(msgs[idx]), self._msg_content(msgs[idx]))
+            )
+            msgs.pop(idx)
 
+        # Loop 243: materialize the synthetic summary message. Insert
+        # AFTER the existing system messages so the model still sees its
+        # primary role-prompt first, then the historical context, then
+        # the live dialogue.
+        summarized = False
+        if dropped_payloads and summary_enabled:
+            summary_text = _render_compression_summary(
+                dropped_payloads, snippet_chars
+            )
+            insert_idx = 0
+            for i, m in enumerate(msgs):
+                if self._msg_role(m) == "system":
+                    insert_idx = i + 1
+                else:
+                    break
+            msgs.insert(insert_idx, ChatMessage("system", summary_text))
+            summarized = True
+
+        dropped = len(dropped_payloads)
         if dropped > 0:
             _logger.warning(
                 "context compression: dropped %d oldest message(s) to "
-                "fit %d-token cap (target_completion=%d, reserve=%d)",
-                dropped, cap, target, reserve,
+                "fit %d-token cap (target_completion=%d, reserve=%d, "
+                "summarized=%s)",
+                dropped, cap, target, reserve, summarized,
             )
 
         # Final clamp: if we still don't fit (only system + last user
@@ -451,12 +582,14 @@ class QwenClient:
             self._last_compression = {
                 "dropped": dropped, "kept": len(msgs),
                 "prompt_tokens": prompt_t, "max_tokens": 1, "cap": cap,
+                "summarized": summarized,
             }
             return msgs, 1
         final_max = max(1, min(target, room))
         self._last_compression = {
             "dropped": dropped, "kept": len(msgs),
             "prompt_tokens": prompt_t, "max_tokens": final_max, "cap": cap,
+            "summarized": summarized,
         }
         return msgs, final_max
 
@@ -645,10 +778,14 @@ class QwenClient:
         repetition_penalty: float | None = None,
     ) -> str:
         """Send a chat completion request and return the assistant text."""
+        # Loop 244: prepend the persistent task-memory block (current
+        # task / open todos / facts) so the model never forgets what
+        # it's working on. No-op when self.task_memory is None or empty.
+        augmented = self._inject_task_memory(messages)
         # Loop 240: drop oldest non-protected messages so prompt + completion
         # fits inside the server's context cap. No-op if QWEN_AUTO_COMPRESS=0.
         compressed_msgs, resolved_max = self._compress_messages_to_fit(
-            messages, max_tokens
+            augmented, max_tokens
         )
         payload: dict[str, Any] = {
             "model": self.settings.model,
@@ -742,10 +879,12 @@ class QwenClient:
         more useful than blocking for a retry. Callers wanting
         retries should fall back to `chat()`.
         """
+        # Loop 244: same task-memory injection as chat().
+        augmented = self._inject_task_memory(messages)
         # Loop 240: same compression as chat() — drop oldest non-protected
         # messages so prompt + completion fits the server's context cap.
         compressed_msgs, resolved_max = self._compress_messages_to_fit(
-            messages, max_tokens
+            augmented, max_tokens
         )
         payload: dict[str, Any] = {
             "model": self.settings.model,

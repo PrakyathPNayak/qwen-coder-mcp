@@ -4127,3 +4127,16 @@ verified by 'no compression no line' test), Scope (read-only
 attribute exposure -- doesn't change wire payload or compression
 logic), Priority (P2 -- diagnostic only, not behavioural). Suite
 ~1.5k green.
+
+## Loop 243 — compression summary stubs
+**Why:** Loop 240 silently drops oldest non-protected messages when context overflows. The model literally has no idea those turns ever happened. User flagged "stops abruptly and forgets context often."
+**Change:** When `_compress_messages_to_fit` evicts messages, render a `[Earlier in conversation: N message(s) summarized — role: snippet...]` synthetic system message and insert it AFTER existing system prompts, BEFORE the live dialogue. Summary cost is itself accounted for in the budget loop. Env: `QWEN_COMPRESSION_SUMMARY=1` (default on), `QWEN_COMPRESSION_SUMMARY_CHARS=200`.
+**Tests:** +14 in `TestCompressionSummaryLoop243`. Pinned `QWEN_COMPRESSION_SUMMARY=0` in older loop-240 tests.
+**Devil step:** Correctness — synthetic msg inserted at correct position (verified); budget includes its own size (verified)Scope . only compress path touched. Priority — P0, addresses user's exact report. 
+
+## Loop 244 — persistent TaskMemory + auto-injection
+**Why:** Even with summary stubs, every fresh session/process restart loses task continuity. Operator must re-explain the whole arc.
+**Change:** New module `src/qwen_coder_mcp/task_memory.py` with `TaskMemory` (current_task, todos, decisions, facts) backed by atomic JSON write to `.agent/context/state.json`. `QwenClient.__init__` auto-loads via `load_default_task_memory()` when `QWEN_TASK_MEMORY=1`. Both `chat()` and `chat_stream()` call `_inject_task_memory()` BEFORE compression, prepending a `[Task memory: current task: ... open todos: ... ]` synthetic system message after existing system prompts. Failure-safe: any exception in injection returns messages unchanged (memory must never break chat). Caps: 32 todos / 16 decisions / 32 facts with FIFO eviction (todos prefer evicting oldest *done* first).
+**Tests:** +31 in new `tests/test_task_memory.py`: `TestTaskMemoryPersistence`, `TestRendering`, `TestEnvLoading`, `TestQwenClientInjection`.
+**Devil step:** Correctness — injection order verified (system → memory → dialogue); failure-safe verified. Scope — additive new module + 3 wire-in points. Priority — P0, persistent state survives restarts which summary stubs alone cannot.
+**Bug found mid-flight:** First test run showed wasn't reaching wire payload  memory investigation revealed `chat()` wiring never landed (only `chat_stream` did). Fixed and re-verified. Lesson: when wiring into multiple call sites via sed/edit, always grep for both occurrences post-edit.

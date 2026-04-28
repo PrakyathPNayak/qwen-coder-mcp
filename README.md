@@ -92,6 +92,13 @@ Copy `.env.example` to `.env` and adjust if needed:
 | `QWEN_CONTEXT_RESERVE` | `256` | Loop 240: tokens kept free of prompt + completion as headroom for chat-template overhead (per-message role tags, eot markers). Raise if you see vLLM still 400'ing on edge-case overflows. |
 | `QWEN_CHARS_PER_TOKEN` | `3.0` | Loop 240: estimator ratio used for client-side token counting. Code/markdown is ~3 chars/token on Qwen3-Next; English prose is closer to 4. Lower → tighter clamping, more aggressive compression. |
 | `QWEN_PER_MESSAGE_TOKENS` | `6` | Loop 241: ChatML wrapper overhead added per message during estimation. Qwen3-Next wraps every message with `<\|im_start\|>role\n...<\|im_end\|>\n` (~4-7 tokens). On 50-turn histories the un-accounted overhead added up to 300+ tokens. Set `0` to disable. |
+| `QWEN_COMPRESSION_SUMMARY` | `1` | Loop 243: when context compression drops messages, leave a synthetic `system` message containing `[Earlier in conversation: N message(s) summarized... - role: snippet...]` so the model retains some signal about what was discussed. Set `0` to fall back to silent loop-240 drops. |
+| `QWEN_COMPRESSION_SUMMARY_CHARS` | `200` | Loop 243: max characters of each dropped message kept in the summary snippet. Lower → more compact, less context preserved. |
+| `QWEN_TASK_MEMORY` | unset | Loop 244: set `1`/`true`/`yes`/`on` to enable the persistent task / todo / facts memory. When enabled, every chat request gets a synthetic system message containing the current task, open todos, and recent decisions — so the model never forgets what it's working on across turns or session restarts. |
+| `QWEN_TASK_MEMORY_PATH` | `.agent/context/state.json` | Loop 244: where the JSON state file lives. Atomic writes (tempfile + rename) so an interrupted save can't corrupt it. |
+| `QWEN_TASK_MEMORY_MAX_TODOS` | `32` | Loop 244: cap on todo entries. Eviction prefers oldest *done* todos first, then any oldest. |
+| `QWEN_TASK_MEMORY_MAX_DECISIONS` | `16` | Loop 244: cap on recent decision entries. FIFO. |
+| `QWEN_TASK_MEMORY_MAX_FACTS` | `32` | Loop 244: cap on key→value facts. FIFO by insertion order. |
 | `QWEN_DISABLE_THINK_STRIP` | unset | Set `1` to disable stripping of `<think>...</think>` reasoning blocks from assistant content. |
 | `LOOP_INTERVAL_SECONDS` | `45` | Sleep between iterations |
 | `LOOP_MAX_FILE_BYTES` | `60000` | Skip files larger than this |

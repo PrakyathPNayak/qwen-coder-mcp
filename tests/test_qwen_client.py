@@ -1039,6 +1039,16 @@ class TestReadmeKnobsLoop239:
         text = self._readme()
         assert "`QWEN_PER_MESSAGE_TOKENS`" in text
 
+    def test_readme_documents_compression_summary_knobs(self):
+        text = self._readme()
+        assert "`QWEN_COMPRESSION_SUMMARY`" in text
+        assert "`QWEN_COMPRESSION_SUMMARY_CHARS`" in text
+
+    def test_readme_documents_task_memory_knobs(self):
+        text = self._readme()
+        assert "`QWEN_TASK_MEMORY`" in text
+        assert "`QWEN_TASK_MEMORY_PATH`" in text
+
 
 # ============================================================ Loop 240
 # Context compression: drop oldest non-protected messages so prompt +
@@ -1157,7 +1167,7 @@ class TestContextCompressionLoop240:
         assert mt == 100
 
     def test_drops_oldest_non_protected_when_overflow(self, monkeypatch):
-        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0"); monkeypatch.setenv("QWEN_COMPRESSION_SUMMARY", "0")
         # cap=200 tokens, target completion=50, reserve=0.
         # Each message content "x"*150 -> 50 tokens at 3 cpt.
         c = self._client(
@@ -1185,7 +1195,7 @@ class TestContextCompressionLoop240:
         assert len(out) < len(msgs)
 
     def test_preserves_all_system_messages(self, monkeypatch):
-        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0"); monkeypatch.setenv("QWEN_COMPRESSION_SUMMARY", "0")
         c = self._client(
             lambda r: _ok_response("ok"),
             self._settings_with_cap(cap=300, max_tokens=50),
@@ -1204,7 +1214,7 @@ class TestContextCompressionLoop240:
         assert roles.count("system") == 2
 
     def test_preserves_last_user_even_if_oldest_was_user(self, monkeypatch):
-        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0"); monkeypatch.setenv("QWEN_COMPRESSION_SUMMARY", "0")
         c = self._client(
             lambda r: _ok_response("ok"),
             self._settings_with_cap(cap=200, max_tokens=20),
@@ -1225,7 +1235,7 @@ class TestContextCompressionLoop240:
         assert last_content == "tail"
 
     def test_clamps_max_tokens_when_protected_msgs_alone_overflow(self, monkeypatch):
-        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0"); monkeypatch.setenv("QWEN_COMPRESSION_SUMMARY", "0")
         c = self._client(
             lambda r: _ok_response("ok"),
             self._settings_with_cap(cap=100, max_tokens=80),
@@ -1242,7 +1252,7 @@ class TestContextCompressionLoop240:
         assert mt == 10
 
     def test_returns_one_when_protected_msgs_alone_exceed_cap(self, monkeypatch):
-        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0"); monkeypatch.setenv("QWEN_COMPRESSION_SUMMARY", "0")
         c = self._client(
             lambda r: _ok_response("ok"),
             self._settings_with_cap(cap=50, max_tokens=80),
@@ -1272,7 +1282,7 @@ class TestContextCompressionLoop240:
         assert len(out) == len(msgs)
 
     def test_caller_messages_list_not_mutated(self, monkeypatch):
-        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0"); monkeypatch.setenv("QWEN_COMPRESSION_SUMMARY", "0")
         c = self._client(
             lambda r: _ok_response("ok"),
             self._settings_with_cap(cap=200, max_tokens=20),
@@ -1289,7 +1299,7 @@ class TestContextCompressionLoop240:
 
     # ---------------------------------------------------- Wired into chat
     def test_chat_sends_compressed_messages_to_server(self, monkeypatch):
-        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0"); monkeypatch.setenv("QWEN_COMPRESSION_SUMMARY", "0")
         seen: dict = {}
 
         def handler(req):
@@ -1311,7 +1321,7 @@ class TestContextCompressionLoop240:
         assert sent_roles[-1] == "user"
 
     def test_chat_stream_also_compresses(self, monkeypatch):
-        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0"); monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0"); monkeypatch.setenv("QWEN_COMPRESSION_SUMMARY", "0")
         seen: dict = {}
 
         def handler(req):
@@ -1413,7 +1423,7 @@ class TestPerMessageOverheadLoop241:
         assert content_only == 30
 
     def test_overhead_disabled_via_env(self, monkeypatch):
-        monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0"); monkeypatch.setenv("QWEN_COMPRESSION_SUMMARY", "0")
         c = TestContextCompressionLoop240._client(
             lambda r: _ok_response("ok"),
             TestContextCompressionLoop240._settings_with_cap(cap=10000),
@@ -1450,3 +1460,223 @@ class TestPerMessageOverheadLoop241:
         msgs.insert(1, ChatMessage("assistant", "x" * 30))  # +30 tok
         out, _mt = c._compress_messages_to_fit(msgs, requested_max_tokens=20)
         assert len(out) < len(msgs), "compression should have fired with overhead accounted"
+
+
+# ============================================================ Loop 243
+# Compression summarization: leave a synthetic system message describing
+# what was dropped so the model retains some signal about prior context.
+class TestCompressionSummaryLoop243:
+    """Loop 243: user reported 'stopping abruptly and forgetting context
+    often'. Loop-240 dropped messages silently; the model never saw any
+    trace of what was discussed before. Now we render a compact
+    ``[Earlier in conversation: ...]`` block summarizing each dropped
+    message and inject it as a synthetic system message so the model
+    can pick up the thread."""
+
+    @staticmethod
+    def _client_cap(cap: int = 200, max_tokens: int = 50):
+        return TestContextCompressionLoop240._client(
+            lambda r: _ok_response("ok"),
+            TestContextCompressionLoop240._settings_with_cap(cap=cap, max_tokens=max_tokens),
+        )
+
+    def test_render_summary_format_basic(self):
+        from qwen_coder_mcp.qwen_client import _render_compression_summary
+
+        out = _render_compression_summary(
+            [("user", "what is foo?"), ("assistant", "foo is a thing")],
+            snippet_chars=200,
+        )
+        assert "Earlier in conversation" in out
+        assert "2 message(s)" in out
+        assert "user: what is foo?" in out
+        assert "assistant: foo is a thing" in out
+        assert out.endswith("]")
+
+    def test_render_summary_truncates_long_content(self):
+        from qwen_coder_mcp.qwen_client import _render_compression_summary
+
+        long = "x" * 500
+        out = _render_compression_summary([("user", long)], snippet_chars=50)
+        # Must include ellipsis marker and not the full 500 chars.
+        assert "…" in out
+        assert "x" * 200 not in out
+
+    def test_render_summary_collapses_whitespace(self):
+        from qwen_coder_mcp.qwen_client import _render_compression_summary
+
+        out = _render_compression_summary(
+            [("user", "line1\nline2\n\n   line3")], snippet_chars=200
+        )
+        # The user-content snippet line must not contain raw newlines.
+        user_line = [
+            ln for ln in out.splitlines() if ln.lstrip().startswith("- user:")
+        ][0]
+        assert "\n" not in user_line  # one line per dropped msg
+        assert "line1 line2 line3" in user_line
+
+    def test_render_summary_empty_list_returns_empty(self):
+        from qwen_coder_mcp.qwen_client import _render_compression_summary
+
+        assert _render_compression_summary([], 200) == ""
+
+    def test_summary_enabled_by_default(self):
+        from qwen_coder_mcp.qwen_client import _compression_summary_enabled
+
+        assert _compression_summary_enabled() is True
+
+    def test_summary_disable_via_env(self, monkeypatch):
+        from qwen_coder_mcp.qwen_client import _compression_summary_enabled
+
+        for v in ("0", "false", "no", "off", "FALSE"):
+            monkeypatch.setenv("QWEN_COMPRESSION_SUMMARY", v)
+            assert _compression_summary_enabled() is False, f"value {v!r} should disable"
+
+    def test_summary_chars_default_and_override(self, monkeypatch):
+        from qwen_coder_mcp.qwen_client import _compression_summary_chars
+
+        assert _compression_summary_chars() == 200
+        monkeypatch.setenv("QWEN_COMPRESSION_SUMMARY_CHARS", "50")
+        assert _compression_summary_chars() == 50
+        monkeypatch.setenv("QWEN_COMPRESSION_SUMMARY_CHARS", "junk")
+        assert _compression_summary_chars() == 200
+        monkeypatch.setenv("QWEN_COMPRESSION_SUMMARY_CHARS", "-5")
+        assert _compression_summary_chars() == 0  # clamped non-negative
+
+    def test_compression_inserts_synthetic_summary_message(self, monkeypatch):
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        # Summary ON (default).
+        c = self._client_cap(cap=200, max_tokens=20)
+        msgs = [
+            ChatMessage("system", "you are helpful"),
+            ChatMessage("user", "x" * 300),       # 100 tok, droppable
+            ChatMessage("assistant", "x" * 300),  # 100 tok, droppable
+            ChatMessage("user", "tail"),
+        ]
+        out, _mt = c._compress_messages_to_fit(msgs, requested_max_tokens=20)
+        roles = [m.role if isinstance(m, ChatMessage) else m["role"] for m in out]
+        # We expect: original system, synthetic summary system, last user.
+        assert roles[0] == "system"
+        assert roles[1] == "system"  # the synthetic summary
+        # Synthetic summary content must mention "Earlier in conversation".
+        synth = out[1]
+        synth_content = synth.content if isinstance(synth, ChatMessage) else synth["content"]
+        assert "Earlier in conversation" in synth_content
+
+    def test_compression_summary_disabled_env_no_synthetic_msg(self, monkeypatch):
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        monkeypatch.setenv("QWEN_COMPRESSION_SUMMARY", "0")
+        c = self._client_cap(cap=200, max_tokens=20)
+        msgs = [
+            ChatMessage("system", "you are helpful"),
+            ChatMessage("user", "x" * 300),
+            ChatMessage("assistant", "x" * 300),
+            ChatMessage("user", "tail"),
+        ]
+        out, _mt = c._compress_messages_to_fit(msgs, requested_max_tokens=20)
+        # No synthetic system message inserted -- only the original.
+        sys_count = sum(1 for m in out if (m.role if isinstance(m, ChatMessage) else m["role"]) == "system")
+        assert sys_count == 1
+
+    def test_summary_inserted_after_existing_system_messages(self, monkeypatch):
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        c = self._client_cap(cap=300, max_tokens=20)
+        msgs = [
+            ChatMessage("system", "ROLE_A"),
+            ChatMessage("system", "ROLE_B"),
+            ChatMessage("user", "x" * 900),  # 300 tok, droppable
+            ChatMessage("user", "tail"),
+        ]
+        out, _mt = c._compress_messages_to_fit(msgs, requested_max_tokens=20)
+        # Both original system msgs come first, then synthetic, then user.
+        assert out[0].content == "ROLE_A"
+        assert out[1].content == "ROLE_B"
+        synth_content = out[2].content
+        assert "Earlier in conversation" in synth_content
+        assert (out[-1].content) == "tail"
+
+    def test_summary_records_summarized_in_stats(self, monkeypatch):
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        c = self._client_cap(cap=100, max_tokens=20)
+        msgs = [
+            ChatMessage("system", "s"),
+            ChatMessage("user", "x" * 600),  # 200 tok, must drop
+            ChatMessage("user", "tail"),
+        ]
+        c._compress_messages_to_fit(msgs, requested_max_tokens=20)
+        assert c._last_compression is not None
+        assert c._last_compression.get("summarized") is True
+
+    def test_no_drops_no_summary_no_summarized_flag(self, monkeypatch):
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        c = self._client_cap(cap=10000, max_tokens=20)
+        msgs = [
+            ChatMessage("system", "s"),
+            ChatMessage("user", "tail"),
+        ]
+        out, _mt = c._compress_messages_to_fit(msgs, requested_max_tokens=20)
+        assert len(out) == 2  # no synthetic insert
+        assert c._last_compression["summarized"] is False
+
+    def test_summary_cost_accounted_in_budget(self, monkeypatch):
+        """Realistic scenario: summary would itself cause overflow.
+        Verify the budget loop accounts for it and drops accordingly,
+        then the final wire payload still fits the cap."""
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        # Tiny snippets so summary itself stays small and the algorithm
+        # can actually fit the wire payload under the cap.
+        monkeypatch.setenv("QWEN_COMPRESSION_SUMMARY_CHARS", "20")
+        c = self._client_cap(cap=2000, max_tokens=50)
+        msgs = [ChatMessage("system", "role")]
+        for i in range(20):
+            msgs.append(ChatMessage("user", f"question {i} " + "x" * 200))
+            msgs.append(ChatMessage("assistant", f"answer {i} " + "x" * 200))
+        msgs.append(ChatMessage("user", "tail"))
+        out, mt = c._compress_messages_to_fit(msgs, requested_max_tokens=50)
+        from qwen_coder_mcp.qwen_client import _estimate_tokens
+
+        prompt_t = sum(_estimate_tokens(
+            m.content if isinstance(m, ChatMessage) else m["content"]
+        ) for m in out)
+        # Wire payload (including the synthetic summary) must fit cap.
+        assert prompt_t + mt <= 2000, f"overflow: {prompt_t}+{mt}>2000"
+
+    def test_summary_visible_in_chat_wire_payload(self, monkeypatch):
+        """End-to-end via chat(): the synthetic summary must reach
+        the server in the messages array."""
+        monkeypatch.setenv("QWEN_CONTEXT_RESERVE", "0")
+        monkeypatch.setenv("QWEN_PER_MESSAGE_TOKENS", "0")
+        seen: dict = {}
+
+        def handler(req):
+            seen.update(json.loads(req.content.decode("utf-8")))
+            return _ok_response("ok")
+
+        c = TestContextCompressionLoop240._client(
+            handler,
+            TestContextCompressionLoop240._settings_with_cap(cap=100, max_tokens=20),
+        )
+        msgs = [
+            ChatMessage("system", "role"),
+            ChatMessage("user", "what is the meaning of life?"),
+            ChatMessage("assistant", "42"),
+            ChatMessage("user", "x" * 600),
+            ChatMessage("user", "tail"),
+        ]
+        c.chat(msgs, max_tokens=20)
+        sent = seen["messages"]
+        # Synthetic system msg must be present and contain dropped content.
+        synth_systems = [
+            m for m in sent
+            if m["role"] == "system" and "Earlier in conversation" in m["content"]
+        ]
+        assert len(synth_systems) == 1
+        # The summary should reference some dropped content.
+        synth = synth_systems[0]["content"]
+        assert ("meaning of life" in synth) or ("42" in synth) or ("user:" in synth)
