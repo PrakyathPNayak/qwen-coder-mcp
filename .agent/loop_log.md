@@ -1372,3 +1372,14 @@ kwarg actually forwarded. Existing tests still pass.
   - Edge: if origin/main resolution fails (no remote, no fetch), we log and return False — same outcome as before, no regression.
 - ACT: Function extended; 3 new tests (HEAD-broken recovers via origin/main; both fallbacks fail; origin/main NOT attempted when HEAD reset succeeds). 419 passed.
 - COMMIT: pending.
+
+## Loop 74 — `_RateLimitedSwallowLogger.summary()`
+- OBSERVE: After loops 70-71 added rate-limited logging, the suppression count was internal only. Operator wanting to know "is _write_timing currently failing 50 times in a row?" would have to grep runtime.log for the most-recent count= line. Programmatic query missing.
+- ORIENT: Cause: no public introspection method. Bucket 5 observability completion.
+- DECIDE: Add `last_logged_count` field; `report()` updates it on emit; `summary()` returns dict with label, count, last_logged_count, suppressed=count-last_logged, schedule, every. `reset()` clears both counters.
+- DEVIL:
+  - Correctness: existing report/reset logic unchanged for callers; only adds tracking. ✓
+  - Scope: addresses programmatic-query gap.
+  - Priority: bucket 5; was next.md #3.
+- ACT: 6 tests (zero-state, one-logged, all-suppressed, every-n-advance, reset clears both, exponential summary). 425 passed.
+- COMMIT: pending.

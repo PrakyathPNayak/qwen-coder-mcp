@@ -1299,3 +1299,74 @@ class TestIterationTimestampCached:
         assert "2099-02-02T00:00:00" in state_text
         for i in range(2, 20):
             assert f"WRONG_TS_{i}" not in state_text
+
+
+class TestRateLimitedSwallowLoggerSummary:
+    """Loop 74: `summary()` exposes suppression state for diagnostics."""
+
+    def test_summary_zero_at_construction(self):
+        from agent import loop as L
+        logger = L._RateLimitedSwallowLogger("xyz")
+        s = logger.summary()
+        assert s["label"] == "xyz"
+        assert s["count"] == 0
+        assert s["last_logged_count"] == 0
+        assert s["suppressed"] == 0
+
+    def test_summary_after_one_logged_failure(self, monkeypatch):
+        from agent import loop as L
+        logger = L._RateLimitedSwallowLogger("xyz", every=100, schedule="linear")
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        logger.report(OSError("e"))
+        s = logger.summary()
+        assert s["count"] == 1
+        assert s["last_logged_count"] == 1
+        assert s["suppressed"] == 0
+
+    def test_summary_after_suppressed_failures(self, monkeypatch):
+        from agent import loop as L
+        logger = L._RateLimitedSwallowLogger("xyz", every=100, schedule="linear")
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        for _ in range(50):
+            logger.report(OSError("e"))
+        s = logger.summary()
+        # Linear every=100: only count=1 was logged. 49 suppressed.
+        assert s["count"] == 50
+        assert s["last_logged_count"] == 1
+        assert s["suppressed"] == 49
+
+    def test_summary_advances_at_every_n_log(self, monkeypatch):
+        from agent import loop as L
+        logger = L._RateLimitedSwallowLogger("xyz", every=5, schedule="linear")
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        for _ in range(12):
+            logger.report(OSError("e"))
+        # Logs at 1, 5, 10. last_logged_count = 10. count=12. suppressed=2.
+        s = logger.summary()
+        assert s["count"] == 12
+        assert s["last_logged_count"] == 10
+        assert s["suppressed"] == 2
+
+    def test_reset_clears_last_logged_count(self, monkeypatch):
+        from agent import loop as L
+        logger = L._RateLimitedSwallowLogger("xyz")
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        logger.report(OSError("e"))
+        assert logger.last_logged_count == 1
+        logger.reset()
+        assert logger.summary()["last_logged_count"] == 0
+        assert logger.summary()["count"] == 0
+        assert logger.summary()["suppressed"] == 0
+
+    def test_summary_exponential_schedule(self, monkeypatch):
+        from agent import loop as L
+        logger = L._RateLimitedSwallowLogger("xyz", every=8, schedule="exponential")
+        monkeypatch.setattr(L, "_log", lambda m: None)
+        for _ in range(10):
+            logger.report(OSError("e"))
+        # Expo with every=8: logs at 1, 2, 4, 8. count=10, last=8, suppressed=2.
+        s = logger.summary()
+        assert s["count"] == 10
+        assert s["last_logged_count"] == 8
+        assert s["suppressed"] == 2
+        assert s["schedule"] == "exponential"

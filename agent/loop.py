@@ -134,6 +134,12 @@ class _RateLimitedSwallowLogger:
 
     All module-level instances default to exponential because operators
     benefit from early warning.
+
+    Use ``summary()`` to introspect: ``count`` (total failures since
+    construction or last ``reset()``), ``last_logged_count`` (count at
+    most-recent log emission, or 0 if nothing has been logged), and
+    ``suppressed`` (failures since the last log). Useful for a future
+    admin endpoint.
     """
 
     def __init__(
@@ -146,6 +152,7 @@ class _RateLimitedSwallowLogger:
         self.every = every
         self.schedule = schedule
         self.count = 0
+        self.last_logged_count = 0
 
     def _should_log(self) -> bool:
         n = self.count
@@ -166,9 +173,22 @@ class _RateLimitedSwallowLogger:
         self.count += 1
         if self._should_log():
             _log(f"{self.label} failed (count={self.count}): {exc}")
+            self.last_logged_count = self.count
 
     def reset(self) -> None:
         self.count = 0
+        self.last_logged_count = 0
+
+    def summary(self) -> dict[str, int | str]:
+        """Return a snapshot of suppression state for diagnostics."""
+        return {
+            "label": self.label,
+            "count": self.count,
+            "last_logged_count": self.last_logged_count,
+            "suppressed": self.count - self.last_logged_count,
+            "schedule": self.schedule,
+            "every": self.every,
+        }
 
 
 _GIT_CMD_TIMEOUT_SECONDS = 60  # legacy alias; use _git_cmd_timeout_seconds()
