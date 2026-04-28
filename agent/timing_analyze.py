@@ -74,6 +74,7 @@ def analyze(records: list[dict]) -> dict:
     either filesystem-level slowness or a missing `_PhaseTimer`."""
     by_cat: dict[str, list[float]] = {}
     by_phase: dict[str, list[float]] = {}
+    by_cat_delta: dict[str, list[float]] = {}
     cat_counts: dict[str, int] = {}
     deltas: list[float] = []
     for rec in records:
@@ -91,12 +92,17 @@ def analyze(records: list[dict]) -> dict:
         delta = rec.get("wall_s_delta_phases")
         if isinstance(delta, (int, float)):
             deltas.append(float(delta))
+            if isinstance(cat, str):
+                by_cat_delta.setdefault(cat, []).append(float(delta))
     return {
         "total_records": len(records),
         "category_counts": cat_counts,
         "category_wall_s": {k: _summarize(v) for k, v in by_cat.items()},
         "phase_wall_s": {k: _summarize(v) for k, v in by_phase.items()},
         "wall_s_delta_phases": _summarize(deltas),
+        "category_wall_s_delta_phases": {
+            k: _summarize(v) for k, v in by_cat_delta.items()
+        },
     }
 
 
@@ -135,6 +141,16 @@ def format_report(report: dict) -> str:
         )
     else:
         lines.append("wall_s_delta_phases: no records emit this field")
+    by_cat_delta = report.get("category_wall_s_delta_phases", {})
+    if by_cat_delta:
+        lines.append("")
+        lines.append("wall_s_delta_phases by category (p95 of unaccounted time):")
+        for cat in sorted(by_cat_delta):
+            s = by_cat_delta[cat]
+            lines.append(
+                f"  {cat:30s} count={s['count']:4d}  "
+                f"mean={s['mean']:.3f} p50={s['p50']:.3f} p95={s['p95']:.3f}"
+            )
     return "\n".join(lines) + "\n"
 
 

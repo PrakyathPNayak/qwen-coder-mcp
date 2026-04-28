@@ -220,6 +220,13 @@ class TestReadmeMentionsAnalyzer:
         readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
         assert "--file" in readme
 
+    def test_readme_mentions_no_rotated_flag(self):
+        """Loop 117: the `--no-rotated` flag (loop 115) must be
+        documented or operators won't know rotated-slot ingestion is
+        opt-out-able."""
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
+        assert "--no-rotated" in readme
+
 
 class TestRotatedLogAggregation:
     """Loop 115: rotation produces `<file>.1`. The CLI should ingest
@@ -286,3 +293,34 @@ class TestRotatedLogAggregation:
         log = tmp_path / "timing.log"
         out = _resolve_inputs(log, include_rotated=True)
         assert out == []
+
+
+class TestPerCategoryDeltaPhases:
+    """Loop 118: `wall_s_delta_phases` broken down by category --
+    high delta on `applied` is more concerning than on `clean`."""
+
+    def test_collects_per_category_delta(self):
+        from agent.timing_analyze import analyze
+        recs = [
+            {"category": "applied", "wall_s": 10.0, "phases": {"find_bugs": 5.0}, "wall_s_delta_phases": 0.5},
+            {"category": "applied", "wall_s": 12.0, "phases": {"find_bugs": 6.0}, "wall_s_delta_phases": 1.5},
+            {"category": "clean", "wall_s": 8.0, "phases": {}, "wall_s_delta_phases": 8.0},
+        ]
+        out = analyze(recs)
+        per = out["category_wall_s_delta_phases"]
+        assert per["applied"]["count"] == 2
+        assert per["clean"]["count"] == 1
+        assert per["clean"]["p95"] == 8.0
+
+    def test_format_report_includes_per_category_delta(self):
+        from agent.timing_analyze import analyze, format_report
+        recs = [
+            {"category": "applied", "wall_s": 10.0, "phases": {"find_bugs": 5.0}, "wall_s_delta_phases": 0.5},
+        ]
+        text = format_report(analyze(recs))
+        assert "wall_s_delta_phases by category" in text
+
+    def test_no_per_category_block_when_empty(self):
+        from agent.timing_analyze import analyze, format_report
+        text = format_report(analyze([]))
+        assert "wall_s_delta_phases by category" not in text

@@ -1827,3 +1827,17 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: should I also document the `<msg>` truncation (60 chars)? Marginal -- the message is informational and varies. Punt.
   - Priority: small but solidly useful. Pure docs change with audits.
 - ACT: Updated README row. 2 audits. 574 passed.
+
+## Loop 117 — README mentions `--no-rotated` flag audit
+- DECIDE: 1-line audit asserting README contains literal `--no-rotated`. Loop 115 added the flag and a usage example but no audit; if README rot strips the example it goes silently undetected.
+- DEVIL: trivial test, no risk. Catches the regression class.
+- ACT: Added `test_readme_mentions_no_rotated_flag` next to existing `test_readme_mentions_file_flag`. (Bundled with loop 118 commit -- both are tiny.)
+
+## Loop 118 — Per-category breakdown of `wall_s_delta_phases` in analytics
+- OBSERVE: loop 113 added overall `wall_s_delta_phases` summary but a 5s delta on a `clean` outcome (where phases=={}) is uninteresting whereas 5s delta on `applied` (where 7 phases ran) signals real unaccounted work. The single global summary obscures this signal.
+- DECIDE: Add `category_wall_s_delta_phases: {category: summary}` to `analyze()` output, render in `format_report` as a sorted block sandwiched after the global summary. Skip block when empty.
+- DEVIL:
+  - Correctness: only collect delta when `category` is a string AND delta is numeric -- mirrors `by_cat` collection guards.
+  - Scope: should the JSON output include the new key? Yes -- tests assert against `out["category_wall_s_delta_phases"]`. format_report drives off it too.
+  - Priority: P5 -- sharper signal for ops triage.
+- ACT: Extended `analyze()` and `format_report()`, added 3 tests. 578 passed.
