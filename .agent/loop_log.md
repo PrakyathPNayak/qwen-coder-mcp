@@ -1855,3 +1855,12 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: the audit checks structural invariants, not just the comment text -- text drift would let through silent removals.
   - Priority: P5 long-term hygiene, prevents a class of "why is precheck phase always 0?" debugging.
 - ACT: Comment + 2 audits. 582 passed.
+
+## Loop 121 — Orphan-category audit for `OUTER_OUTCOME_CATEGORIES`
+- OBSERVE: existing audit asserts every declared category is documented in README. Inverse direction was unguarded: a category could be added to the frozenset, documented in README, but no `_finish*` call site actually emits it. Pure-frozenset bloat that lies to ops.
+- DECIDE: AST audit walking every `_finish`, `_finish_no_file`, `_write_timing` call. For each, extract first-arg literal (handling f-strings by reading the leading constant segment before any interp), split on `:` to grab the category prefix, accumulate. Set difference against `OUTER_OUTCOME_CATEGORIES` must be empty.
+- DEVIL:
+  - Correctness: f-string handling via `JoinedStr.values[0]` Constant grabs the literal prefix that comes before the interpolated `{rel}` -- which is exactly the category. If a future loop builds an outcome via `f"{var}:..."` (no leading literal), that category becomes invisible to the audit -- but that pattern is also bad practice (categories should be source-greppable).
+  - Scope: `crashed` is emitted from `main()` not `_iteration`, but the AST walks the entire module so it's included.
+  - Priority: P5 dead-code detection.
+- ACT: `TestOuterOutcomeCategoriesAllReachable` test class. 583 passed.

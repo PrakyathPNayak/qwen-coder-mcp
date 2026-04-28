@@ -3520,3 +3520,51 @@ class TestAbortRebaseDeliberatelyUntimed:
         src = inspect.getsource(L._iteration)
         assert '_PhaseTimer(phases, "precheck")' not in src
         assert "deliberately *not* wrapped in a `_PhaseTimer`" in src
+
+
+class TestOuterOutcomeCategoriesAllReachable:
+    """Loop 121: every category declared in `OUTER_OUTCOME_CATEGORIES`
+    must actually be emitted by some `_finish` / `_finish_no_file` /
+    `_write_timing` call site or it's a dead category and the table is
+    a lie. The audit walks `agent/loop.py` AST, extracts every literal
+    string passed as the outcome-shaped first arg, splits on `:` to
+    grab the category prefix, and asserts the set covers every
+    declared category (excluding `crashed` which is emitted from
+    `main()` not `_iteration`)."""
+
+    def test_every_category_has_an_emit_site(self):
+        import ast
+        from agent import loop as L
+        src = (Path(L.__file__)).read_text("utf-8")
+        tree = ast.parse(src)
+        emitted: set[str] = set()
+        targets = {"_finish", "_finish_no_file", "_write_timing"}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = getattr(fn, "id", None) or getattr(fn, "attr", None)
+            if name not in targets:
+                continue
+            if not node.args:
+                continue
+            first = node.args[0] if name != "_write_timing" else (node.args[1] if len(node.args) > 1 else None)
+            literals: list[str] = []
+            if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                literals.append(first.value)
+            elif isinstance(first, ast.JoinedStr):
+                for v in first.values:
+                    if isinstance(v, ast.Constant) and isinstance(v.value, str):
+                        literals.append(v.value)
+                        break
+            for lit in literals:
+                head = lit.split(":", 1)[0]
+                if head:
+                    emitted.add(head)
+        missing = set(L.OUTER_OUTCOME_CATEGORIES) - emitted
+        # `crashed` is emitted from `main()` in a synthetic _write_timing,
+        # which is also walked above -- so it should be in `emitted` too.
+        assert not missing, (
+            f"OUTER_OUTCOME_CATEGORIES declares categories with no emit "
+            f"site in agent/loop.py: {sorted(missing)}"
+        )
