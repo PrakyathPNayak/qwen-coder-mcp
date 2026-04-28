@@ -143,3 +143,10 @@ Each record in `.loop/timing.log` is a JSON line with:
   wall-clock seconds; emitted only when `iter_monotonic` was provided),
   and `wall_s_delta_phases` (`wall_s - sum(phases)`, floored at 0; flags
   unaccounted-for time outside the named phases).
+
+The named phases inside `phases` are: `discovery` (file selection +
+candidate read; emitted on iterations that find a real candidate),
+`find_bugs`, `propose_fix`, and `devils_advocate` (the three Qwen
+calls). Early-exit outcomes (`no_candidate_files`, `skip:...`,
+`crashed`) emit `phases: {}` -- no phase ran to completion in those
+records.

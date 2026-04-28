@@ -1681,18 +1681,33 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
     def _over_budget() -> bool:
         return time.monotonic() > deadline
 
-    files = _candidate_files()
+    # Loop 108: wrap discovery + read in a `discovery` phase so timing.log
+    # reflects how long file selection takes vs the Qwen calls. Without
+    # this, a slow filesystem (cold cache, networked storage) shows up
+    # only as elevated `wall_s_delta_phases` -- meaningful but harder
+    # to attribute. With the explicit phase, dashboards can rank repos
+    # by discovery cost and detect filesystem regressions. Note that
+    # the early-exit paths emit `phases={}` via `_finish_no_file` so
+    # they don't get a `discovery` row -- correct, since their
+    # iteration was a no-op from the caller's perspective.
+    discovery_phases: dict[str, float] = {}
+    with _PhaseTimer(discovery_phases, "discovery"):
+        files = _candidate_files()
+        if files:
+            idx = _load_cursor() % len(files)
+            rel = files[idx]
+            _save_cursor((idx + 1) % len(files))
+            code = _read_file(_REPO / rel, max_bytes)
+        else:
+            rel = None
+            code = None
     if not files:
         return _finish_no_file("no_candidate_files", Path("."))
-    idx = _load_cursor() % len(files)
-    rel = files[idx]
-    _save_cursor((idx + 1) % len(files))
-
-    code = _read_file(_REPO / rel, max_bytes)
     if code is None:
         return _finish_no_file(
             f"skip:{rel} (unreadable_or_too_large)", rel
         )
+    phases["discovery"] = discovery_phases["discovery"]
 
     def _finish(outcome: str) -> str:
         _write_timing(rel, outcome, phases, iter_monotonic=iter_monotonic)

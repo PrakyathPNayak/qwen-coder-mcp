@@ -250,11 +250,11 @@ def test_iteration_aborts_on_budget_after_find_bugs(env, monkeypatch):
     # Loop 83: _iteration now also calls time.monotonic() once at the
     # top to capture iter_monotonic. Provide that initial tick in addition
     # to the deadline-base tick.
-    # Loop 107: an additional `_over_budget()` check fires between
-    # _read_file and find_bugs (after_discovery). Provide a third
-    # in-budget tick so that check passes; subsequent 9999.0 ticks
-    # then fire the after_find_bugs check.
-    ticks = itertools.chain([1000.0, 1000.0, 1000.0], itertools.repeat(9999.0))
+    # Loop 107+108: extra in-budget ticks needed -- the new
+    # `discovery` _PhaseTimer (loop 108) consumes 2 monotonic ticks
+    # (enter + exit), the `after_discovery` _over_budget check (loop
+    # 107) consumes 1 more. Then 9999.0 fires after_find_bugs.
+    ticks = itertools.chain([1000.0] * 6, itertools.repeat(9999.0))
     monkeypatch.setattr(L.time, "monotonic", lambda: next(ticks))
     monkeypatch.setenv("QWEN_LOOP_ITER_BUDGET_S", "1")
     # Only one reply needed — second call should never be reached.
@@ -3245,3 +3245,50 @@ class TestIterationBudgetCoversDiscovery:
     def test_after_discovery_category_extracts_to_budget_exceeded(self):
         from agent import loop as L
         assert L._outer_outcome_category("budget_exceeded:foo.py:after_discovery") == "budget_exceeded"
+
+
+class TestDiscoveryPhaseTiming:
+    """Loop 108: discovery phase wraps `_candidate_files` + cursor + read."""
+
+    def test_discovery_phase_recorded_for_clean_outcome(self, env, monkeypatch):
+        L, repo = env
+        monkeypatch.setattr(L, "TIMING_FILE", repo / ".loop" / "timing.log")
+        client = _ScriptedClient(["\n   \n"])
+        out = L._iteration(client, max_bytes=10_000, push=False)
+        assert out.startswith("clean:")
+        import json
+        lines = (repo / ".loop" / "timing.log").read_text("utf-8").splitlines()
+        rec = json.loads(lines[-1])
+        assert "discovery" in rec["phases"]
+        assert rec["phases"]["discovery"] >= 0.0
+
+    def test_no_candidate_files_emits_empty_phases(self, env, monkeypatch):
+        L, repo = env
+        monkeypatch.setattr(L, "TIMING_FILE", repo / ".loop" / "timing.log")
+        monkeypatch.setattr(L, "_candidate_files", lambda: [])
+        client = _ScriptedClient([])
+        out = L._iteration(client, max_bytes=10_000, push=False)
+        assert out == "no_candidate_files"
+        import json
+        lines = (repo / ".loop" / "timing.log").read_text("utf-8").splitlines()
+        rec = json.loads(lines[-1])
+        assert rec["phases"] == {}
+
+    def test_skip_unreadable_emits_empty_phases(self, env, monkeypatch):
+        L, repo = env
+        monkeypatch.setattr(L, "TIMING_FILE", repo / ".loop" / "timing.log")
+        monkeypatch.setattr(L, "_read_file", lambda *a, **kw: None)
+        client = _ScriptedClient([])
+        out = L._iteration(client, max_bytes=10_000, push=False)
+        assert out.startswith("skip:") and "unreadable_or_too_large" in out
+        import json
+        lines = (repo / ".loop" / "timing.log").read_text("utf-8").splitlines()
+        rec = json.loads(lines[-1])
+        assert rec["phases"] == {}
+
+    def test_readme_documents_discovery_phase(self):
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text("utf-8")
+        assert "`discovery`" in readme
+        assert "`find_bugs`" in readme
+        assert "`propose_fix`" in readme
+        assert "`devils_advocate`" in readme
