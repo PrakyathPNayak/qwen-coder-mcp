@@ -2620,3 +2620,20 @@ read-only operation, no state changes.
 **Act.** New `_format_checkpoint_listing(snapshots) -> str` next to `_role_counts`. Dispatch branch for `name == "checkpoints"` after `/resume`, handles bare/load/prune with explicit error rendering for missing args, non-integer indices, out-of-range, and unknown subcommands. `/checkpoints` registered in `SLASH_COMMANDS` and `HELP_TEXT`.
 
 **Verify.** `pytest -x -q` → ~1.1k passed, 1 skipped. New file `tests/test_checkpoints_slash.py` with 17 cases across 6 test classes.
+
+## Loop 181 — `/resume` falls back to newest rotation when primary missing/corrupt
+
+**Observe.** Loop 179 added rotation, loop 180 surfaced it via `/checkpoints`. But `/resume` still only reads the single primary file. If the primary is truncated, corrupt, or accidentally deleted, `/resume` says "no checkpoint found" and the user has to manually run `/checkpoints load N`.
+
+**Orient.** The recovery path should be transparent: if the primary is unreadable, walk the rotations from newest to oldest and use the first one that deserialises. This matches how unix-y tools handle log rotation — read whatever's most recent and valid.
+
+**Decide.** Add `load_latest_checkpoint(primary) -> (history, source_path | None)` next to `load_agent_checkpoint`. Wire `/resume` to call it and report which file the data actually came from in the status line so the user knows when they've been silently bumped to a rotation.
+
+**Devil.**
+- *Correctness:* What if a rotation deserialises but is empty? Empty-list = "nothing useful" — keep falling back. Test `test_empty_primary_falls_back` pins this. ✅
+- *Scope:* Should empty rotations be deleted as they're encountered? No — that's policy creep into a read helper. Keep the helper non-destructive; let `/checkpoints prune` handle cleanup. ✅
+- *Priority:* `/lat` was the listed priority but `/resume`-while-broken is the recovery path users hit when something goes wrong, which is exactly when they need it most. ✅
+
+**Act.** Added `load_latest_checkpoint` to `agent_loop.py`. Updated `/resume` dispatcher branch to use it; status line reports the source filename so fallbacks are visible. Seven new tests in `test_load_latest_checkpoint.py` covering primary-present, fall-through-to-newest, all-empty, corrupt-primary, corrupt-newest-rotation, all-corrupt, and empty-primary.
+
+**Verify.** `pytest -x -q` → ~1.1k passed, 1 skipped. Existing `test_resume_slash.py` still green.

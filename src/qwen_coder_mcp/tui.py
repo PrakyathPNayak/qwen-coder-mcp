@@ -1076,10 +1076,11 @@ def dispatch_slash(
         if history is None:
             return "no history available", False
         target = fs_cfg.root / ".agent" / "agent_state.json"
-        loaded = agent_loop.load_agent_checkpoint(target)
+        loaded, source = agent_loop.load_latest_checkpoint(target)
         if not loaded:
             return (
-                f"no checkpoint found at {target} (or file is empty/corrupt)",
+                f"no checkpoint found at {target} or any rotation under "
+                f"{target.parent / 'checkpoints'}",
                 False,
             )
         # Replace in-place so the caller's reference stays the same.
@@ -1093,11 +1094,12 @@ def dispatch_slash(
             "",
         )
         snippet = last_assistant[:200].replace("\n", " ")
+        src_name = source.name if source is not None else "?"
         return (
-            f"resumed {len(loaded)} messages from {target.name} ({roles})\n"
+            f"resumed {len(loaded)} messages from {src_name} ({roles})\n"
             f"last assistant: {snippet}…"
             if snippet else
-            f"resumed {len(loaded)} messages from {target.name} ({roles})"
+            f"resumed {len(loaded)} messages from {src_name} ({roles})"
         ), False
     if name == "checkpoints":
         target = fs_cfg.root / ".agent" / "agent_state.json"

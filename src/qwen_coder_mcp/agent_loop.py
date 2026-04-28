@@ -507,6 +507,29 @@ def load_agent_checkpoint(path: Any) -> list[ChatMessage]:
     return deserialize_agent_state(data)
 
 
+def load_latest_checkpoint(primary: Any) -> tuple[list[ChatMessage], "Path | None"]:
+    """Load the freshest readable checkpoint for ``primary``.
+
+    Tries ``primary`` first; on missing/corrupt/empty, falls back to the
+    newest rotated snapshot in ``checkpoints/``, then the next newest,
+    and so on, until a non-empty deserialised history is found or the
+    list is exhausted. Returns ``(history, source_path)`` where
+    ``source_path`` is the file the history actually came from, or
+    ``None`` if nothing was loadable. Never raises.
+    """
+    from pathlib import Path
+
+    p = Path(primary)
+    primary_loaded = load_agent_checkpoint(p)
+    if primary_loaded:
+        return primary_loaded, p
+    for snap in reversed(list_agent_checkpoints(p)):
+        loaded = load_agent_checkpoint(snap)
+        if loaded:
+            return loaded, snap
+    return [], None
+
+
 # ------------------------------------------------------------- driver
 def run_agent(
     history: list[ChatMessage],
