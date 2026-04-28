@@ -1663,16 +1663,30 @@ def _iteration(client: QwenClient, max_bytes: int, push: bool) -> str:
     iter_ts = _now()
     iter_monotonic = time.monotonic()
 
+    # Loop 99: emit timing + swallow summaries for early-exit iterations
+    # too (no-candidate-files, unreadable-file). Without this, analytics
+    # counting "iterations per hour" undercount and a persistent fault
+    # (e.g., every file too large) would cause swallow summaries to
+    # silently stop firing, masking the underlying problem.
+    def _finish_no_file(outcome: str, rel_for_timing: Path) -> str:
+        _write_timing(
+            rel_for_timing, outcome, {}, iter_monotonic=iter_monotonic
+        )
+        _log_swallow_summaries()
+        return outcome
+
     files = _candidate_files()
     if not files:
-        return "no_candidate_files"
+        return _finish_no_file("no_candidate_files", Path("."))
     idx = _load_cursor() % len(files)
     rel = files[idx]
     _save_cursor((idx + 1) % len(files))
 
     code = _read_file(_REPO / rel, max_bytes)
     if code is None:
-        return f"skip:{rel} (unreadable_or_too_large)"
+        return _finish_no_file(
+            f"skip:{rel} (unreadable_or_too_large)", rel
+        )
 
     deadline = time.monotonic() + _iteration_budget_seconds()
     phases: dict[str, float] = {}

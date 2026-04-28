@@ -1646,3 +1646,13 @@ kwarg actually forwarded. Existing tests still pass.
   - Scope: Could escalate to `clean -fdx` (also remove ignored files) but that destroys legitimate local untracked artifacts.
   - Rate-limit: Every reset failure goes through `_REVERT_SWALLOW_LOG` with a distinct context label so the per-iteration delta channel can distinguish abort_rebase failures from `_revert_changes` failures.
 - ACT: ~25-line code change plus expanded docstring. 3 new tests. 513 passed.
+
+## Loop 99 — Early-exit iterations bypassed _finish (OBSERVABILITY GAP)
+- OBSERVE: `_iteration`'s two early-return paths (`no_candidate_files`, unreadable file `skip:..`) returned strings directly without calling `_finish`. Result: those iterations produce zero records in timing.log AND no per-iteration swallow summary line. A persistent fault that always trips one of these paths (e.g., every candidate file became too large after a vendoring drop, or `.gitignore` swallowed every code path) would silently stop emitting timing.log entries and stop calling `_log_swallow_summaries()` -- the swallow registry's per-iteration delta channel goes dark.
+- ORIENT: P3 priority (test gap on existing functionality + observability cliff). Higher than the cleanup candidates because it directly causes diagnostic loss in exactly the failure modes operators most want visibility into.
+- DECIDE: Add a `_finish_no_file` helper that takes a `rel_for_timing` Path (sentinel `Path(".")` for the no-files case, the actual rel for the unreadable case), emits an empty-phases timing record, then runs the summary cycle. Two early-returns updated to use it.
+- DEVIL:
+  - Correctness: Need a non-None `rel` for `_write_timing(rel)` because it calls `rel.as_posix()`. Sentinel `Path(".")` is safe (always a valid path).
+  - Scope: Could also hoist `iter_monotonic` capture earlier so a crash in `_abort_rebase_if_any` is timed -- but that helper is best-effort and never raises (already audited). Skipping.
+  - Risk: Now timing.log rows for `category=no_candidate_files` are common when the candidate-files cache is being rebuilt; downstream analytics querying outcome counts may surprise. But that's the correct behaviour: visibility of no-op iterations was the goal.
+- ACT: ~12-line refactor adding `_finish_no_file`; 3 new tests covering both early-exit paths and the summary side-effect. 516 passed.

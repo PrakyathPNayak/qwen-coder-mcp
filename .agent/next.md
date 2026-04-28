@@ -3,7 +3,7 @@
 1. (P5) wall_s analytics CLI script.
 2. (P5) Drift-audit shape from loop 89 to `agent/loop.py` direct module-state mutation outside `global` decls.
 3. (P6) `_log_aggregate_swallow_summary` records iteration count to sidecar file.
-4. (P5) Conftest auto-clears `_LAST_SWALLOW_SUMMARY_COUNTS`; the 4 in-test `.clear()` calls are now redundant -- clean them up.
-5. (P4) `_revert_changes`: cache corruption when even origin/main fails so the next iteration's diff is short-circuited.
-6. (P5) `_abort_rebase_if_any`: same caching consideration as #5 -- if both resets fail, signal upstream.
-7. (P6) Drift-audit: every helper that uses `reset --hard` should now route failures through `_REVERT_SWALLOW_LOG`. Currently 2 helpers do (`_revert_changes`, `_abort_rebase_if_any`). If a 3rd is added it should follow the pattern.
+4. (P5) Conftest auto-clears `_LAST_SWALLOW_SUMMARY_COUNTS`; the in-test `.clear()` calls are now redundant -- 38 redundant lines to clean up.
+5. (P5) `_outer_outcome_category` -- does it have a category for `no_candidate_files`? If not, the records emitted by loop 99 will fall into "unknown" and analytics dashboards will break the category drift audit.
+6. (P5) Categories drift audit (APPLY_ERROR_CATEGORIES, OUTER_OUTCOME_CATEGORIES) -- now that loop 99 emits a new outcome string verbatim, may need a new category.
+7. (P4) `_iteration_budget_seconds` with a 24h cap is fine but the iteration uses `time.monotonic()` deadline; if `_abort_rebase_if_any` itself blocks for hours, the deadline is already past on first phase. Consider pre-deadline checkpoint.

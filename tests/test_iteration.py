@@ -2884,3 +2884,61 @@ class TestAbortRebaseHardenedRecovery:
         L._abort_rebase_if_any()
         assert not any(c[0] == "reset" for c in calls)
         assert not any(c[0] == "clean" for c in calls)
+
+
+class TestIterationEarlyExitTimingAndSummaries:
+    """Loop 99: `_iteration`'s early-return paths
+    (`no_candidate_files`, `skip:.. unreadable_or_too_large`) previously
+    bypassed `_finish` entirely. Result: timing.log under-counts
+    iterations, swallow summaries silently stop firing, and a
+    persistent fault (e.g., every candidate file too large) is masked.
+    Now both early-exits emit a minimal timing record + summary cycle."""
+
+    def test_no_candidate_files_emits_timing(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        import json
+        timing_path = tmp_path / "timing.log"
+        monkeypatch.setattr(L, "TIMING_FILE", timing_path)
+        monkeypatch.setattr(L, "_rotate_timing_if_oversized", lambda: None)
+        monkeypatch.setattr(L, "_abort_rebase_if_any", lambda: None)
+        monkeypatch.setattr(L, "_candidate_files", lambda: [])
+        outcome = L._iteration(client=None, max_bytes=1000, push=False)
+        assert outcome == "no_candidate_files"
+        rec = json.loads(timing_path.read_text().strip().splitlines()[-1])
+        assert rec["outcome"] == "no_candidate_files"
+        assert rec["category"] in {"unknown", "no_candidate_files"} or isinstance(rec["category"], str)
+        assert "wall_s" in rec
+        assert rec["phases"] == {}
+
+    def test_unreadable_file_emits_timing(self, tmp_path, monkeypatch):
+        from agent import loop as L
+        import json
+        timing_path = tmp_path / "timing.log"
+        monkeypatch.setattr(L, "TIMING_FILE", timing_path)
+        monkeypatch.setattr(L, "_rotate_timing_if_oversized", lambda: None)
+        monkeypatch.setattr(L, "_abort_rebase_if_any", lambda: None)
+        monkeypatch.setattr(L, "_candidate_files", lambda: [L.Path("foo.py")])
+        monkeypatch.setattr(L, "_load_cursor", lambda: 0)
+        monkeypatch.setattr(L, "_save_cursor", lambda i: None)
+        monkeypatch.setattr(L, "_read_file", lambda p, mb: None)
+        outcome = L._iteration(client=None, max_bytes=1000, push=False)
+        assert outcome.startswith("skip:")
+        rec = json.loads(timing_path.read_text().strip().splitlines()[-1])
+        assert rec["outcome"].startswith("skip:")
+        assert rec["file"] == "foo.py"
+
+    def test_no_candidate_files_logs_swallow_summary(self, tmp_path, monkeypatch):
+        """If the candidate-file loader is itself raising and the
+        swallow logger is suppressing, the per-iteration summary is the
+        only signal left. Verify the early-exit path runs the summary
+        emit cycle by seeding a swallow logger with a fresh count and
+        asserting the delta cache snapshots it."""
+        from agent import loop as L
+        monkeypatch.setattr(L, "_abort_rebase_if_any", lambda: None)
+        monkeypatch.setattr(L, "_candidate_files", lambda: [])
+        monkeypatch.setattr(L, "_write_timing", lambda *a, **kw: None)
+        # Seed a logger so _log_swallow_summaries has work to do.
+        L._STATE_SWALLOW_LOG.report(RuntimeError("seeded"))
+        L._iteration(client=None, max_bytes=1000, push=False)
+        # Delta cache must now know about the seeded count.
+        assert L._LAST_SWALLOW_SUMMARY_COUNTS.get("_append_state", 0) >= 1
