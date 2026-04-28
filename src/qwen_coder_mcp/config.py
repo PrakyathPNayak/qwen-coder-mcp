@@ -36,9 +36,9 @@ def load_settings(env_file: str | os.PathLike[str] | None = None) -> Settings:
     load_dotenv(env_file, override=False)
 
     return Settings(
-        base_url=_env("QWEN_BASE_URL", "http://localhost:8000/v1").rstrip("/"),
+        base_url=_env("QWEN_BASE_URL", "http://127.0.0.1:8000/v1").rstrip("/"),
         api_key=_env("QWEN_API_KEY", "EMPTY"),
-        model=_env("QWEN_MODEL", "Qwen/Qwen3.6-27B"),
+        model=_env("QWEN_MODEL", "qwen3.6-27b"),
         timeout=float(_env("QWEN_TIMEOUT", "120")),
         max_tokens=int(_env("QWEN_MAX_TOKENS", "4096")),
         loop_interval_seconds=int(_env("LOOP_INTERVAL_SECONDS", "45")),

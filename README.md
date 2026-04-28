@@ -1,9 +1,22 @@
 # qwen-coder-mcp
 
-A Model Context Protocol (MCP) server backed by **Qwen3.6-27B**, focused on
-coding workflows, plus a self-improving **agentic loop** that continuously
-audits this repository, proposes fixes, plays devil's advocate against its own
-proposals, and commits accepted changes.
+A Model Context Protocol (MCP) server backed by **Qwen3.6-27B running
+locally on a single RTX 4090** via vLLM (4-bit AutoRound, OpenAI-compatible),
+focused on coding workflows, plus a self-improving **agentic loop** that
+continuously audits this repository, proposes fixes, plays devil's advocate
+against its own proposals, and commits accepted changes.
+
+## TL;DR — local 4090 setup
+
+```bash
+./scripts/serve_qwen.sh        # launches vLLM on :8000 (auto-installs into .venv-serve)
+./scripts/wait_ready.sh        # blocks until /v1/models responds
+cp .env.example .env           # already pointed at the local server
+./scripts/run_loop.sh          # detached agentic loop, logs to .loop/runtime.log
+```
+
+See [`docs/LOCAL_SERVE.md`](docs/LOCAL_SERVE.md) for VRAM budget, alternate
+quantizations, and the llama.cpp fallback.
 
 ## Features
 
@@ -31,13 +44,13 @@ proposals, and commits accepted changes.
 
 ## Configuration
 
-Copy `.env.example` to `.env` and fill in:
+Copy `.env.example` to `.env` and adjust if needed:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `QWEN_BASE_URL` | `http://localhost:8000/v1` | OpenAI-compatible endpoint serving Qwen3.6-27B |
-| `QWEN_API_KEY` | `EMPTY` | API key (use `EMPTY` for local vLLM/Ollama) |
-| `QWEN_MODEL` | `Qwen/Qwen3.6-27B` | Model id as registered on the endpoint |
+| `QWEN_BASE_URL` | `http://127.0.0.1:8000/v1` | OpenAI-compatible endpoint (the bundled vLLM server) |
+| `QWEN_API_KEY` | `EMPTY` | API key (use `EMPTY` for the local server) |
+| `QWEN_MODEL` | `qwen3.6-27b` | Served model name registered by `serve_qwen.sh` |
 | `QWEN_TIMEOUT` | `120` | Request timeout (seconds) |
 | `QWEN_MAX_TOKENS` | `4096` | Default max output tokens |
 | `LOOP_INTERVAL_SECONDS` | `45` | Sleep between iterations |
