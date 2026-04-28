@@ -2250,3 +2250,13 @@ kwarg actually forwarded. Existing tests still pass.
 - *Priority*: the truncation cap was actively misleading -- the model answered as if it had seen the whole file when it had only the first 8KB. This is correctness-adjacent.
 **ACT:** Added `_AT_FULL_FILE_RE`, look-behind on `_AT_FILE_RE`. Process `@@` first, dedupe so `@@x and @x` only inlines once. `_split_grep_flags` now returns `(positionals, suffix, count_only)`; existing callers (1 dispatch site + 3 tests) updated. Help blocks updated. 8 new tests for both features.
 **RESULT:** 944 passed (+8). Tree clean.
+
+## Loop 163 -- Ctrl+S manual history save
+**OBSERVE:** on_unmount saves history but won't fire if Textual crashes mid-turn -- a real failure mode (we saw it during the OOM debugging streak earlier).
+**DECIDE:** Add Ctrl+S binding -> action_save_history that calls save_history_jsonl and surfaces status in the log.
+**DEVIL:**
+- *Correctness*: catch all exceptions so save failure doesn't crash the App. Done.
+- *Scope*: should we also auto-save every N turns? Probably yes as a follow-up. Manual flush is the floor.
+- *Priority*: data preservation (priority 1 in the priorities table). Justified.
+**ACT:** Added BINDING ctrl+s -> save_history; method calls save_history_jsonl, prints "✓ saved N messages → <path>" or "save failed: ..." in the log. 3 new tests; existing tests untouched.
+**RESULT:** 947 passed (+3).

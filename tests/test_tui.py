@@ -2408,3 +2408,61 @@ class TestGrepCountFlag:
             fs_cfg=cfg,
         )
         assert "a.py: 2" in text
+
+
+# -------------------------------------------------- Loop 163: Ctrl+S save
+class TestSaveHistoryAction:
+    def test_action_writes_to_disk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from qwen_coder_mcp.qwen_client import ChatMessage
+
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        AppCls = tui._build_app(fs_cfg=cfg, client_factory=_FakeClient)
+        app = AppCls()
+        app.history = [
+            ChatMessage(role="user", content="hi"),
+            ChatMessage(role="assistant", content="hello"),
+        ]
+
+        captured: list[str] = []
+
+        class _Log:
+            def write(self, msg: str) -> None:
+                captured.append(msg)
+
+        monkeypatch.setattr(app, "query_one", lambda _id, _cls: _Log())
+        app.action_save_history()
+        path = tui.history_file_path(cfg)
+        assert path.exists(), "Ctrl+S must write the history file"
+        text = path.read_text()
+        assert "hi" in text
+        assert "hello" in text
+        assert any("saved 2 messages" in m for m in captured)
+
+    def test_action_save_handles_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        AppCls = tui._build_app(fs_cfg=cfg, client_factory=_FakeClient)
+        app = AppCls()
+
+        def _boom(*_a, **_k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(tui, "save_history_jsonl", _boom)
+        captured: list[str] = []
+
+        class _Log:
+            def write(self, msg: str) -> None:
+                captured.append(msg)
+
+        monkeypatch.setattr(app, "query_one", lambda _id, _cls: _Log())
+        app.action_save_history()
+        # Must not raise; surfaces the error in the log instead.
+        assert any("save failed" in m for m in captured)
+
+    def test_ctrl_s_in_bindings(self) -> None:
+        AppCls = tui._build_app(client_factory=_FakeClient)
+        keys = {b[0]: b[1] for b in AppCls.BINDINGS}
+        assert keys.get("ctrl+s") == "save_history"

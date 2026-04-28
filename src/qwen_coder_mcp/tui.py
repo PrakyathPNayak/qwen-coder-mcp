@@ -1335,6 +1335,7 @@ def _build_app(
             ("ctrl+c", "quit", "Quit"),
             ("ctrl+l", "clear_log", "Clear screen"),
             ("ctrl+r", "redraw", "Redraw"),
+            ("ctrl+s", "save_history", "Save history"),
         ]
 
         def __init__(self) -> None:
@@ -1397,6 +1398,23 @@ def _build_app(
 
         def action_redraw(self) -> None:  # type: ignore[override]
             self.refresh(layout=True)
+
+        def action_save_history(self) -> None:  # type: ignore[override]
+            """Persist chat history to disk on demand.
+
+            on_unmount also saves, but that won't fire if Textual crashes
+            mid-turn -- this gives the user a manual flush via Ctrl+S.
+            """
+            try:
+                path = history_file_path(self.fs_cfg)
+                save_history_jsonl(self.history, path)
+                msg = f"[green]✓ saved {len(self.history)} messages[/green] → {path}"
+            except Exception as exc:  # noqa: BLE001
+                msg = f"[red]save failed:[/red] {type(exc).__name__}: {exc}"
+            try:
+                self.query_one("#log", RichLog).write(msg)
+            except Exception:  # noqa: BLE001
+                pass
 
         def _refresh_status(self, *, streaming: bool = False) -> None:
             try:
