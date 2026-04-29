@@ -303,6 +303,59 @@ def _tool_fs_list(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     return "\n".join(lines)
 
 
+def _tool_diff_files(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    """Loop 282: read-only unified diff between two workspace files.
+
+    Args: ``a`` and ``b`` are workspace-relative paths. Optional
+    ``context`` int (default 3) controls unified-diff context lines.
+    Both files must be inside the workspace root and at most
+    ``cfg.max_read_bytes`` in size. Returns the diff text or an
+    "error: ..." string. An empty diff is reported as
+    "files are identical".
+    """
+    import difflib
+
+    a = str(args.get("a", "")).strip()
+    b = str(args.get("b", "")).strip()
+    if not a or not b:
+        return "error: diff_files needs both 'a' and 'b' path args"
+    try:
+        ctx = int(args.get("context", 3))
+    except (TypeError, ValueError):
+        ctx = 3
+    ctx = max(0, min(ctx, 50))
+    try:
+        ap = fs_tools._resolve_inside_root(cfg, a)
+        bp = fs_tools._resolve_inside_root(cfg, b)
+    except fs_tools.FsError as exc:
+        return f"error: {exc}"
+    for label, p in (("a", ap), ("b", bp)):
+        if not p.exists():
+            return f"error: not found: {a if label == 'a' else b}"
+        if not p.is_file():
+            return f"error: not a file: {a if label == 'a' else b}"
+        if p.stat().st_size > cfg.max_read_bytes:
+            return (
+                f"error: {label} too large "
+                f"({p.stat().st_size} > {cfg.max_read_bytes} bytes)"
+            )
+    try:
+        a_text = ap.read_text(errors="replace").splitlines(keepends=True)
+        b_text = bp.read_text(errors="replace").splitlines(keepends=True)
+    except OSError as exc:
+        return f"error: {exc}"
+    diff = list(
+        difflib.unified_diff(a_text, b_text, fromfile=a, tofile=b, n=ctx)
+    )
+    if not diff:
+        return "files are identical"
+    out = "".join(diff)
+    cap = cfg.max_read_bytes
+    if len(out) > cap:
+        out = out[:cap] + f"\n... [diff truncated at {cap} bytes]\n"
+    return out
+
+
 def _tool_file_info(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     """Loop 275: read-only stat tool. Returns size, mtime, mode, kind."""
     import hashlib
@@ -526,6 +579,7 @@ DEFAULT_TOOLS: dict[str, ToolFn] = {
     "fs_read": _tool_fs_read,
     "fs_list": _tool_fs_list,
     "file_info": _tool_file_info,
+    "diff_files": _tool_diff_files,
     "grep": _tool_grep,
     "find": _tool_find,
     "git_status": _tool_git_status,
@@ -767,6 +821,11 @@ TOOL_BLURBS: dict[str, str] = {
     "file_info": (
         "- file_info(path: str, sha256: bool=false) -- stat a file/dir: size,\n"
         "  mode, mtime, kind, optional sha256 hash for files <= 50MB. Read-only."
+    ),
+    "diff_files": (
+        "- diff_files(a: str, b: str, context: int=3) -- unified diff between\n"
+        "  two workspace files (read-only). Reports 'files are identical' on\n"
+        "  match. Context lines clamped to 0-50."
     ),
     "grep": "- grep(pattern: str, path: str=\".\", ext: str|None=None) -- regex search",
     "find": "- find(glob: str, path: str=\".\") -- glob search",
