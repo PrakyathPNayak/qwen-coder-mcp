@@ -393,6 +393,48 @@ def _tool_apply_patch(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     return str(res)
 
 
+def _tool_mkdir(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    """Loop 277: create a directory inside the workspace."""
+    path = str(args.get("path", "")).strip()
+    if not path:
+        return "error: mkdir needs a 'path' arg"
+    parents = bool(args.get("parents", True))
+    exist_ok = bool(args.get("exist_ok", True))
+    try:
+        target = fs_tools._resolve_inside_root(cfg, path)
+    except fs_tools.FsError as exc:
+        return f"error: {exc}"
+    try:
+        target.mkdir(parents=parents, exist_ok=exist_ok)
+    except FileExistsError:
+        return f"error: already exists: {path}"
+    except OSError as exc:
+        return f"error: {exc}"
+    return f"created dir {path}"
+
+
+def _tool_touch(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    """Loop 277: create an empty file (or update mtime if exists)."""
+    path = str(args.get("path", "")).strip()
+    if not path:
+        return "error: touch needs a 'path' arg"
+    create_parents = bool(args.get("create_parents", False))
+    try:
+        target = fs_tools._resolve_inside_root(cfg, path)
+    except fs_tools.FsError as exc:
+        return f"error: {exc}"
+    if create_parents:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if target.exists():
+            target.touch(exist_ok=True)
+            return f"touched (existing) {path}"
+        target.touch()
+        return f"created empty file {path}"
+    except OSError as exc:
+        return f"error: {exc}"
+
+
 def _git_run(cfg: fs_tools.FsConfig, cmd: str) -> str:
     """Helper: run a git subcommand via shell_tools and return formatted output."""
     try:
@@ -470,6 +512,8 @@ WRITE_TOOLS: dict[str, ToolFn] = {
     "fs_regex_edit": _tool_fs_regex_edit,
     "fs_insert": _tool_fs_insert,
     "apply_patch": _tool_apply_patch,
+    "mkdir": _tool_mkdir,
+    "touch": _tool_touch,
     "run_shell": _tool_run_shell,
 }
 
@@ -732,6 +776,14 @@ TOOL_BLURBS: dict[str, str] = {
     "apply_patch": (
         "- apply_patch(diff: str, check_only: bool=False) -- apply a unified diff\n"
         "  via git apply (prefer check_only=true first)"
+    ),
+    "mkdir": (
+        "- mkdir(path: str, parents: bool=true, exist_ok: bool=true) -- create a\n"
+        "  directory inside the workspace. Idempotent by default."
+    ),
+    "touch": (
+        "- touch(path: str, create_parents: bool=false) -- create an empty file\n"
+        "  or update mtime if it exists."
     ),
     "run_shell": (
         "- run_shell(cmd: str, timeout: float=30, cwd: str|None=None) -- run a\n"
