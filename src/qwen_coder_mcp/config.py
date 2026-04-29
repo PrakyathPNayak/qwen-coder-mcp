@@ -23,6 +23,7 @@ class Settings:
     loop_interval_seconds: int
     loop_max_file_bytes: int
     loop_push: bool
+    unlimited_max_tokens: bool = False
 
 
 def _env(name: str, default: str) -> str:
@@ -57,4 +58,9 @@ def load_settings(env_file: str | os.PathLike[str] | None = None) -> Settings:
         loop_interval_seconds=int(_env("LOOP_INTERVAL_SECONDS", "45")),
         loop_max_file_bytes=int(_env("LOOP_MAX_FILE_BYTES", "60000")),
         loop_push=_env("LOOP_PUSH", "1") not in {"0", "false", "False", "no"},
+        # Loop 276: when QWEN_NO_TOKEN_LIMIT=1, _resolve_max_tokens uses
+        # all remaining room in the context window instead of clamping
+        # to settings.max_tokens. Lets local-model users (no API cost)
+        # uncap completion length and avoid mid-think truncation.
+        unlimited_max_tokens=_env("QWEN_NO_TOKEN_LIMIT", "0") in {"1", "true", "True", "yes"},
     )

@@ -718,6 +718,13 @@ class QwenClient:
         room = cap - prompt_tokens - _context_reserve_tokens()
         if room <= 0:
             return 1
+        # Loop 276: when unlimited mode is enabled and the caller did
+        # NOT pin a specific budget, use all remaining room instead of
+        # clamping to settings.max_tokens. Local-model users have no
+        # per-token cost, and Qwen3-Next's <think> blocks routinely
+        # exceed the legacy 16k default mid-reasoning.
+        if requested is None and getattr(self.settings, "unlimited_max_tokens", False):
+            return max(1, room)
         return max(1, min(budget, room))
 
     def health_check(self, timeout: float = 2.0) -> dict[str, Any]:
