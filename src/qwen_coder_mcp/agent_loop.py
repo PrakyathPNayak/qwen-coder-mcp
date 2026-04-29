@@ -303,6 +303,69 @@ def _tool_fs_list(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     return "\n".join(lines)
 
 
+import threading as _threading_for_ask  # noqa: E402
+
+# Loop 284: ask_user tool. The tool itself is a simple callable that
+# reads a thread-local handler; TUI hosts install a handler in
+# ``run_agent`` worker context, then the model's `<tool_call>` for
+# `ask_user` pops a modal and blocks until the operator responds.
+# CLI/tests with no handler installed get a clear placeholder message.
+_ASK_USER_TLS = _threading_for_ask.local()
+
+
+def set_ask_user_handler(
+    handler: Callable[[str, list[str]], str] | None,
+) -> Callable[[str, list[str]], str] | None:
+    """Install a thread-local ``ask_user`` handler. Returns the previous
+    value so callers can restore it (use try/finally). Pass ``None`` to
+    clear. Handler signature: ``handler(question, choices) -> str``.
+    Choices may be empty (free-form input expected); the returned
+    string is the operator's reply verbatim.
+    """
+    prev = getattr(_ASK_USER_TLS, "handler", None)
+    _ASK_USER_TLS.handler = handler
+    return prev
+
+
+def _tool_ask_user(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    """Loop 284: prompt the operator for a decision.
+
+    Args:
+      * ``question`` (required str): the prompt shown to the operator.
+      * ``choices`` (optional list[str]): when provided, the operator
+        is asked to pick one of these labels. When omitted, free-form
+        text input is accepted.
+      * ``timeout`` (optional float, default 120s): max wait. Returns
+        ``"timeout"`` if the operator doesn't respond in time.
+
+    Without a host-installed handler the tool returns a clear marker so
+    the model can still make progress (e.g. fall back to a default).
+    """
+    q = str(args.get("question", "")).strip()
+    if not q:
+        return "error: ask_user needs a 'question' arg"
+    raw_choices = args.get("choices") or []
+    choices: list[str] = []
+    if isinstance(raw_choices, list):
+        for c in raw_choices:
+            if isinstance(c, str) and c.strip():
+                choices.append(c.strip())
+    handler = getattr(_ASK_USER_TLS, "handler", None)
+    if handler is None:
+        return (
+            "ask_user: no interactive operator available in this context. "
+            "Pick a sensible default and proceed; if the decision is "
+            "irreversible, ask in the assistant's reply text instead."
+        )
+    try:
+        reply = handler(q, choices)
+    except Exception as exc:  # noqa: BLE001
+        return f"error: ask_user handler failed: {type(exc).__name__}: {exc}"
+    if reply is None:
+        return "user_canceled"
+    return str(reply)
+
+
 def _tool_diff_files(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     """Loop 282: read-only unified diff between two workspace files.
 
@@ -580,6 +643,7 @@ DEFAULT_TOOLS: dict[str, ToolFn] = {
     "fs_list": _tool_fs_list,
     "file_info": _tool_file_info,
     "diff_files": _tool_diff_files,
+    "ask_user": _tool_ask_user,
     "grep": _tool_grep,
     "find": _tool_find,
     "git_status": _tool_git_status,
@@ -826,6 +890,14 @@ TOOL_BLURBS: dict[str, str] = {
         "- diff_files(a: str, b: str, context: int=3) -- unified diff between\n"
         "  two workspace files (read-only). Reports 'files are identical' on\n"
         "  match. Context lines clamped to 0-50."
+    ),
+    "ask_user": (
+        "- ask_user(question: str, choices: list[str]|null=null,\n"
+        "  timeout: float=120) -- prompt the human operator for a decision.\n"
+        "  When choices are given, returns the chosen label; otherwise\n"
+        "  returns the operator's free-form reply. Returns 'user_canceled'\n"
+        "  if dismissed, 'timeout' if no answer in time, or a 'no\n"
+        "  interactive operator available' marker in headless contexts."
     ),
     "grep": "- grep(pattern: str, path: str=\".\", ext: str|None=None) -- regex search",
     "find": "- find(glob: str, path: str=\".\") -- glob search",

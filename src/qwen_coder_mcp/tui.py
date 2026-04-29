@@ -3446,6 +3446,90 @@ def _build_app(
         def action_deny(self) -> None:
             self.dismiss(False)
 
+    class _AskScreen(ModalScreen[str]):  # type: ignore[misc, type-arg]
+        """Loop 284: modal that asks the operator to answer the model's
+        ``ask_user`` tool call. Shows the question text plus either a
+        list of numbered choices (1..9 hot-keys) or a free-form Input.
+        ``escape`` cancels (resolves to empty string)."""
+
+        BINDINGS = [
+            ("escape", "cancel", "Cancel"),
+        ]
+
+        CSS = """
+        _AskScreen {
+            align: center middle;
+        }
+        #ask-box {
+            width: 80%;
+            max-width: 110;
+            border: thick $accent;
+            padding: 1 2;
+            background: $panel;
+        }
+        #ask-title {
+            color: $accent;
+            text-style: bold;
+        }
+        #ask-question {
+            margin: 1 0;
+        }
+        #ask-help {
+            color: $text-muted;
+            margin-top: 1;
+        }
+        #ask-input {
+            margin-top: 1;
+        }
+        """
+
+        def __init__(self, question: str, choices: list[str]) -> None:
+            super().__init__()
+            self._question = question
+            self._choices = list(choices)
+
+        def compose(self) -> ComposeResult:  # type: ignore[override]
+            with Vertical(id="ask-box"):
+                yield Static("? agent asks", id="ask-title")
+                yield Static(_safe_markup(self._question), id="ask-question")
+                if self._choices:
+                    lines = []
+                    for i, c in enumerate(self._choices[:9], start=1):
+                        lines.append(f"  [{i}] {_safe_markup(c)}")
+                    yield Static("\n".join(lines))
+                    yield Static(
+                        "[1-9] pick a choice    [esc] cancel",
+                        id="ask-help",
+                    )
+                else:
+                    yield Static(
+                        "type your answer below and press Enter; [esc] cancels",
+                        id="ask-help",
+                    )
+                    yield Input(placeholder="answer…", id="ask-input")
+
+        def on_mount(self) -> None:  # type: ignore[override]
+            if not self._choices:
+                try:
+                    self.query_one("#ask-input", Input).focus()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        def on_key(self, event) -> None:  # type: ignore[override]
+            if self._choices and event.key in {
+                "1", "2", "3", "4", "5", "6", "7", "8", "9"
+            }:
+                idx = int(event.key) - 1
+                if 0 <= idx < len(self._choices):
+                    self.dismiss(self._choices[idx])
+                    event.stop()
+
+        def on_input_submitted(self, event) -> None:  # type: ignore[override]
+            self.dismiss(event.value)
+
+        def action_cancel(self) -> None:
+            self.dismiss("")
+
     class QwenTUI(App):  # type: ignore[misc]
         CSS = """
         Screen {
@@ -4052,6 +4136,29 @@ def _build_app(
                         f"[yellow]⚠ checkpoint failed at step {step}: {_safe_markup(exc)}[/yellow]",
                     )
 
+            def _ask_user_handler(question: str, choices: list[str]) -> str:
+                """Loop 284: bridge ``ask_user`` tool calls into the
+                _AskScreen modal. Runs in the agent worker thread; uses
+                ``call_from_thread`` to push the screen and a
+                ``threading.Event`` to wait for the operator's reply.
+                """
+                evt = threading.Event()
+                holder: list[str] = [""]
+
+                def _resolve(value: str | None) -> None:
+                    holder[0] = "" if value is None else str(value)
+                    evt.set()
+
+                self.call_from_thread(
+                    self._push_ask, question, list(choices), _resolve
+                )
+                if not evt.wait(timeout=120.0):
+                    return "timeout"
+                ans = holder[0]
+                if ans == "":
+                    return "user_canceled"
+                return ans
+
             def runner() -> None:
                 final_text = ""
                 live_buf: list[str] = []
@@ -4071,6 +4178,10 @@ def _build_app(
                 }
                 if max_steps is not None:
                     kwargs["max_steps"] = max_steps
+                # Loop 284: install ask_user handler scoped to this
+                # worker thread so the model's ``<tool_call>ask_user``
+                # entries pop the _AskScreen modal.
+                _prev_ask = agent_loop.set_ask_user_handler(_ask_user_handler)
                 try:
                     for ev in agent_loop.run_agent(
                         self.history,
@@ -4152,6 +4263,11 @@ def _build_app(
                     # in literal "[...]" because that itself is ambiguous
                     # markup once concatenated with the qwen> prefix.
                     final_text = f"agent error: {type(exc).__name__}: {exc}"
+                finally:
+                    # Loop 284: always clear the ask_user handler so a
+                    # later run_agent in this thread without a host
+                    # falls through to the placeholder.
+                    agent_loop.set_ask_user_handler(_prev_ask)
                 profile.ended_at = time.monotonic()
                 self.last_turn_profile = profile
                 self.turn_profiles.append(profile)
@@ -4192,6 +4308,18 @@ def _build_app(
                 # If the screen can't be pushed for any reason, deny
                 # by default -- safer than silently approving.
                 resolve(False)
+
+        def _push_ask(
+            self,
+            question: str,
+            choices: list[str],
+            resolve: Callable[[str | None], None],
+        ) -> None:
+            """Loop 284: pop the ask_user modal."""
+            try:
+                self.push_screen(_AskScreen(question, choices), resolve)
+            except Exception:  # noqa: BLE001
+                resolve("")
 
         def _finalize_agent(self, prompt: str, reply: str, elapsed: float) -> None:
             try:
