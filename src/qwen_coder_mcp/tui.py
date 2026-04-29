@@ -3135,10 +3135,15 @@ _MARKDOWN_HINTS = (
     "\n- ",
     "\n* ",
     "\n1. ",
+    "\n2. ",
     "\n> ",
+    "\n|",
     "**",
     "__",
 )
+
+
+_MARKDOWN_INLINE_LINK_RE = None  # lazy-compile in looks_like_markdown
 
 
 def looks_like_markdown(text: str) -> bool:
@@ -3148,11 +3153,31 @@ def looks_like_markdown(text: str) -> bool:
     Used by the App layer to decide whether to wrap a reply in
     ``rich.markdown.Markdown`` before writing it to the RichLog. Kept pure
     so unit tests can exercise it without a Textual app.
+
+    Loop 281: extended to recognise inline backtick code spans (when at
+    least two backticks appear), markdown links of the form ``[text](url)``,
+    and table rows starting with ``|``. This helps short replies like
+    ``Use the `find` command.`` render with monospace highlighting instead
+    of as flat plain text.
     """
     if not text:
         return False
     haystack = "\n" + text
-    return any(hint in haystack for hint in _MARKDOWN_HINTS)
+    if any(hint in haystack for hint in _MARKDOWN_HINTS):
+        return True
+    # Inline code: at least two backticks (a paired span). Single stray
+    # backticks shouldn't trigger Markdown rendering -- they often appear
+    # in shell output.
+    if text.count("`") >= 2:
+        return True
+    global _MARKDOWN_INLINE_LINK_RE
+    if _MARKDOWN_INLINE_LINK_RE is None:
+        import re as _re
+
+        _MARKDOWN_INLINE_LINK_RE = _re.compile(r"\[[^\]\n]+\]\([^)\n]+\)")
+    if _MARKDOWN_INLINE_LINK_RE.search(text):
+        return True
+    return False
 
 
 def chat_turn(
