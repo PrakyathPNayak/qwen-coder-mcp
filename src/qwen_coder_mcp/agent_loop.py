@@ -354,6 +354,42 @@ def _tool_apply_patch(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     return str(res)
 
 
+def _git_run(cfg: fs_tools.FsConfig, cmd: str) -> str:
+    """Helper: run a git subcommand via shell_tools and return formatted output."""
+    try:
+        res = shell_tools.run_shell(cfg, cmd, timeout=15.0)
+    except shell_tools.ShellError as exc:
+        return f"denied: {exc}"
+    return shell_tools.format_run_result(res)
+
+
+def _tool_git_status(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    return _git_run(cfg, "git status --short --branch")
+
+
+def _tool_git_diff(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    path = args.get("path")
+    staged = bool(args.get("staged", False))
+    cmd = "git --no-pager diff"
+    if staged:
+        cmd += " --staged"
+    if isinstance(path, str) and path.strip():
+        # Use shlex-safe quoting -- path is workspace-relative, no shell special chars
+        # tolerated. Strip quotes to avoid breaking the command.
+        safe = path.replace("'", "").replace('"', "")
+        cmd += f" -- '{safe}'"
+    return _git_run(cfg, cmd)
+
+
+def _tool_git_log(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    n = args.get("n", 10)
+    try:
+        n = max(1, min(int(n), 200))
+    except (TypeError, ValueError):
+        n = 10
+    return _git_run(cfg, f"git --no-pager log --oneline -n {n}")
+
+
 def _tool_run_shell(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     cmd = args.get("cmd") or args.get("command") or ""
     if not isinstance(cmd, str) or not cmd.strip():
@@ -380,6 +416,9 @@ DEFAULT_TOOLS: dict[str, ToolFn] = {
     "fs_list": _tool_fs_list,
     "grep": _tool_grep,
     "find": _tool_find,
+    "git_status": _tool_git_status,
+    "git_diff": _tool_git_diff,
+    "git_log": _tool_git_log,
 }
 
 # Write tools are opt-in -- they can mutate the workspace, so the
@@ -612,6 +651,12 @@ TOOL_BLURBS: dict[str, str] = {
     "fs_list": "- fs_list(path: str=\".\") -- list a workspace directory",
     "grep": "- grep(pattern: str, path: str=\".\", ext: str|None=None) -- regex search",
     "find": "- find(glob: str, path: str=\".\") -- glob search",
+    "git_status": "- git_status() -- short git status with branch info (read-only)",
+    "git_diff": (
+        "- git_diff(path: str|None=None, staged: bool=false) -- show unified diff\n"
+        "  of unstaged (default) or staged changes; optionally scoped to a path."
+    ),
+    "git_log": "- git_log(n: int=10) -- last N commits (--oneline). Capped at 200.",
     "fs_write": (
         "- fs_write(path: str, content: str, create_parents: bool=False) -- write a\n"
         "  whole file. Prefer fs_edit for surgical changes."
