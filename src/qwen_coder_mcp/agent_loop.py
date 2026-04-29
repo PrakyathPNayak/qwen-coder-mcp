@@ -471,6 +471,36 @@ def _tool_git_log(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     return _git_run(cfg, f"git --no-pager log --oneline -n {n}")
 
 
+def _tool_mv(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    """Loop 278: rename/move a file or directory inside the workspace."""
+    src = str(args.get("src", "")).strip()
+    dst = str(args.get("dst", "")).strip()
+    if not src or not dst:
+        return "error: mv needs 'src' and 'dst' args"
+    overwrite = bool(args.get("overwrite", False))
+    try:
+        s = fs_tools._resolve_inside_root(cfg, src)
+        d = fs_tools._resolve_inside_root(cfg, dst)
+    except fs_tools.FsError as exc:
+        return f"error: {exc}"
+    if not s.exists():
+        return f"error: not found: {src}"
+    if d.exists() and not overwrite:
+        return f"error: dst already exists: {dst} (set overwrite=true)"
+    try:
+        d.parent.mkdir(parents=True, exist_ok=True)
+        if d.exists() and overwrite:
+            if d.is_dir():
+                import shutil
+                shutil.rmtree(d)
+            else:
+                d.unlink()
+        s.rename(d)
+    except OSError as exc:
+        return f"error: {exc}"
+    return f"moved {src} -> {dst}"
+
+
 def _tool_run_shell(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     cmd = args.get("cmd") or args.get("command") or ""
     if not isinstance(cmd, str) or not cmd.strip():
@@ -514,6 +544,7 @@ WRITE_TOOLS: dict[str, ToolFn] = {
     "apply_patch": _tool_apply_patch,
     "mkdir": _tool_mkdir,
     "touch": _tool_touch,
+    "mv": _tool_mv,
     "run_shell": _tool_run_shell,
 }
 
@@ -784,6 +815,10 @@ TOOL_BLURBS: dict[str, str] = {
     "touch": (
         "- touch(path: str, create_parents: bool=false) -- create an empty file\n"
         "  or update mtime if it exists."
+    ),
+    "mv": (
+        "- mv(src: str, dst: str, overwrite: bool=false) -- rename/move a file\n"
+        "  or directory within the workspace. Creates dst's parent dirs as needed."
     ),
     "run_shell": (
         "- run_shell(cmd: str, timeout: float=30, cwd: str|None=None) -- run a\n"
