@@ -550,6 +550,49 @@ def always_allow(call: "ToolCall") -> bool:  # noqa: ARG001
     return True
 
 
+def always_deny(call: "ToolCall") -> bool:  # noqa: ARG001
+    """Confirm hook: refuse every destructive call. Useful as a safe
+    default when the host process can't surface a user prompt (e.g. the
+    MCP server before a client wires up the approval flow)."""
+    return False
+
+
+def make_sticky_confirm(
+    inner: ConfirmFn,
+    *,
+    sticky_per_tool: bool = True,
+) -> ConfirmFn:
+    """Wrap ``inner`` so that once the user approves a particular tool,
+    further calls of THAT tool in the same turn skip the prompt.
+
+    Mirrors the Copilot CLI / VS Code pattern where a single "Always
+    allow run_shell" decision applies for the rest of the session
+    instead of pestering the user on every command.
+
+    Set ``sticky_per_tool=False`` to scope stickiness per (name, args)
+    pair instead -- only repeats of the *same exact call* are skipped,
+    which is safer but more pestering.
+    """
+    granted: set[Any] = set()
+
+    def _wrapped(call: "ToolCall") -> bool:
+        if sticky_per_tool:
+            key: Any = call.name
+        else:
+            try:
+                key = (call.name, json.dumps(call.args, sort_keys=True))
+            except Exception:  # noqa: BLE001
+                key = (call.name, str(call.args))
+        if key in granted:
+            return True
+        ok = bool(inner(call))
+        if ok:
+            granted.add(key)
+        return ok
+
+    return _wrapped
+
+
 TOOL_BLURBS: dict[str, str] = {
     "web_search": "- web_search(query: str, max_results: int=5) -- DuckDuckGo web search",
     "web_fetch": "- web_fetch(url: str, max_bytes: int=8000) -- fetch a URL's text body",
