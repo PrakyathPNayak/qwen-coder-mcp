@@ -2243,6 +2243,54 @@ class TestPromptAdvertisesWebTools:
         assert "catalog" in CODER_SYSTEM.lower() or "documented below" in CODER_SYSTEM.lower()
 
 
+class TestPromptAdvertisesWriteAndShellTools:
+    """Loop 285: the system prompt MUST explicitly name fs_write,
+    run_shell, and the other write/exec tools. Loop 279's "trust the
+    catalog below" deferral wasn't enough -- the model kept claiming
+    it was read-only because the prompt body never named the tools.
+    """
+
+    def test_coder_system_names_write_tools(self) -> None:
+        from qwen_coder_mcp.prompts import CODER_SYSTEM
+
+        for name in (
+            "fs_write",
+            "fs_edit",
+            "apply_patch",
+            "mkdir",
+            "touch",
+            "mv",
+        ):
+            assert name in CODER_SYSTEM, f"{name} missing from CODER_SYSTEM"
+
+    def test_coder_system_names_run_shell(self) -> None:
+        from qwen_coder_mcp.prompts import CODER_SYSTEM
+
+        assert "run_shell" in CODER_SYSTEM
+
+    def test_coder_system_names_ask_user(self) -> None:
+        from qwen_coder_mcp.prompts import CODER_SYSTEM
+
+        assert "ask_user" in CODER_SYSTEM
+
+    def test_coder_system_asserts_direct_fs_access(self) -> None:
+        from qwen_coder_mcp.prompts import CODER_SYSTEM
+
+        text = CODER_SYSTEM.lower()
+        # Must explicitly state there is no sandbox / no container so the
+        # model stops hallucinating "I'm read-only".
+        assert "no sandbox" in text or "no container" in text
+        assert "real disk" in text or "local filesystem" in text
+
+    def test_coder_system_forbids_claiming_no_access(self) -> None:
+        from qwen_coder_mcp.prompts import CODER_SYSTEM
+
+        # Anti-hallucination: the prompt must explicitly tell the model
+        # NOT to say "I can't write" / "I lack shell access".
+        text = CODER_SYSTEM.lower()
+        assert "never claim" in text and "lack" in text
+
+
 # -------------------------------------------------- Loop 161: /search --max
 class TestSearchMaxFlag:
     """`/search --max <n> <query>` lets the user widen or narrow the
