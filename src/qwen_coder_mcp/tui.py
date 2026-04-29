@@ -3518,12 +3518,17 @@ def _build_app(
             self.total_turns: int = 0
             self._streaming: bool = False
             # Agent default: when True, normal chat goes through the
-            # tool-calling loop. Off by default so simple turns stay
-            # streamed and cheap. Toggle with /agent_on /agent_off.
-            self.agent_default: bool = False
-            # Write mode adds fs_write + apply_patch to the agent's tool
-            # registry. Off by default since these mutate the workspace.
-            self.agent_write_default: bool = False
+            # tool-calling loop. Loop 283: flipped to True so the model
+            # always has the full tool registry visible and the system
+            # prompt's catalog matches what's actually wired. Toggle
+            # back off with /agent_off if you want plain streaming.
+            self.agent_default: bool = True
+            # Write mode adds fs_write + fs_edit + apply_patch + mkdir
+            # + touch + mv + run_shell to the registry. Loop 283:
+            # flipped to True by default. Each destructive call still
+            # pops the y/n modal because agent_confirm_writes defaults
+            # to True; use /allow_all to bypass prompts for a session.
+            self.agent_write_default: bool = True
             # When True, every destructive tool call pops a y/n modal
             # before firing. When False, calls are auto-approved (still
             # logged via the audit hook). Default is to ask.

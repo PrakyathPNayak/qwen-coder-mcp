@@ -2523,12 +2523,15 @@ class TestAgentSlashDispatch:
 
 
 class TestAppAgentMode:
-    def test_agent_default_initially_off(self, tmp_path: Path) -> None:
+    def test_agent_default_initially_on(self, tmp_path: Path) -> None:
+        # Loop 283: agent default is now ON so the prompt's tool catalog
+        # matches what's actually wired (read+write+shell). Confirm
+        # writes still gates each destructive call via the modal.
         AppCls = tui._build_app(
             fs_cfg=fs_tools.FsConfig(root=tmp_path), client_factory=_FakeClient
         )
         app = AppCls()
-        assert app.agent_default is False
+        assert app.agent_default is True
 
     def test_help_advertises_agent(self) -> None:
         assert "/agent" in tui.HELP_TEXT
@@ -2582,7 +2585,9 @@ class TestAgentWriteAndConfirmDispatch:
         )
         app = AppCls()
         assert app.agent_confirm_writes is True
-        assert app.agent_write_default is False
+        # Loop 283: agent_write_default is now ON. Each destructive
+        # call still pops the y/n modal because confirm is on.
+        assert app.agent_write_default is True
 
     def test_help_advertises_write_and_confirm(self) -> None:
         assert "/agent --write" in tui.HELP_TEXT
