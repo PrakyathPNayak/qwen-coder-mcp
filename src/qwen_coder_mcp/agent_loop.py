@@ -550,7 +550,66 @@ def always_allow(call: "ToolCall") -> bool:  # noqa: ARG001
     return True
 
 
-TOOL_PROTOCOL_DOC = """\
+TOOL_BLURBS: dict[str, str] = {
+    "web_search": "- web_search(query: str, max_results: int=5) -- DuckDuckGo web search",
+    "web_fetch": "- web_fetch(url: str, max_bytes: int=8000) -- fetch a URL's text body",
+    "fs_read": (
+        "- fs_read(path: str, start_line: int|None=None, end_line: int|None=None,\n"
+        "  max_lines: int|None=None, line_numbers: bool=false, pattern: str|None=None,\n"
+        "  before: int=0, after: int=0, max_matches: int|None=None,\n"
+        "  ignore_case: bool=false, max_bytes: int=16000)\n"
+        "  -- read a file (or a 1-based inclusive line range; negative indices\n"
+        "  count from the end; pass line_numbers=true to get \"<n> | \" prefixes\n"
+        "  so subsequent fs_edit calls can quote exact context). When `pattern`\n"
+        "  is supplied, only lines matching that regex are returned, padded by\n"
+        "  `before`/`after` context lines (grep -A/-B style). Non-contiguous\n"
+        "  matches are separated by \"--\" lines and line numbers are always\n"
+        "  emitted. Use this for navigating huge files without slurping them."
+    ),
+    "fs_list": "- fs_list(path: str=\".\") -- list a workspace directory",
+    "grep": "- grep(pattern: str, path: str=\".\", ext: str|None=None) -- regex search",
+    "find": "- find(glob: str, path: str=\".\") -- glob search",
+    "fs_write": (
+        "- fs_write(path: str, content: str, create_parents: bool=False) -- write a\n"
+        "  whole file. Prefer fs_edit for surgical changes."
+    ),
+    "fs_edit": (
+        "- fs_edit(path: str, old: str, new: str, count: int|null=1,\n"
+        "  dry_run: bool=false) -- surgical\n"
+        "  string-replace in an existing file. count=1 enforces\n"
+        "  a unique match (safest); count=null replaces every occurrence; any\n"
+        "  other integer requires that exact occurrence count. dry_run=true\n"
+        "  validates the match WITHOUT mutating, so you can preview before\n"
+        "  committing. If 'old' is not uniquely matched the call fails with a\n"
+        "  helpful error so you can re-read with more surrounding context and retry."
+    ),
+    "fs_regex_edit": (
+        "- fs_regex_edit(path: str, old: str, new: str, count: int|null=1,\n"
+        "  dry_run: bool=false, raw_regex: bool=false) -- whitespace-tolerant\n"
+        "  variant of fs_edit. Every run of whitespace in 'old'\n"
+        "  matches any run of whitespace in the file, so slight indentation or\n"
+        "  newline differences don't break the edit. Prefer this when fs_edit\n"
+        "  fails with \"old not found\" for code that looks textually correct.\n"
+        "  Set raw_regex=true to treat 'old' as a literal Python regex (advanced)."
+    ),
+    "fs_insert": (
+        "- fs_insert(path: str, content: str, after_line: int|None=None,\n"
+        "  before_line: int|None=None) -- insert content at a specific 1-based\n"
+        "  line position. Exactly one of after_line/before_line must be provided."
+    ),
+    "apply_patch": (
+        "- apply_patch(diff: str, check_only: bool=False) -- apply a unified diff\n"
+        "  via git apply (prefer check_only=true first)"
+    ),
+    "run_shell": (
+        "- run_shell(cmd: str, timeout: float=30, cwd: str|None=None) -- run a\n"
+        "  shell command inside the workspace sandbox. The command is screened\n"
+        "  against a denylist; rm/mv/curl/etc are blocked by default. The user\n"
+        "  is asked to approve each command before it runs (Copilot-style)."
+    ),
+}
+
+TOOL_PROTOCOL_HEADER = """\
 You have access to the following tools. To use one, emit a tool_call
 block in your reply. The runtime will execute it and feed the result
 back as a follow-up user message; you may then call more tools or
@@ -565,49 +624,9 @@ Multiple tool_call blocks per reply are allowed and run in order.
 A reply with NO tool_call block is treated as your final answer.
 
 Available tools:
-- web_search(query: str, max_results: int=5) -- DuckDuckGo web search
-- web_fetch(url: str, max_bytes: int=8000) -- fetch a URL's text body
-- fs_read(path: str, start_line: int|None=None, end_line: int|None=None,
-  max_lines: int|None=None, line_numbers: bool=false, pattern: str|None=None,
-  before: int=0, after: int=0, max_matches: int|None=None,
-  ignore_case: bool=false, max_bytes: int=16000)
-  -- read a file (or a 1-based inclusive line range; negative indices
-  count from the end; pass line_numbers=true to get "<n> | " prefixes
-  so subsequent fs_edit calls can quote exact context). When `pattern`
-  is supplied, only lines matching that regex are returned, padded by
-  `before`/`after` context lines (grep -A/-B style). Non-contiguous
-  matches are separated by "--" lines and line numbers are always
-  emitted. Use this for navigating huge files without slurping them.
-- fs_list(path: str=".") -- list a workspace directory
-- grep(pattern: str, path: str=".", ext: str|None=None) -- regex search
-- find(glob: str, path: str=".") -- glob search
-- fs_write(path: str, content: str, create_parents: bool=False) -- write a
-  whole file (only available when the user has opted into write mode;
-  prefer fs_edit for surgical changes)
-- fs_edit(path: str, old: str, new: str, count: int|null=1,
-  dry_run: bool=false) -- surgical
-  string-replace in an existing file (write mode only). count=1 enforces
-  a unique match (safest); count=null replaces every occurrence; any
-  other integer requires that exact occurrence count. dry_run=true
-  validates the match WITHOUT mutating, so you can preview before
-  committing. If 'old' is not uniquely matched the call fails with a
-  helpful error so you can re-read with more surrounding context and retry.
-- fs_regex_edit(path: str, old: str, new: str, count: int|null=1,
-  dry_run: bool=false, raw_regex: bool=false) -- whitespace-tolerant
-  variant of fs_edit (write mode only). Every run of whitespace in 'old'
-  matches any run of whitespace in the file, so slight indentation or
-  newline differences don't break the edit. Prefer this when fs_edit
-  fails with "old not found" for code that looks textually correct.
-  Set raw_regex=true to treat 'old' as a literal Python regex (advanced).
-- fs_insert(path: str, content: str, after_line: int|None=None,
-  before_line: int|None=None) -- insert content at a specific 1-based
-  line position (write mode only). Exactly one of after_line/before_line
-  must be provided.
-- apply_patch(diff: str, check_only: bool=False) -- apply a unified diff
-  via git apply (only available in write mode; prefer check_only=true first)
-- run_shell(cmd: str, timeout: float=30, cwd: str|None=None) -- run a
-  shell command inside the workspace sandbox (only in write mode; the
-  command is screened against a denylist; rm/mv/curl/etc are blocked)
+"""
+
+TOOL_PROTOCOL_FOOTER = """\
 
 Rules:
 - Use tools when you need information you don't already have. Do not
@@ -617,6 +636,35 @@ Rules:
   synthesizes them. Do not loop forever calling tools.
 - If you have enough information, just answer directly.
 """
+
+
+def build_tool_protocol_doc(tools: dict[str, ToolFn] | None) -> str:
+    """Assemble the tool-protocol blurb listing ONLY the tools that are
+    actually registered for the current turn.
+
+    Loop 272: previously the protocol doc was a static string listing
+    every tool the codebase knows about, which lied to the model when
+    the caller passed a read-only registry (the model would try to use
+    fs_write and get "unknown tool" errors). Now we render only what
+    the dispatcher will actually accept. Unknown registry entries fall
+    back to a minimal stub line so even custom tools added at runtime
+    appear in the prompt.
+    """
+    if tools is None:
+        tools = DEFAULT_TOOLS
+    lines: list[str] = []
+    for name in tools:
+        blurb = TOOL_BLURBS.get(name)
+        if blurb is None:
+            blurb = f"- {name}(...) -- (custom tool registered at runtime)"
+        lines.append(blurb)
+    return TOOL_PROTOCOL_HEADER + "\n".join(lines) + TOOL_PROTOCOL_FOOTER
+
+
+# Backward-compat alias: old tests and external callers reference
+# TOOL_PROTOCOL_DOC. Keep it as the full-registry doc so anything that
+# greps for tool names still finds them.
+TOOL_PROTOCOL_DOC = build_tool_protocol_doc(ALL_TOOLS)
 
 
 # ------------------------------------------------------------- parser
@@ -941,9 +989,11 @@ def run_agent(
             tools = {**DEFAULT_TOOLS, **memory_tools}
         else:
             tools = {**tools, **memory_tools}
-        tool_doc = TOOL_PROTOCOL_DOC + "\n" + MEMORY_TOOL_PROTOCOL_DOC
+        # Loop 272: render the protocol doc against the *actual* registry
+        # so the model never sees tools it can't call (or vice-versa).
+        tool_doc = build_tool_protocol_doc(tools) + "\n" + MEMORY_TOOL_PROTOCOL_DOC
     else:
-        tool_doc = TOOL_PROTOCOL_DOC
+        tool_doc = build_tool_protocol_doc(tools)
 
     sys_text = system if system is not None else (
         _prompts.CODER_SYSTEM + "\n\n" + tool_doc
