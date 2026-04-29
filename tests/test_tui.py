@@ -2233,10 +2233,14 @@ class TestPromptAdvertisesWebTools:
 
         assert "@web" in CODER_SYSTEM
         assert "@search" in CODER_SYSTEM
-        # Loop 164: prompt now advertises tool_call protocol instead
-        # of telling the model to ask the user to run /search.
+        # Loop 164: prompt advertises tool_call protocol instead of
+        # telling the model to ask the user to run /search.
         assert "tool_call" in CODER_SYSTEM
-        assert "web_search" in CODER_SYSTEM
+        # Loop 279: CODER_SYSTEM no longer hardcodes a tool list (that
+        # caused the model to call tools that weren't in the active
+        # registry, see loop 272). Instead it explicitly defers to the
+        # per-turn catalog appended by build_tool_protocol_doc.
+        assert "catalog" in CODER_SYSTEM.lower() or "documented below" in CODER_SYSTEM.lower()
 
 
 # -------------------------------------------------- Loop 161: /search --max

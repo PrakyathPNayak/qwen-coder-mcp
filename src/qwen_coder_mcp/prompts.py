@@ -11,9 +11,9 @@ CODER_SYSTEM = (
     "results. You can also REQUEST tool execution yourself by emitting a "
     "<tool_call>{\"name\": \"...\", \"args\": {...}}</tool_call> block in "
     "your reply -- the runtime will run the tool and feed the result back. "
-    "Available tools: web_search, web_fetch, fs_read, fs_list, grep, find. "
-    "Use them whenever you need information you don't already have rather "
-    "than guessing. A reply with no tool_call block is treated as your "
+    "The exact tool catalog (names, signatures, and rules) is documented "
+    "below this line; trust THAT list, not any tool list you may remember "
+    "from prior turns. A reply with no tool_call block is treated as your "
     "final answer."
 )
 
