@@ -303,6 +303,45 @@ def _tool_fs_list(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     return "\n".join(lines)
 
 
+def _tool_file_info(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    """Loop 275: read-only stat tool. Returns size, mtime, mode, kind."""
+    import hashlib
+
+    path = str(args.get("path", "")).strip()
+    if not path:
+        return "error: file_info needs a 'path' arg"
+    try:
+        p = fs_tools._resolve_inside_root(cfg, path)
+    except fs_tools.FsError as exc:
+        return f"error: {exc}"
+    if not p.exists():
+        return f"error: not found: {path}"
+    st = p.stat()
+    kind = "dir" if p.is_dir() else ("symlink" if p.is_symlink() else "file")
+    parts = [
+        f"path: {path}",
+        f"kind: {kind}",
+        f"size: {st.st_size}",
+        f"mode: {oct(st.st_mode & 0o777)}",
+        f"mtime: {int(st.st_mtime)}",
+    ]
+    if p.is_file() and bool(args.get("sha256", False)) and st.st_size <= 50_000_000:
+        h = hashlib.sha256()
+        with p.open("rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                h.update(chunk)
+        parts.append(f"sha256: {h.hexdigest()}")
+    if p.is_file():
+        try:
+            with p.open("rb") as f:
+                head = f.read(2048)
+            nl = head.count(b"\n")
+            parts.append(f"lines: ~{nl} (first 2KB)")
+        except OSError:
+            pass
+    return "\n".join(parts)
+
+
 def _tool_grep(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     pattern = str(args.get("pattern", ""))
     if not pattern:
@@ -414,6 +453,7 @@ DEFAULT_TOOLS: dict[str, ToolFn] = {
     "web_fetch": _tool_web_fetch,
     "fs_read": _tool_fs_read,
     "fs_list": _tool_fs_list,
+    "file_info": _tool_file_info,
     "grep": _tool_grep,
     "find": _tool_find,
     "git_status": _tool_git_status,
@@ -649,6 +689,10 @@ TOOL_BLURBS: dict[str, str] = {
         "  emitted. Use this for navigating huge files without slurping them."
     ),
     "fs_list": "- fs_list(path: str=\".\") -- list a workspace directory",
+    "file_info": (
+        "- file_info(path: str, sha256: bool=false) -- stat a file/dir: size,\n"
+        "  mode, mtime, kind, optional sha256 hash for files <= 50MB. Read-only."
+    ),
     "grep": "- grep(pattern: str, path: str=\".\", ext: str|None=None) -- regex search",
     "find": "- find(glob: str, path: str=\".\") -- glob search",
     "git_status": "- git_status() -- short git status with branch info (read-only)",
