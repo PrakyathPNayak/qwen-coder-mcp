@@ -190,6 +190,8 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/confirm_writes_on",
     "/allow_all",
     "/safe_mode",
+    "/mouse",
+    "/select",
     "/loop",
     "/tools",
 )
@@ -287,6 +289,14 @@ Slash commands:
                        + run_auto_approve. Maximum autonomy; use with care.
   /safe_mode           One-shot inverse: agent_off + agent_write_off
                        + confirm_writes_on + run_auto_approve_off.
+  /mouse [on|off|toggle]
+                       Toggle Textual's mouse capture. /mouse off lets
+                       you click-drag to select text in the response
+                       region and copy with the terminal's own keys
+                       (Cmd-C / Ctrl-Shift-C / right-click). /mouse on
+                       restores Textual's mouse handling.
+  /select              Alias for /mouse off (enable terminal-native
+                       text selection on the response region).
   /loop [start|stop|kill|status|tail [N]]
                        Manage the autonomous self-improvement loop
                        (`agent/loop.py`) as a detached subprocess.
@@ -2197,6 +2207,24 @@ def dispatch_slash(
         return _AGENT_TOGGLE_SENTINEL + "allow_all", False
     if name == "safe_mode":
         return _AGENT_TOGGLE_SENTINEL + "safe_mode", False
+    if name == "mouse":
+        # Loop 280: toggle Textual's mouse capture so the host
+        # terminal can do native click-drag selection on the RichLog.
+        # /mouse off  -- release capture (terminal-native select+copy)
+        # /mouse on   -- restore Textual's mouse handling
+        # /mouse      -- toggle
+        sub = (cmd.rest or "").strip().lower()
+        if sub in ("", "toggle"):
+            return _AGENT_TOGGLE_SENTINEL + "mouse_toggle", False
+        if sub in ("off", "0", "false", "release"):
+            return _AGENT_TOGGLE_SENTINEL + "mouse_off", False
+        if sub in ("on", "1", "true", "capture"):
+            return _AGENT_TOGGLE_SENTINEL + "mouse_on", False
+        return f"usage: /mouse [on|off|toggle]", False
+    if name == "select":
+        # Loop 280: alias -- "/select" is the obvious verb for "let me
+        # select text". Same as /mouse off.
+        return _AGENT_TOGGLE_SENTINEL + "mouse_off", False
     if name == "loop":
         return _render_loop(fs_cfg, list(cmd.args)), False
     if name == "search":
@@ -3717,6 +3745,49 @@ def _build_app(
                             "[bold green]/safe_mode: agent + writes off, "
                             "all confirmations re-enabled.[/bold green]"
                         )
+                    elif flag in ("mouse_off", "mouse_on", "mouse_toggle"):
+                        # Loop 280: toggle Textual mouse capture so the
+                        # host terminal can do native click-drag select
+                        # (and copy via the terminal's own UI / Cmd-C).
+                        # We emit the standard XTerm mouse-tracking
+                        # disable/enable escape codes through sys.stdout;
+                        # while disabled, drag selection is captured by
+                        # the terminal emulator instead of by Textual.
+                        import sys as _sys
+
+                        try:
+                            current = bool(getattr(self, "_mouse_released", False))
+                            if flag == "mouse_off":
+                                want_off = True
+                            elif flag == "mouse_on":
+                                want_off = False
+                            else:
+                                want_off = not current
+                            if want_off:
+                                _sys.stdout.write(
+                                    "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l"
+                                )
+                                _sys.stdout.flush()
+                                self._mouse_released = True
+                                log.write(
+                                    "[bold yellow]/mouse off: terminal-native "
+                                    "selection enabled. Drag to select; copy via "
+                                    "your terminal (Cmd/Ctrl+Shift+C, or right-click). "
+                                    "Run /mouse on to restore Textual mouse.[/bold yellow]"
+                                )
+                            else:
+                                _sys.stdout.write("\x1b[?1000h\x1b[?1003h\x1b[?1006h")
+                                _sys.stdout.flush()
+                                self._mouse_released = False
+                                log.write(
+                                    "[dim]/mouse on: Textual mouse capture restored.[/dim]"
+                                )
+                        except Exception as exc:  # pragma: no cover
+                            log.write(
+                                f"[red]/mouse toggle failed: "
+                                f"{_safe_markup(type(exc).__name__)}: "
+                                f"{_safe_markup(exc)}[/red]"
+                            )
                     state = (
                         f"agent={'on' if self.agent_default else 'off'} "
                         f"write={'on' if self.agent_write_default else 'off'} "
