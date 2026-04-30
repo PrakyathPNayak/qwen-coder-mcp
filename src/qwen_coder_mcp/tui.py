@@ -4224,7 +4224,9 @@ def _build_app(
             # True we additionally pop a modal and block the worker
             # thread on a threading.Event until the user answers (or
             # the 30s default-deny timeout elapses).
-            def _confirm_write(call: agent_loop.ToolCall, _thr=threading) -> bool:
+            import threading as _threading
+
+            def _confirm_write(call: agent_loop.ToolCall) -> bool:
                 if call.name == "fs_write":
                     p = call.args.get("path", "?")
                     n = len(str(call.args.get("content", "")))
@@ -4247,7 +4249,7 @@ def _build_app(
                 )
                 if not self.agent_confirm_writes:
                     return True
-                evt = _thr.Event()
+                evt = _threading.Event()
                 holder: list[bool] = [False]
 
                 def _resolve(value: bool | None) -> None:
@@ -4285,7 +4287,7 @@ def _build_app(
                         f"[yellow]⚠ checkpoint failed at step {step}: {_safe_markup(exc)}[/yellow]",
                     )
 
-            def _ask_user_handler(question: str, choices: list[str], _thr=threading) -> str:
+            def _ask_user_handler(question: str, choices: list[str]) -> str:
                 """Loop 284: bridge ``ask_user`` tool calls into the
                 _AskScreen modal. Runs in the agent worker thread; uses
                 ``call_from_thread`` to push the screen and a
@@ -4294,7 +4296,7 @@ def _build_app(
                 promptly when the TUI is closed instead of hanging for
                 the full 120 s timeout.
                 """
-                evt = _thr.Event()
+                evt = _threading.Event()
                 holder: list[str] = [""]
 
                 def _resolve(value: str | None) -> None:
@@ -4435,9 +4437,7 @@ def _build_app(
             if _HAS_WORK:
                 self.run_worker(runner, thread=True, exclusive=True)
             else:  # pragma: no cover
-                import threading
-
-                threading.Thread(target=runner, daemon=True).start()
+                _threading.Thread(target=runner, daemon=True).start()
 
         def _agent_status(self, line: str) -> None:
             try:
