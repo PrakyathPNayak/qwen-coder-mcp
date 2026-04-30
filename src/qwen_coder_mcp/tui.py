@@ -2131,11 +2131,12 @@ def dispatch_slash(
         read_names = sorted(agent_loop.DEFAULT_TOOLS.keys())
         write_names = sorted(agent_loop.WRITE_TOOLS.keys())
         lines = [
-            "[bold]read-only tools[/bold] (always available):",
+            "[bold]read-only tools[/bold] (always available in agent mode):",
             "  " + ", ".join(read_names),
-            "[bold]write tools[/bold] (need /agent --write or /agent_write_on):",
+            "[bold]write/exec tools[/bold] (active when write=on, which is the default):",
             "  " + ", ".join(write_names),
-            f"destructive (modal-gated): {', '.join(sorted(agent_loop.DESTRUCTIVE_TOOLS))}",
+            "Use /agent_write_off to disable writes, /agent_write_on to re-enable.",
+            f"destructive (Copilot-style confirm modal): {', '.join(sorted(agent_loop.DESTRUCTIVE_TOOLS))}",
         ]
         return "\n".join(lines), False
     if name == "agent":
@@ -3722,8 +3723,15 @@ def _build_app(
             msgs = len(self.history)
             ttok = self.total_tokens
             prefix = "[yellow]● streaming…[/yellow]  " if streaming else "  "
+            agent_mode = (
+                f"[green]agent+write[/green]" if (self.agent_default and self.agent_write_default)
+                else f"[cyan]agent[/cyan]" if self.agent_default
+                else "[dim]plain[/dim]"
+            )
+            confirm_tag = " [yellow]confirm[/yellow]" if (self.agent_confirm_writes and self.agent_write_default) else ""
             line = (
-                f"{prefix}{model}  ·  {msgs} msg  ·  ~{ttok} tok total  ·  "
+                f"{prefix}{model}  ·  {agent_mode}{confirm_tag}  ·  "
+                f"{msgs} msg  ·  ~{ttok} tok total  ·  "
                 f"last turn ~{self.last_turn_tokens} tok in "
                 f"{self.last_turn_seconds:.1f}s"
             )

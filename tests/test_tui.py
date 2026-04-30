@@ -2393,6 +2393,39 @@ class TestStreamingStatusIndicator:
         assert any("streaming" in s for s in captured)
         assert any("streaming" not in s for s in captured)
 
+    def test_status_shows_agent_write_mode(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Loop 287: status bar must show agent mode so user can tell at
+        a glance whether write tools are active."""
+        AppCls = tui._build_app(
+            fs_cfg=fs_tools.FsConfig(root=tmp_path), client_factory=_FakeClient
+        )
+        app = AppCls()
+        captured: list[str] = []
+
+        class _Stub:
+            def update(self, text: str) -> None:
+                captured.append(text)
+
+        monkeypatch.setattr(app, "query_one", lambda _id, _cls: _Stub())
+        # Default: agent=True, write=True → should show agent+write
+        app.agent_default = True
+        app.agent_write_default = True
+        app._refresh_status()
+        assert any("agent+write" in s or "write" in s for s in captured)
+        captured.clear()
+        # write off → show agent only
+        app.agent_write_default = False
+        app._refresh_status()
+        # Should NOT say write
+        assert not any("write" in s for s in captured)
+        captured.clear()
+        # agent off → plain
+        app.agent_default = False
+        app._refresh_status()
+        assert any("plain" in s for s in captured)
+
 
 # -------------------------------------------------- Loop 162: @@<path> + grep --count
 class TestAtMentionFullFile:
@@ -2769,7 +2802,7 @@ class TestToolsCommand:
         for tool_name in ["fs_write", "apply_patch", "run_shell"]:
             assert tool_name in text
         assert "read-only tools" in text
-        assert "write tools" in text
+        assert "write" in text and ("tools" in text or "exec" in text)
 
     def test_tools_in_completions(self) -> None:
         comps = tui.slash_completions("/t")
