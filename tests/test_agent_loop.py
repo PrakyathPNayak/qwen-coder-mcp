@@ -621,3 +621,142 @@ class TestRunShellTool:
         )
         results = [e for e in events if e.kind == "tool_result"]
         assert results and "unknown tool" in results[0].text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Loop 290: new tools -- http_request, json_query, env_get, cp
+# ---------------------------------------------------------------------------
+
+class TestHttpRequestTool:
+    def test_get_returns_status(self, tmp_path: Path) -> None:
+        from unittest.mock import patch, MagicMock
+        import io
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.status = 200
+        mock_resp.headers = {"Content-Type": "text/plain"}
+        mock_resp.read.return_value = b"hello world"
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            r = agent_loop._tool_http_request({"url": "http://example.com"}, cfg)
+        assert "status=200" in r
+        assert "hello world" in r
+
+    def test_missing_url_returns_error(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        r = agent_loop._tool_http_request({}, cfg)
+        assert "error" in r
+
+    def test_bad_method_returns_error(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        r = agent_loop._tool_http_request({"url": "http://example.com", "method": "ZORK"}, cfg)
+        assert "unsupported method" in r
+
+    def test_in_default_tools(self) -> None:
+        assert "http_request" in agent_loop.DEFAULT_TOOLS
+
+    def test_has_blurb(self) -> None:
+        assert "http_request" in agent_loop.TOOL_BLURBS
+
+
+class TestJsonQueryTool:
+    def _cfg(self, tmp_path: Path) -> fs_tools.FsConfig:
+        return fs_tools.FsConfig(root=tmp_path)
+
+    def test_simple_path(self, tmp_path: Path) -> None:
+        r = agent_loop._tool_json_query({"json": '{"a":{"b":42}}', "path": "a.b"}, self._cfg(tmp_path))
+        assert r.strip() == "42"
+
+    def test_list_index(self, tmp_path: Path) -> None:
+        r = agent_loop._tool_json_query({"json": '[10,20,30]', "path": "1"}, self._cfg(tmp_path))
+        assert r.strip() == "20"
+
+    def test_root_path(self, tmp_path: Path) -> None:
+        r = agent_loop._tool_json_query({"json": '{"x":1}', "path": "."}, self._cfg(tmp_path))
+        import json
+        assert json.loads(r) == {"x": 1}
+
+    def test_invalid_json_returns_error(self, tmp_path: Path) -> None:
+        r = agent_loop._tool_json_query({"json": "not json"}, self._cfg(tmp_path))
+        assert "error" in r
+
+    def test_missing_key_returns_error(self, tmp_path: Path) -> None:
+        r = agent_loop._tool_json_query({"json": '{"a":1}', "path": "b"}, self._cfg(tmp_path))
+        assert "error" in r
+
+    def test_in_default_tools(self) -> None:
+        assert "json_query" in agent_loop.DEFAULT_TOOLS
+
+
+class TestEnvGetTool:
+    def _cfg(self, tmp_path: Path) -> fs_tools.FsConfig:
+        return fs_tools.FsConfig(root=tmp_path)
+
+    def test_read_home(self, tmp_path: Path) -> None:
+        r = agent_loop._tool_env_get({"name": "HOME"}, self._cfg(tmp_path))
+        assert r and r != "[not set]"
+
+    def test_sensitive_redacted(self, tmp_path: Path) -> None:
+        import os
+        orig = os.environ.get("GITHUB_TOKEN")
+        os.environ["GITHUB_TOKEN"] = "ghp_secret123"
+        try:
+            r = agent_loop._tool_env_get({"name": "GITHUB_TOKEN"}, self._cfg(tmp_path))
+            assert "REDACTED" in r
+            assert "ghp_secret" not in r
+        finally:
+            if orig is None:
+                os.environ.pop("GITHUB_TOKEN", None)
+            else:
+                os.environ["GITHUB_TOKEN"] = orig
+
+    def test_missing_name_returns_error(self, tmp_path: Path) -> None:
+        r = agent_loop._tool_env_get({}, self._cfg(tmp_path))
+        assert "error" in r
+
+    def test_unset_returns_marker(self, tmp_path: Path) -> None:
+        r = agent_loop._tool_env_get({"name": "QWEN_TEST_UNSET_XYZ"}, self._cfg(tmp_path))
+        assert r == "[not set]"
+
+    def test_multi_returns_json(self, tmp_path: Path) -> None:
+        import json
+        r = agent_loop._tool_env_get({"names": ["HOME", "PATH"]}, self._cfg(tmp_path))
+        obj = json.loads(r)
+        assert "HOME" in obj and "PATH" in obj
+
+    def test_in_default_tools(self) -> None:
+        assert "env_get" in agent_loop.DEFAULT_TOOLS
+
+
+class TestCpTool:
+    def _cfg(self, tmp_path: Path) -> fs_tools.FsConfig:
+        return fs_tools.FsConfig(root=tmp_path)
+
+    def test_basic_copy(self, tmp_path: Path) -> None:
+        src = tmp_path / "a.txt"
+        src.write_text("hello")
+        r = agent_loop._tool_cp({"src": "a.txt", "dst": "b.txt"}, self._cfg(tmp_path))
+        assert "copied" in r
+        assert (tmp_path / "b.txt").read_text() == "hello"
+
+    def test_overwrite_false_blocks(self, tmp_path: Path) -> None:
+        (tmp_path / "a.txt").write_text("orig")
+        (tmp_path / "b.txt").write_text("existing")
+        r = agent_loop._tool_cp({"src": "a.txt", "dst": "b.txt"}, self._cfg(tmp_path))
+        assert "error" in r
+
+    def test_overwrite_true_replaces(self, tmp_path: Path) -> None:
+        (tmp_path / "a.txt").write_text("new")
+        (tmp_path / "b.txt").write_text("old")
+        r = agent_loop._tool_cp({"src": "a.txt", "dst": "b.txt", "overwrite": True}, self._cfg(tmp_path))
+        assert "copied" in r
+        assert (tmp_path / "b.txt").read_text() == "new"
+
+    def test_missing_src_returns_error(self, tmp_path: Path) -> None:
+        r = agent_loop._tool_cp({"src": "nope.txt", "dst": "b.txt"}, self._cfg(tmp_path))
+        assert "error" in r
+
+    def test_in_write_tools(self) -> None:
+        assert "cp" in agent_loop.WRITE_TOOLS
+        assert "cp" not in agent_loop.DEFAULT_TOOLS

@@ -662,9 +662,186 @@ def _tool_python_exec(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     return shell_tools.format_run_result(res)
 
 
+# ---------------------------------------- loop 290: utility tools --------
+
+def _tool_http_request(args: dict[str, Any], _cfg: fs_tools.FsConfig) -> str:
+    """Loop 290: make an HTTP request and return the response body.
+
+    GET and HEAD are read-only; PUT/POST/DELETE/PATCH are destructive
+    and require write-mode (the confirm hook gates them in the TUI).
+    Response body is truncated at 32KB.
+    """
+    import urllib.request
+    import urllib.error
+
+    url = str(args.get("url", "")).strip()
+    if not url:
+        return "error: http_request needs a 'url' arg"
+    method = str(args.get("method", "GET")).upper()
+    allowed_methods = {"GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"}
+    if method not in allowed_methods:
+        return f"error: unsupported method {method!r}; choose from {sorted(allowed_methods)}"
+    headers: dict[str, str] = {}
+    raw_headers = args.get("headers") or {}
+    if isinstance(raw_headers, dict):
+        for k, v in raw_headers.items():
+            if isinstance(k, str) and isinstance(v, str):
+                headers[k] = v
+    body_str = args.get("body") or args.get("data") or ""
+    body_bytes: bytes | None = None
+    if body_str and isinstance(body_str, str):
+        body_bytes = body_str.encode()
+    elif isinstance(body_str, bytes):
+        body_bytes = body_str
+    timeout = args.get("timeout", 20.0)
+    try:
+        timeout = float(timeout)
+    except (TypeError, ValueError):
+        timeout = 20.0
+    timeout = max(1.0, min(60.0, timeout))
+    max_bytes = 32_768
+    req = urllib.request.Request(url, data=body_bytes, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            status = resp.status
+            content_type = resp.headers.get("Content-Type", "")
+            raw = resp.read(max_bytes)
+    except urllib.error.HTTPError as exc:
+        return f"HTTP {exc.code} {exc.reason}: {url}"
+    except urllib.error.URLError as exc:
+        return f"error: {exc.reason}"
+    except OSError as exc:
+        return f"error: {exc}"
+    body_text = raw.decode("utf-8", errors="replace")
+    truncated = " [truncated]" if len(raw) >= max_bytes else ""
+    return f"status={status} content-type={content_type!r}{truncated}\n{body_text}"
+
+
+def _tool_json_query(args: dict[str, Any], _cfg: fs_tools.FsConfig) -> str:
+    """Loop 290: extract a value from a JSON string using a dotted path.
+
+    path uses dot notation: "items.0.name" or "meta.total".
+    Returns the extracted value as JSON-serialized text.
+    If path is empty or "." the entire document is pretty-printed.
+    """
+    import json as _json
+
+    raw = args.get("json") or args.get("data") or ""
+    if not isinstance(raw, str) or not raw.strip():
+        return "error: json_query needs a 'json' arg with JSON text"
+    path = str(args.get("path", "")).strip()
+    try:
+        doc = _json.loads(raw)
+    except _json.JSONDecodeError as exc:
+        return f"error: invalid JSON: {exc}"
+    if not path or path == ".":
+        return _json.dumps(doc, indent=2, ensure_ascii=False)
+    parts = path.split(".")
+    current = doc
+    for part in parts:
+        if part == "":
+            continue
+        if isinstance(current, list):
+            try:
+                idx = int(part)
+            except ValueError:
+                return f"error: expected integer index for list, got {part!r}"
+            if idx < 0 or idx >= len(current):
+                return f"error: list index {idx} out of range (len={len(current)})"
+            current = current[idx]
+        elif isinstance(current, dict):
+            if part not in current:
+                return f"error: key {part!r} not found; available: {list(current.keys())}"
+            current = current[part]
+        else:
+            return f"error: cannot index into {type(current).__name__} with {part!r}"
+    return _json.dumps(current, indent=2, ensure_ascii=False)
+
+
+# Sensitive env var prefixes to redact from env_get output.
+_ENV_DENYLIST = frozenset({
+    "AWS_SECRET", "AWS_ACCESS", "GITHUB_TOKEN", "GH_TOKEN",
+    "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY",
+    "HUGGINGFACE_TOKEN", "HF_TOKEN", "DATABRICKS_TOKEN",
+    "DATABASE_URL", "DATABASE_PASSWORD", "DB_PASSWORD",
+    "SECRET_KEY", "PRIVATE_KEY", "PEM_KEY", "PASSPHRASE",
+    "NPM_TOKEN", "PYPI_TOKEN", "DOCKERHUB_PASSWORD",
+    "SLACK_TOKEN", "DISCORD_TOKEN", "TELEGRAM_BOT_TOKEN",
+})
+
+
+def _is_sensitive_env(name: str) -> bool:
+    up = name.upper()
+    return any(blocked in up for blocked in _ENV_DENYLIST)
+
+
+def _tool_env_get(args: dict[str, Any], _cfg: fs_tools.FsConfig) -> str:
+    """Loop 290: read one or more environment variables.
+
+    Pass name="VAR" for a single variable or names=["A","B","C"] for
+    multiple. Sensitive variables (API keys, tokens, passwords, etc.)
+    are redacted. Use this to inspect PATH, VIRTUAL_ENV, HOME, etc.
+    """
+    import os as _os
+    import json as _json
+
+    single = args.get("name") or args.get("var") or ""
+    multi: list[str] = []
+    raw_names = args.get("names") or args.get("vars") or []
+    if isinstance(raw_names, list):
+        multi = [str(n) for n in raw_names if n]
+    if single:
+        multi = [str(single)] + multi
+    if not multi:
+        return "error: env_get needs 'name' or 'names' arg"
+    result: dict[str, str] = {}
+    for var in multi:
+        if not var or not var.replace("_", "").isalnum():
+            result[var] = f"[error: invalid env name {var!r}]"
+        elif _is_sensitive_env(var):
+            result[var] = "[REDACTED: sensitive variable]"
+        else:
+            val = _os.environ.get(var)
+            result[var] = val if val is not None else "[not set]"
+    if len(result) == 1:
+        return next(iter(result.values()))
+    return _json.dumps(result, indent=2)
+
+
+def _tool_cp(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    """Loop 290: copy a file within the workspace sandbox."""
+    import shutil as _shutil
+
+    src = str(args.get("src", "")).strip()
+    dst = str(args.get("dst", "")).strip()
+    if not src or not dst:
+        return "error: cp needs 'src' and 'dst' args"
+    overwrite = bool(args.get("overwrite", False))
+    try:
+        s = fs_tools._resolve_inside_root(cfg, src)
+        d = fs_tools._resolve_inside_root(cfg, dst)
+    except fs_tools.FsError as exc:
+        return f"error: {exc}"
+    if not s.exists():
+        return f"error: not found: {src}"
+    if s.is_dir():
+        return "error: cp only supports files; use run_shell for directory copies"
+    if d.exists() and not overwrite:
+        return f"error: dst already exists: {dst} (set overwrite=true)"
+    try:
+        d.parent.mkdir(parents=True, exist_ok=True)
+        _shutil.copy2(s, d)
+    except OSError as exc:
+        return f"error: {exc}"
+    return f"copied {src} -> {dst}"
+
+
 DEFAULT_TOOLS: dict[str, ToolFn] = {
     "web_search": _tool_web_search,
     "web_fetch": _tool_web_fetch,
+    "http_request": _tool_http_request,
+    "json_query": _tool_json_query,
+    "env_get": _tool_env_get,
     "fs_read": _tool_fs_read,
     "fs_list": _tool_fs_list,
     "file_info": _tool_file_info,
@@ -689,6 +866,7 @@ WRITE_TOOLS: dict[str, ToolFn] = {
     "mkdir": _tool_mkdir,
     "touch": _tool_touch,
     "mv": _tool_mv,
+    "cp": _tool_cp,
     "run_shell": _tool_run_shell,
     "python_exec": _tool_python_exec,
 }
@@ -991,6 +1169,30 @@ TOOL_BLURBS: dict[str, str] = {
         "  AST checks, JSON munging, or any quick calculation -- cleaner than\n"
         "  building a `run_shell` command with shell-escaped python -c '...'.\n"
         "  Same Copilot-style approval as run_shell; same workspace cwd lock."
+    ),
+    "http_request": (
+        "- http_request(url: str, method: str='GET', headers: dict={},\n"
+        "  body: str='', timeout: float=20) -- make an HTTP request and\n"
+        "  return status + response body (truncated at 32KB). GET/HEAD are\n"
+        "  read-only; POST/PUT/DELETE/PATCH require write-mode and Copilot\n"
+        "  approval. Use for calling REST APIs, health checks, webhooks."
+    ),
+    "json_query": (
+        "- json_query(json: str, path: str='.') -- extract a value from JSON\n"
+        "  text using dot notation (e.g. 'items.0.name'). Path '.' or empty\n"
+        "  returns the whole document pretty-printed. Useful for parsing\n"
+        "  http_request responses or large config files."
+    ),
+    "env_get": (
+        "- env_get(name: str='', names: list[str]=[]) -- read one or more\n"
+        "  environment variables. Sensitive names (API keys, tokens, passwords)\n"
+        "  are automatically redacted. Use to inspect PATH, VIRTUAL_ENV,\n"
+        "  HOME, QWEN_*, etc."
+    ),
+    "cp": (
+        "- cp(src: str, dst: str, overwrite: bool=false) -- copy a file\n"
+        "  inside the workspace sandbox. Creates dst parent dirs as needed.\n"
+        "  Requires write-mode."
     ),
 }
 
