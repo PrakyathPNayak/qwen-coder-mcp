@@ -1326,7 +1326,7 @@ def run_agent(
     client: QwenClient,
     fs_cfg: fs_tools.FsConfig,
     system: str | None = None,
-    max_steps: int = 6,
+    max_steps: int = 20,
     tools: dict[str, ToolFn] | None = None,
     stream: bool = True,
     confirm: ConfirmFn | None = None,
