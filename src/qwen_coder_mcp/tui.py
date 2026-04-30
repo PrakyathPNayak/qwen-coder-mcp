@@ -3369,6 +3369,16 @@ def load_history_jsonl(path: Path) -> list[ChatMessage]:
     return out
 
 
+def _resolve_inherit_write(agent_write_default: bool) -> bool:
+    """Loop 286: tiny helper that makes the write-flag inheritance rule
+    explicit and directly testable.  ``_start_agent_turn`` calls this
+    when ``write=None`` (its new default) so any call-site that omits
+    ``write=`` automatically follows the app-level ``agent_write_default``
+    toggle instead of silently falling back to read-only False.
+    """
+    return bool(agent_write_default)
+
+
 def _build_app(
     client_factory: Callable[[], QwenClient] | None = None,
     fs_cfg: fs_tools.FsConfig | None = None,
@@ -3928,7 +3938,7 @@ def _build_app(
                     return
             self._streaming = True
             if self.agent_default:
-                self._start_agent_turn(line)
+                self._start_agent_turn(line, write=self.agent_write_default)
             else:
                 self._start_streaming_turn(line)
 
@@ -4046,7 +4056,7 @@ def _build_app(
             self,
             task: str,
             *,
-            write: bool = False,
+            write: bool | None = None,
             max_steps: int | None = None,
         ) -> None:
             """Run an agentic tool-calling turn in a worker thread.
@@ -4055,8 +4065,14 @@ def _build_app(
             tool is firing; final answer is rendered via _post_assistant
             once the loop ends. ``write=True`` exposes fs_write +
             apply_patch tools, allowing the agent to edit the workspace.
+            ``write=None`` (default) follows ``self.agent_write_default``
+            -- this is the safety net behind loop 286's bug where plain
+            user input ran with write=False even though /allow_all and
+            agent_write_default were on.
             ``max_steps`` overrides the default 6-step cap (1..50).
             """
+            if write is None:
+                write = _resolve_inherit_write(self.agent_write_default)
             t0 = time.monotonic()
             try:
                 stream = self.query_one("#stream", Static)

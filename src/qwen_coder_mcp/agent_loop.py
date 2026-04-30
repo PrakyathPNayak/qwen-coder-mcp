@@ -636,6 +636,32 @@ def _tool_run_shell(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     return shell_tools.format_run_result(res)
 
 
+def _tool_python_exec(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    """Loop 286: pipe `code` to a fresh python -I and return stdout/stderr.
+
+    Cheaper than run_shell for scratch computation: structured timeout,
+    no shell-quoting hell, no argv-length cap. Same chokepoints though
+    -- it is a destructive tool (subprocess) and the run_agent confirm
+    hook will gate it just like run_shell.
+    """
+    code = args.get("code") or args.get("source") or ""
+    if not isinstance(code, str) or not code.strip():
+        return "error: python_exec needs a 'code' arg"
+    timeout = args.get("timeout", 15.0)
+    try:
+        timeout = float(timeout)
+    except (TypeError, ValueError):
+        timeout = 15.0
+    cwd = args.get("cwd")
+    if cwd is not None and not isinstance(cwd, str):
+        cwd = None
+    try:
+        res = shell_tools.run_python(cfg, code, timeout=timeout, cwd=cwd)
+    except shell_tools.ShellError as exc:
+        return f"denied: {exc}"
+    return shell_tools.format_run_result(res)
+
+
 DEFAULT_TOOLS: dict[str, ToolFn] = {
     "web_search": _tool_web_search,
     "web_fetch": _tool_web_fetch,
@@ -664,6 +690,7 @@ WRITE_TOOLS: dict[str, ToolFn] = {
     "touch": _tool_touch,
     "mv": _tool_mv,
     "run_shell": _tool_run_shell,
+    "python_exec": _tool_python_exec,
 }
 
 ALL_TOOLS: dict[str, ToolFn] = {**DEFAULT_TOOLS, **WRITE_TOOLS}
@@ -956,6 +983,14 @@ TOOL_BLURBS: dict[str, str] = {
         "  shell command inside the workspace sandbox. The command is screened\n"
         "  against a denylist; rm/mv/curl/etc are blocked by default. The user\n"
         "  is asked to approve each command before it runs (Copilot-style)."
+    ),
+    "python_exec": (
+        "- python_exec(code: str, timeout: float=15, cwd: str|None=None) --\n"
+        "  pipe `code` to a fresh `python -I` interpreter via stdin and return\n"
+        "  exit code, stdout, and stderr. Use this for scratch computation,\n"
+        "  AST checks, JSON munging, or any quick calculation -- cleaner than\n"
+        "  building a `run_shell` command with shell-escaped python -c '...'.\n"
+        "  Same Copilot-style approval as run_shell; same workspace cwd lock."
     ),
 }
 
@@ -1345,14 +1380,33 @@ def run_agent(
     else:
         tool_doc = build_tool_protocol_doc(tools)
 
+    # Build a sentinel that's unique to the exact tool set for this turn.
+    # Use sorted tool names so we can detect when the registry changed
+    # (e.g. read-only first turn → write-enabled second turn) and replace
+    # the stale catalog in the system message rather than silently leaving
+    # the old read-only list in place. The sentinel is embedded as a
+    # comment line that the model will never read but the injector checks.
+    _tool_keys = sorted((tools or DEFAULT_TOOLS).keys())
+    _tool_sentinel = f"<!-- tools:{','.join(_tool_keys)} -->"
+
     sys_text = system if system is not None else (
-        _prompts.CODER_SYSTEM + "\n\n" + tool_doc
+        _prompts.CODER_SYSTEM + "\n\n" + _tool_sentinel + "\n" + tool_doc
     )
     if not history or history[0].role != "system":
         history.insert(0, ChatMessage(role="system", content=sys_text))
-    elif tool_doc[:40] not in history[0].content:
+    elif _tool_sentinel not in history[0].content:
+        # Either no catalog yet, or the catalog is stale (different tool
+        # set). Strip any previous tool sentinel+catalog block and replace
+        # with the fresh one so the model always sees the correct list.
+        base = history[0].content
+        # Remove any previous <!-- tools:... --> sentinel and everything
+        # after it (which is the old catalog).
+        _prev_sentinel_start = base.find("<!-- tools:")
+        if _prev_sentinel_start != -1:
+            base = base[:_prev_sentinel_start].rstrip()
         history[0] = ChatMessage(
-            role="system", content=history[0].content + "\n\n" + tool_doc
+            role="system",
+            content=base + "\n\n" + _tool_sentinel + "\n" + tool_doc,
         )
 
     history.append(ChatMessage(role="user", content=user_text))

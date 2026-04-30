@@ -77,3 +77,87 @@ class TestBuildProtocolDoc:
         assert "- fs_write(" not in sys
         assert "- run_shell(" not in sys
         assert "- fs_read(" in sys
+
+
+class TestToolCatalogReplacement:
+    """Loop 286: when the tool registry changes between turns (e.g.
+    first turn read-only, second turn write-enabled), run_agent must
+    replace the stale catalog in the system message, not leave the
+    old read-only list in place.
+    """
+
+    def _make_client(self, captured: dict, reply: str = "done"):
+        class _Client:
+            task_memory = None
+            def chat_stream(self, history):
+                captured["sys"] = history[0].content
+                yield reply
+        return _Client()
+
+    def test_write_tools_present_when_all_tools_passed(self):
+        from qwen_coder_mcp.agent_loop import run_agent, ALL_TOOLS, ChatMessage
+        captured = {}
+        history: list[ChatMessage] = []
+        list(run_agent(
+            history=history,
+            user_text="hi",
+            client=self._make_client(captured),
+            fs_cfg=None,  # type: ignore[arg-type]
+            tools=ALL_TOOLS,
+            max_steps=1,
+        ))
+        sys = captured.get("sys", "")
+        assert "- fs_write(" in sys
+        assert "- run_shell(" in sys
+        assert "- python_exec(" in sys
+
+    def test_stale_readonly_catalog_replaced_on_write_turn(self):
+        """First turn: read-only. Second turn: ALL_TOOLS. The second
+        turn's system message must have fs_write, not just the old catalog."""
+        from qwen_coder_mcp.agent_loop import (
+            run_agent, ALL_TOOLS, DEFAULT_TOOLS, ChatMessage
+        )
+        captured_first = {}
+        captured_second = {}
+
+        class _ClientFirst:
+            task_memory = None
+            def chat_stream(self, history):
+                captured_first["sys"] = history[0].content
+                yield "first done"
+
+        class _ClientSecond:
+            task_memory = None
+            def chat_stream(self, history):
+                captured_second["sys"] = history[0].content
+                yield "second done"
+
+        # First turn: read-only
+        history: list[ChatMessage] = []
+        list(run_agent(
+            history=history,
+            user_text="read something",
+            client=_ClientFirst(),
+            fs_cfg=None,  # type: ignore[arg-type]
+            tools=DEFAULT_TOOLS,
+            max_steps=1,
+        ))
+        sys_first = captured_first.get("sys", "")
+        assert "- fs_write(" not in sys_first, "read-only turn must NOT have fs_write"
+
+        # Second turn (same history): ALL_TOOLS
+        list(run_agent(
+            history=history,
+            user_text="write something",
+            client=_ClientSecond(),
+            fs_cfg=None,  # type: ignore[arg-type]
+            tools=ALL_TOOLS,
+            max_steps=1,
+        ))
+        sys_second = captured_second.get("sys", "")
+        assert "- fs_write(" in sys_second, "write turn must have fs_write in sys prompt"
+        assert "- run_shell(" in sys_second, "write turn must have run_shell in sys prompt"
+        # Old read-only sentinel must be gone (replaced not appended)
+        assert sys_second.count("Available tools:") <= 2, (
+            "should not have duplicate tool catalog sections"
+        )

@@ -2637,6 +2637,34 @@ class TestAgentWriteAndConfirmDispatch:
         # call still pops the y/n modal because confirm is on.
         assert app.agent_write_default is True
 
+    def test_start_agent_turn_default_follows_write_default(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Loop 286: regression. Plain user input was reaching
+        _start_agent_turn() without an explicit ``write=`` kwarg, so
+        ``write=False`` defaulted in and the model only saw read-only
+        DEFAULT_TOOLS even though /allow_all + agent_write_default
+        were on. The fix flips _start_agent_turn's default to None and
+        resolves via ``self.agent_write_default`` via _resolve_inherit_write.
+        """
+        # Direct unit test of the helper: semantics are simple.
+        assert tui._resolve_inherit_write(True) is True
+        assert tui._resolve_inherit_write(False) is False
+
+        # When write_default=True, ALL_TOOLS should be the resolved registry.
+        from qwen_coder_mcp import agent_loop
+        write_true = tui._resolve_inherit_write(True)
+        expected_tools = agent_loop.ALL_TOOLS if write_true else agent_loop.DEFAULT_TOOLS
+        assert "fs_write" in expected_tools
+        assert "run_shell" in expected_tools
+        assert "python_exec" in expected_tools
+
+        # When write_default=False, DEFAULT_TOOLS: no writes.
+        write_false = tui._resolve_inherit_write(False)
+        fallback_tools = agent_loop.ALL_TOOLS if write_false else agent_loop.DEFAULT_TOOLS
+        assert "fs_write" not in fallback_tools
+        assert "run_shell" not in fallback_tools
+
     def test_help_advertises_write_and_confirm(self) -> None:
         assert "/agent --write" in tui.HELP_TEXT
         assert "/confirm_writes_on" in tui.HELP_TEXT

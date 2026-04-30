@@ -17,7 +17,7 @@ CODER_SYSTEM = (
     "                  git_status, git_diff, git_log, web_search, web_fetch\n"
     "  Write/modify:   fs_write, fs_edit, fs_regex_edit, fs_insert,\n"
     "                  apply_patch, mkdir, touch, mv\n"
-    "  Execute:        run_shell  (arbitrary shell commands on the host)\n"
+    "  Execute:        run_shell, python_exec  (shell + python on the host)\n"
     "  Operator:       ask_user   (prompt the human for a decision)\n"
     "\n"
     "The user can attach context inline using @<path> for workspace files, "

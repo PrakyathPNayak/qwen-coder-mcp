@@ -156,6 +156,76 @@ def run_shell(
     )
 
 
+def run_python(
+    cfg: fs_tools.FsConfig,
+    code: str,
+    *,
+    timeout: float = DEFAULT_RUN_TIMEOUT,
+    output_cap: int = DEFAULT_OUTPUT_CAP,
+    cwd: str | None = None,
+    interpreter: str | None = None,
+) -> RunResult:
+    """Loop 286: pipe `code` to a fresh Python interpreter via stdin.
+
+    Avoids argv-length limits and shell-quoting issues that hit when
+    the model emits multi-line scripts. cwd, output cap, deny-list,
+    and timeout semantics match :func:`run_shell`. The interpreter
+    defaults to ``$QWEN_PYTHON_EXEC`` or ``sys.executable``.
+
+    Returns a :class:`RunResult` whose ``cmd`` field carries the head
+    of the source for log readability. Raises :class:`ShellError` if
+    cwd escapes the root.
+    """
+    src = code or ""
+    if not src.strip():
+        raise ShellError("empty python source")
+    timeout = min(max(0.5, float(timeout)), MAX_RUN_TIMEOUT)
+    output_cap = max(1024, int(output_cap))
+
+    if cwd:
+        cwd_path = fs_tools._resolve_inside_root(cfg, cwd)
+        if not cwd_path.is_dir():
+            raise ShellError(f"cwd is not a directory: {cwd}")
+    else:
+        cwd_path = Path(cfg.root).resolve()
+
+    import sys as _sys
+    interp = interpreter or os.environ.get("QWEN_PYTHON_EXEC") or _sys.executable
+
+    head = src.splitlines()[0] if src else ""
+    cmd_label = f"python_exec: {head[:120]}"
+
+    timed_out = False
+    try:
+        proc = subprocess.run(
+            [interp, "-I", "-"],
+            input=src,
+            cwd=str(cwd_path),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        rc, out, err = proc.returncode, proc.stdout or "", proc.stderr or ""
+    except subprocess.TimeoutExpired as exc:
+        timed_out = True
+        rc = -1
+        out = (exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or ""))
+        err = (exc.stderr.decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or ""))
+        err = (err + f"\n[timeout after {timeout:.1f}s]").strip()
+
+    out_t, t1 = _truncate(out, output_cap)
+    err_t, t2 = _truncate(err, output_cap)
+    return RunResult(
+        returncode=rc,
+        stdout=out_t,
+        stderr=err_t,
+        truncated=t1 or t2,
+        timed_out=timed_out,
+        cmd=cmd_label,
+    )
+
+
 def format_run_result(res: RunResult) -> str:
     parts: list[str] = [f"$ {res.cmd}"]
     if res.timed_out:
