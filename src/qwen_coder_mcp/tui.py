@@ -193,6 +193,7 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/mouse",
     "/select",
     "/loop",
+    "/agent_loop",
     "/tools",
 )
 
@@ -289,6 +290,16 @@ Slash commands:
                        + run_auto_approve. Maximum autonomy; use with care.
   /safe_mode           One-shot inverse: agent_off + agent_write_off
                        + confirm_writes_on + run_auto_approve_off.
+  /agent_loop [on|off|N] [task]
+                       Loop 289: run the agent in a continuous self-driven
+                       loop without user input.
+                       /agent_loop on <task>  -- start loop on given task;
+                                                uses current write default.
+                       /agent_loop N <task>   -- loop at most N iterations.
+                       /agent_loop off        -- stop after current turn.
+                       /agent_loop            -- show current loop status.
+                       The model continues from its own previous output each
+                       iteration; it stops automatically if it outputs [DONE].
   /mouse [on|off|toggle]
                        Toggle Textual's mouse capture. /mouse off lets
                        you click-drag to select text in the response
@@ -1293,6 +1304,9 @@ _CD_SENTINEL = "__CD__"
 _AGENT_SENTINEL = "__AGENT__"
 _AGENT_WRITE_SENTINEL = "__AGENTW__"
 _AGENT_TOGGLE_SENTINEL = "__AGENT_TOGGLE__"
+# Loop 289: continuous agent-loop control sentinel.  Payload: "on",
+# "off", or "N" (max iterations as decimal integer).
+_AGENT_LOOP_CTL_SENTINEL = "__AGENT_LOOP_CTL__"
 
 
 def _decode_agent_body(body: str) -> tuple[str, int | None, bool]:
@@ -2226,6 +2240,31 @@ def dispatch_slash(
         # Loop 280: alias -- "/select" is the obvious verb for "let me
         # select text". Same as /mouse off.
         return _AGENT_TOGGLE_SENTINEL + "mouse_off", False
+    if name == "agent_loop":
+        # Loop 289: continuous self-driven agent loop control.
+        # /agent_loop             -- show status
+        # /agent_loop off         -- stop after current turn
+        # /agent_loop on <task>   -- start loop, unlimited iterations
+        # /agent_loop N <task>    -- start loop, at most N iterations
+        rest = (cmd.rest or "").strip()
+        toks = rest.split(None, 1)
+        if not toks:
+            # bare /agent_loop → status
+            return _AGENT_LOOP_CTL_SENTINEL + "status", False
+        if toks[0].lower() == "off":
+            return _AGENT_LOOP_CTL_SENTINEL + "off", False
+        if toks[0].lower() == "on":
+            task = toks[1] if len(toks) > 1 else ""
+            return _AGENT_LOOP_CTL_SENTINEL + f"on\n{task}", False
+        # try interpreting first token as integer max-iterations
+        try:
+            max_n = int(toks[0])
+            task = toks[1] if len(toks) > 1 else ""
+            return _AGENT_LOOP_CTL_SENTINEL + f"{max_n}\n{task}", False
+        except ValueError:
+            pass
+        # unrecognised sub-command → status
+        return _AGENT_LOOP_CTL_SENTINEL + "status", False
     if name == "loop":
         return _render_loop(fs_cfg, list(cmd.args)), False
     if name == "search":
@@ -3380,6 +3419,33 @@ def _resolve_inherit_write(agent_write_default: bool) -> bool:
     return bool(agent_write_default)
 
 
+def _cancelable_wait(
+    evt: threading.Event,
+    cancel: threading.Event,
+    timeout: float,
+) -> bool:
+    """Loop 289: wait for *evt* to be set, but return False immediately if
+    *cancel* fires (e.g. on TUI unmount) so worker threads don't hang for
+    the full timeout when the application is closing.  Polls at 100 ms
+    granularity so it adds at most 100 ms of latency at shutdown.
+    """
+    deadline = threading.Event()
+    # fast path — already set
+    if evt.is_set():
+        return True
+    if cancel.is_set():
+        return False
+    end = time.monotonic() + timeout
+    while True:
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            return False
+        if cancel.is_set():
+            return False
+        if evt.wait(timeout=min(0.1, remaining)):
+            return True
+
+
 def _build_app(
     client_factory: Callable[[], QwenClient] | None = None,
     fs_cfg: fs_tools.FsConfig | None = None,
@@ -3612,6 +3678,17 @@ def _build_app(
             self.total_tokens: int = 0
             self.total_turns: int = 0
             self._streaming: bool = False
+            # Loop 289: cancellation event that is set on on_unmount so
+            # any worker thread blocked on a threading.Event confirm/ask
+            # prompt wakes up immediately and returns False/timeout
+            # rather than hanging for 30–120 s on TUI close.
+            self._agent_cancel: threading.Event = threading.Event()
+            # Loop 289: continuous agent loop.  When agent_auto_loop is
+            # True, _finalize_agent re-submits a continuation prompt
+            # instead of returning control to the user after each turn.
+            self.agent_auto_loop: bool = False
+            self._auto_loop_seq: int = 0     # iteration counter
+            self._auto_loop_max: int = 0     # 0 = unlimited
             # Agent default: when True, normal chat goes through the
             # tool-calling loop. Loop 283: flipped to True so the model
             # always has the full tool registry visible and the system
@@ -3667,7 +3744,11 @@ def _build_app(
                 getattr(settings, "base_url", None) or "(unset)"
             )
             log = self.query_one("#log", RichLog)
-            log.write("[bold cyan]qwen-coder-tui[/bold cyan]  type [bold]/help[/bold] for slash commands or [bold]@path[/bold] to attach a file")
+            log.write(
+                "[bold cyan]qwen-coder-tui[/bold cyan]  "
+                "type [bold]/help[/bold] for slash commands or [bold]@path[/bold] to attach a file  "
+                "· [dim]/select[/dim] to enable text selection"
+            )
             self._render_health_banner(log)
             try:
                 prior = load_history_jsonl(history_file_path(self.fs_cfg))
@@ -3683,6 +3764,9 @@ def _build_app(
             self._refresh_status()
 
         def on_unmount(self) -> None:  # type: ignore[override]
+            # Loop 289: unblock any worker threads waiting on confirm/ask
+            # modals so they don't hang for 30-120 s when the TUI closes.
+            self._agent_cancel.set()
             try:
                 save_history_jsonl(
                     self.history, history_file_path(self.fs_cfg)
@@ -3938,6 +4022,47 @@ def _build_app(
                     log.write(f"[dim](cwd)[/dim] {_safe_markup(new_root)}")
                     self._refresh_status()
                     return
+                elif isinstance(text, str) and text.startswith(_AGENT_LOOP_CTL_SENTINEL):
+                    # Loop 289: continuous agent-loop control
+                    payload = text[len(_AGENT_LOOP_CTL_SENTINEL):]
+                    if payload == "off":
+                        self.agent_auto_loop = False
+                        log.write(
+                            f"[dim](auto-loop off — stopped after "
+                            f"{self._auto_loop_seq} iteration(s))[/dim]"
+                        )
+                    elif payload == "status":
+                        if self.agent_auto_loop:
+                            log.write(
+                                f"[cyan](auto-loop running — iteration "
+                                f"{self._auto_loop_seq}/"
+                                f"{'∞' if self._auto_loop_max == 0 else self._auto_loop_max}"
+                                f")[/cyan]"
+                            )
+                        else:
+                            log.write("[dim](auto-loop is off)[/dim]")
+                    else:
+                        # payload: "on\ntask" or "N\ntask"
+                        first, _, task = payload.partition("\n")
+                        task = task.strip()
+                        if first.lower() == "on":
+                            self._auto_loop_max = 0
+                        else:
+                            try:
+                                self._auto_loop_max = max(1, int(first))
+                            except ValueError:
+                                self._auto_loop_max = 0
+                        self._auto_loop_seq = 0
+                        self.agent_auto_loop = True
+                        lim = "∞" if self._auto_loop_max == 0 else str(self._auto_loop_max)
+                        log.write(
+                            f"[bold cyan](auto-loop on — max {lim} iter(s), "
+                            f"write={'on' if self.agent_write_default else 'off'})[/bold cyan]"
+                        )
+                        if task:
+                            self._streaming = True
+                            self._start_agent_turn(task, write=self.agent_write_default)
+                    return
                 else:
                     _safe_log_write(log, text)
                     self._refresh_status()
@@ -4135,8 +4260,8 @@ def _build_app(
                     summary,
                     _resolve,
                 )
-                # Default-deny if the user takes too long.
-                if not evt.wait(timeout=30.0):
+                # Default-deny if the user takes too long or TUI closes.
+                if not _cancelable_wait(evt, self._agent_cancel, 30.0):
                     self.call_from_thread(
                         self._agent_status,
                         "[red]✗ confirm timeout (30s) — denied[/red]",
@@ -4165,6 +4290,9 @@ def _build_app(
                 _AskScreen modal. Runs in the agent worker thread; uses
                 ``call_from_thread`` to push the screen and a
                 ``threading.Event`` to wait for the operator's reply.
+                Loop 289: respects _agent_cancel so the worker exits
+                promptly when the TUI is closed instead of hanging for
+                the full 120 s timeout.
                 """
                 evt = _thr.Event()
                 holder: list[str] = [""]
@@ -4176,7 +4304,7 @@ def _build_app(
                 self.call_from_thread(
                     self._push_ask, question, list(choices), _resolve
                 )
-                if not evt.wait(timeout=120.0):
+                if not _cancelable_wait(evt, self._agent_cancel, 120.0):
                     return "timeout"
                 ans = holder[0]
                 if ans == "":
@@ -4358,6 +4486,37 @@ def _build_app(
             self._post_assistant(log, reply)
             log.write(self._telemetry_line() + "  [dim](agent)[/dim]")
             self._refresh_status()
+            # Loop 289: continuous agent loop — re-submit if enabled,
+            # unless the model signalled it is done or cancelled.
+            if (
+                self.agent_auto_loop
+                and not self._agent_cancel.is_set()
+                and "[DONE]" not in reply
+            ):
+                if self._auto_loop_max == 0 or self._auto_loop_seq < self._auto_loop_max:
+                    self._auto_loop_seq += 1
+                    iteration_label = (
+                        f"{self._auto_loop_seq}/"
+                        f"{'∞' if self._auto_loop_max == 0 else self._auto_loop_max}"
+                    )
+                    log.write(
+                        f"[dim cyan](auto-loop → iteration {iteration_label})[/dim cyan]"
+                    )
+                    continuation = (
+                        f"[iteration {self._auto_loop_seq}] "
+                        "Continue from where you left off. "
+                        "Review what you accomplished, identify the next most impactful "
+                        "action, and carry it out. "
+                        "When you have fully completed the goal, output [DONE]."
+                    )
+                    self._streaming = True
+                    self._start_agent_turn(continuation, write=self.agent_write_default)
+                    return
+                else:
+                    self.agent_auto_loop = False
+                    log.write(
+                        f"[dim](auto-loop finished after {self._auto_loop_seq} iteration(s))[/dim]"
+                    )
             self._streaming = False
 
         def _post_assistant(self, log, reply: str) -> None:

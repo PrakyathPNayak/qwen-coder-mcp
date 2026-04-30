@@ -2810,3 +2810,106 @@ class TestToolsCommand:
 
     def test_help_advertises_tools(self) -> None:
         assert "/tools" in tui.HELP_TEXT
+
+
+# ---------------------------------------------------------------------------
+# Loop 289: _cancelable_wait, /agent_loop dispatch, threading cleanup
+# ---------------------------------------------------------------------------
+
+class TestCancelableWait:
+    def test_immediately_set_event_returns_true(self) -> None:
+        import threading as _t
+        evt = _t.Event(); evt.set()
+        cancel = _t.Event()
+        assert tui._cancelable_wait(evt, cancel, 5.0) is True
+
+    def test_cancel_fires_returns_false(self) -> None:
+        import threading as _t
+        evt = _t.Event()
+        cancel = _t.Event(); cancel.set()
+        assert tui._cancelable_wait(evt, cancel, 5.0) is False
+
+    def test_timeout_returns_false(self) -> None:
+        import threading as _t, time as _time
+        evt = _t.Event(); cancel = _t.Event()
+        t0 = _time.monotonic()
+        result = tui._cancelable_wait(evt, cancel, 0.2)
+        elapsed = _time.monotonic() - t0
+        assert result is False
+        # Should have taken roughly 0.2 s but not 5 s.
+        assert 0.15 <= elapsed <= 1.0
+
+    def test_event_set_by_background_thread_resolves_early(self) -> None:
+        import threading as _t, time as _time
+        evt = _t.Event(); cancel = _t.Event()
+        def _fire():
+            _time.sleep(0.05)
+            evt.set()
+        _t.Thread(target=_fire, daemon=True).start()
+        t0 = _time.monotonic()
+        assert tui._cancelable_wait(evt, cancel, 5.0) is True
+        assert _time.monotonic() - t0 < 1.0
+
+    def test_cancel_fires_mid_wait_resolves_early(self) -> None:
+        import threading as _t, time as _time
+        evt = _t.Event(); cancel = _t.Event()
+        def _cancel():
+            _time.sleep(0.05)
+            cancel.set()
+        _t.Thread(target=_cancel, daemon=True).start()
+        t0 = _time.monotonic()
+        assert tui._cancelable_wait(evt, cancel, 5.0) is False
+        assert _time.monotonic() - t0 < 1.0
+
+
+class TestAgentLoopDispatch:
+    """Loop 289: /agent_loop slash-command dispatch."""
+
+    def _dispatch(self, cmd_str: str, tmp_path: Path) -> str:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash(cmd_str),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        return text
+
+    def test_off_returns_sentinel(self, tmp_path: Path) -> None:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/agent_loop off"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        assert text == tui._AGENT_LOOP_CTL_SENTINEL + "off"
+
+    def test_on_returns_sentinel_with_on(self, tmp_path: Path) -> None:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/agent_loop on do the thing"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        assert text.startswith(tui._AGENT_LOOP_CTL_SENTINEL + "on\n")
+        assert "do the thing" in text
+
+    def test_integer_max_encoded(self, tmp_path: Path) -> None:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/agent_loop 5 improve tests"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        assert text.startswith(tui._AGENT_LOOP_CTL_SENTINEL + "5\n")
+        assert "improve tests" in text
+
+    def test_no_arg_returns_status(self, tmp_path: Path) -> None:
+        text, _ = tui.dispatch_slash(
+            tui.parse_slash("/agent_loop"),
+            client=_FakeClient(),
+            fs_cfg=fs_tools.FsConfig(root=tmp_path),
+        )
+        assert text == tui._AGENT_LOOP_CTL_SENTINEL + "status"
+
+    def test_in_slash_completions(self) -> None:
+        comps = tui.slash_completions("/agent_l")
+        assert "/agent_loop" in comps
+
+    def test_help_advertises_agent_loop(self) -> None:
+        assert "/agent_loop" in tui.HELP_TEXT
