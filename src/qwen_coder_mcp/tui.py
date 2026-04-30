@@ -4099,7 +4099,7 @@ def _build_app(
             # True we additionally pop a modal and block the worker
             # thread on a threading.Event until the user answers (or
             # the 30s default-deny timeout elapses).
-            def _confirm_write(call: agent_loop.ToolCall) -> bool:
+            def _confirm_write(call: agent_loop.ToolCall, _thr=threading) -> bool:
                 if call.name == "fs_write":
                     p = call.args.get("path", "?")
                     n = len(str(call.args.get("content", "")))
@@ -4122,7 +4122,7 @@ def _build_app(
                 )
                 if not self.agent_confirm_writes:
                     return True
-                evt = threading.Event()
+                evt = _thr.Event()
                 holder: list[bool] = [False]
 
                 def _resolve(value: bool | None) -> None:
@@ -4160,13 +4160,13 @@ def _build_app(
                         f"[yellow]⚠ checkpoint failed at step {step}: {_safe_markup(exc)}[/yellow]",
                     )
 
-            def _ask_user_handler(question: str, choices: list[str]) -> str:
+            def _ask_user_handler(question: str, choices: list[str], _thr=threading) -> str:
                 """Loop 284: bridge ``ask_user`` tool calls into the
                 _AskScreen modal. Runs in the agent worker thread; uses
                 ``call_from_thread`` to push the screen and a
                 ``threading.Event`` to wait for the operator's reply.
                 """
-                evt = threading.Event()
+                evt = _thr.Event()
                 holder: list[str] = [""]
 
                 def _resolve(value: str | None) -> None:
