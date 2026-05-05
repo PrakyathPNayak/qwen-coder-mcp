@@ -898,12 +898,28 @@ def _tool_rm(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
         return "error: rm needs a 'path' arg"
     recursive = bool(args.get("recursive", False))
     missing_ok = bool(args.get("missing_ok", False))
-    try:
-        target = fs_tools._resolve_inside_root(cfg, path)
-    except fs_tools.FsError as exc:
-        return f"error: {exc}"
     root = cfg.root.resolve(strict=False)
-    if target == root:
+    try:
+        # Resolve the parent, not the final path, so deleting a symlink
+        # removes the link itself instead of following it to the target.
+        target = root / path
+        if target == root:
+            return "error: refusing to remove workspace root"
+        target.parent.resolve(strict=False).relative_to(root)
+    except ValueError:
+        return f"error: path escapes repo root: {path}"
+    if target.is_symlink():
+        try:
+            target.unlink()
+            return f"removed symlink {path}"
+        except OSError as exc:
+            return f"error: {exc}"
+    try:
+        resolved_target = target.resolve(strict=False)
+        resolved_target.relative_to(root)
+    except ValueError:
+        return f"error: path escapes repo root: {path}"
+    if resolved_target == root:
         return "error: refusing to remove workspace root"
     if not target.exists():
         if missing_ok:

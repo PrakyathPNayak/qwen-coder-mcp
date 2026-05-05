@@ -266,6 +266,38 @@ without raising.
 
 ---
 
+## Loop 300 — rm symlink cleanup and final-target escape checks
+
+**OBSERVE**: A direct probe created a broken symlink inside the workspace and
+called `rm`. `Path.exists()` returned false for the broken link, so the tool said
+"not found" and left the symlink in place. Fixing that by resolving only the
+parent introduced a possible final-leaf escape via `..`, caught during the
+devil-step.
+
+**ORIENT**: Symlink deletion has different safety semantics than file deletion:
+the safe operation is unlinking the leaf, not following the target. Parent paths
+must still be resolved and confined so `link_to_outside/file` cannot delete an
+outside file.
+
+**DECIDE**:
+
+1. Build the lexical target as `root / path`.
+2. Refuse lexical workspace-root deletion before parent checks.
+3. Resolve and confine the parent path.
+4. If the target is a symlink, unlink it directly and return.
+5. For non-symlinks, resolve and confine the final target before checking
+   existence or deleting.
+
+**DEVIL**: Deleting a symlink to an outside file is safe because it mutates only
+the link inside the workspace. Deleting through a symlinked parent is not safe
+because it mutates outside content, so tests lock in the distinction.
+
+**ACT**: Added tests for broken symlink cleanup, outside symlink cleanup without
+touching target, symlinked-parent escape rejection, and final `..` escape
+rejection. Existing root-refusal tests also remain green.
+
+---
+
 ## Loop 1 — pytest harness
 
 **OBSERVE**: zero tests in repo; every parser in `agent/loop.py` was untested

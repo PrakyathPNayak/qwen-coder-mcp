@@ -1026,6 +1026,59 @@ class TestRmTool:
         assert tmp_path.exists()
         assert (tmp_path / "keep.txt").exists()
 
+    def test_removes_broken_symlink(self, tmp_path: Path) -> None:
+        link = tmp_path / "broken"
+        link.symlink_to(tmp_path / "missing-target")
+        r = agent_loop._tool_rm({"path": "broken"}, self._cfg(tmp_path))
+        assert "removed symlink" in r
+        assert not link.is_symlink()
+
+    def test_removes_symlink_to_outside_without_touching_target(
+        self, tmp_path: Path
+    ) -> None:
+        outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
+        outside.write_text("keep", encoding="utf-8")
+        link = tmp_path / "outside-link"
+        link.symlink_to(outside)
+        try:
+            r = agent_loop._tool_rm({"path": "outside-link"}, self._cfg(tmp_path))
+            assert "removed symlink" in r
+            assert not link.exists()
+            assert outside.read_text(encoding="utf-8") == "keep"
+        finally:
+            outside.unlink(missing_ok=True)
+
+    def test_rejects_symlinked_parent_escape(self, tmp_path: Path) -> None:
+        outside_dir = tmp_path.parent / f"{tmp_path.name}-outside-dir"
+        outside_dir.mkdir()
+        outside_file = outside_dir / "victim.txt"
+        outside_file.write_text("keep", encoding="utf-8")
+        link = tmp_path / "outside-dir-link"
+        link.symlink_to(outside_dir, target_is_directory=True)
+        try:
+            r = agent_loop._tool_rm(
+                {"path": "outside-dir-link/victim.txt"}, self._cfg(tmp_path)
+            )
+            assert "path escapes repo root" in r
+            assert outside_file.exists()
+        finally:
+            outside_file.unlink(missing_ok=True)
+            outside_dir.rmdir()
+
+    def test_rejects_final_dotdot_escape(self, tmp_path: Path) -> None:
+        outside_dir = tmp_path.parent
+        sentinel = outside_dir / f"{tmp_path.name}-sentinel.txt"
+        sentinel.write_text("keep", encoding="utf-8")
+        try:
+            r = agent_loop._tool_rm(
+                {"path": f"../{sentinel.name}", "recursive": True},
+                self._cfg(tmp_path),
+            )
+            assert "path escapes repo root" in r
+            assert sentinel.exists()
+        finally:
+            sentinel.unlink(missing_ok=True)
+
     def test_in_write_tools_and_blurbs(self) -> None:
         assert "rm" in agent_loop.WRITE_TOOLS
         assert "rm" in agent_loop.ALL_TOOLS

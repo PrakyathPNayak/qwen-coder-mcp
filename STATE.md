@@ -181,3 +181,24 @@ relative-root `FsConfig` under `monkeypatch.chdir(tmp_path)`.
 **DEVIL**: Most in-app configs use absolute roots, but helper/API callers do not
 have to. Root safety must hold for every valid `FsConfig`, not only the common
 TUI path.
+
+## Loop 300 — rm symlink semantics and escape hardening
+
+**OBSERVE**: Probing `rm` against a broken symlink showed `Path.exists()` returns
+false, so the tool reported "not found" and left the link behind. The parent-only
+resolution needed to delete symlink leaves safely also required a devil-step: a
+final `..` path could otherwise escape as the leaf.
+
+**ORIENT**: Deleting a symlink should remove the link itself, not follow the
+target. That allows cleanup of broken links and links pointing outside the
+workspace without touching outside targets, while still rejecting symlinked
+parents and non-symlink escapes.
+
+**DECIDE**: Resolve and validate the parent first, refuse lexical workspace root,
+delete leaf symlinks directly via `unlink()`, then resolve/validate non-symlink
+targets before file/directory deletion.
+
+**DEVIL**: Allowing deletion of symlinks to outside might look like weakening the
+sandbox, but unlinking an in-workspace symlink does not mutate the outside
+target. Rejecting it would make broken/outside symlink cleanup impossible and
+push users back toward shell commands.
