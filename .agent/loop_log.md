@@ -173,6 +173,37 @@ post-`</think>` reveal, code-fence reveal, and tool-call reveal.
 
 ---
 
+## Loop 297 — append_file write tool
+
+**OBSERVE**: The tool surface had whole-file writes (`fs_write`), surgical
+replacements (`fs_edit`/`fs_regex_edit`), insertion by line, patching, copy/move,
+and shell execution, but no direct append operation. The autonomous loop
+frequently appends to markdown state/log files; forcing that through whole-file
+rewrite or shell redirection is higher risk.
+
+**ORIENT**: Append is a small, composable write primitive. It should be
+write-mode only and confirmation-gated via the existing `WRITE_TOOLS` /
+`DESTRUCTIVE_TOOLS` path.
+
+**DECIDE**:
+
+1. Implement `_tool_append_file(path, content, create_parents=False)`.
+2. Resolve paths with `fs_tools._resolve_inside_root`.
+3. Reject directories and non-string content.
+4. Create the target file if missing, but require `create_parents=true` before
+   making missing parent directories.
+5. Register `append_file` in `WRITE_TOOLS`, `TOOL_BLURBS`, and the static prompt
+   summary.
+
+**DEVIL**: Appending blindly can still damage logs if the model adds malformed
+Markdown or JSON fragments, but it is less destructive than rewriting an entire
+file and the confirmation hook still gives the operator control.
+
+**ACT**: Added tests for existing-file append, new-file creation, parent
+directory gating, directory rejection, and registry/catalog membership.
+
+---
+
 ## Loop 1 — pytest harness
 
 **OBSERVE**: zero tests in repo; every parser in `agent/loop.py` was untested

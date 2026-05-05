@@ -124,3 +124,22 @@ code fence, or `<tool_call>` appears. `_on_stream_chunk` renders a neutral
 user..." until it produces visible markers or completes, but that is preferable
 to leaking hidden reasoning in the live UI. Final history/rendering remains the
 source of truth.
+
+## Loop 297 — append_file write tool
+
+**OBSERVE**: The model can write and edit files, but appending to rolling state
+or log files still required re-reading and rewriting the entire file or using
+shell redirection. That is unnecessary risk for `.agent/loop_log.md`,
+`STATE.md`, and similar append-only artifacts.
+
+**ORIENT**: A dedicated append tool is simpler for the model, safer than shell,
+and naturally fits the existing write-tool confirmation boundary.
+
+**DECIDE**: Add `_tool_append_file(path, content, create_parents=False)`, register
+it in `WRITE_TOOLS`, add a catalog blurb, and update the static prompt summary.
+It appends UTF-8 text inside the workspace, creates the file if needed, rejects
+directories, and only creates parent directories when explicitly requested.
+
+**DEVIL**: Appending can still corrupt structured files if used blindly, but it
+is less destructive than whole-file writes and remains behind the same
+Copilot-style destructive approval path.

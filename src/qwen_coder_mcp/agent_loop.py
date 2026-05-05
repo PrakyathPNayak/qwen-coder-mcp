@@ -858,6 +858,36 @@ def _tool_cp(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     return f"copied {src} -> {dst}"
 
 
+def _tool_append_file(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    """Append text to a workspace file without replacing existing content."""
+    path = str(args.get("path", "")).strip()
+    content = args.get("content", "")
+    if not path:
+        return "error: append_file needs a 'path' arg"
+    if not isinstance(content, str):
+        return "error: append_file needs string 'content' arg"
+    create_parents = bool(args.get("create_parents", False))
+    try:
+        target = fs_tools._resolve_inside_root(cfg, path)
+    except fs_tools.FsError as exc:
+        return f"error: {exc}"
+    if target.exists() and target.is_dir():
+        return f"error: cannot append to directory: {path}"
+    try:
+        if create_parents:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        elif not target.parent.exists():
+            return (
+                f"error: parent directory does not exist: "
+                f"{target.parent.relative_to(cfg.root)}"
+            )
+        with target.open("a", encoding="utf-8") as fh:
+            fh.write(content)
+    except OSError as exc:
+        return f"error: {exc}"
+    return f"appended {len(content.encode('utf-8'))} bytes to {path}"
+
+
 DEFAULT_TOOLS: dict[str, ToolFn] = {
     "web_search": _tool_web_search,
     "web_fetch": _tool_web_fetch,
@@ -889,6 +919,7 @@ WRITE_TOOLS: dict[str, ToolFn] = {
     "touch": _tool_touch,
     "mv": _tool_mv,
     "cp": _tool_cp,
+    "append_file": _tool_append_file,
     "http_request": _tool_http_request,
     "run_shell": _tool_run_shell,
     "python_exec": _tool_python_exec,
@@ -1223,6 +1254,11 @@ TOOL_BLURBS: dict[str, str] = {
         "- cp(src: str, dst: str, overwrite: bool=false) -- copy a file\n"
         "  inside the workspace sandbox. Creates dst parent dirs as needed.\n"
         "  Requires write-mode."
+    ),
+    "append_file": (
+        "- append_file(path: str, content: str, create_parents: bool=false) --\n"
+        "  append text to a workspace file without replacing existing content.\n"
+        "  Creates parent dirs only when create_parents=true. Requires write-mode."
     ),
 }
 

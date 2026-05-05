@@ -905,3 +905,56 @@ class TestCpTool:
     def test_in_write_tools(self) -> None:
         assert "cp" in agent_loop.WRITE_TOOLS
         assert "cp" not in agent_loop.DEFAULT_TOOLS
+
+
+class TestAppendFileTool:
+    def _cfg(self, tmp_path: Path) -> fs_tools.FsConfig:
+        return fs_tools.FsConfig(root=tmp_path)
+
+    def test_appends_to_existing_file(self, tmp_path: Path) -> None:
+        (tmp_path / "log.md").write_text("one\n", encoding="utf-8")
+        r = agent_loop._tool_append_file(
+            {"path": "log.md", "content": "two\n"}, self._cfg(tmp_path)
+        )
+        assert "appended" in r
+        assert (tmp_path / "log.md").read_text(encoding="utf-8") == "one\ntwo\n"
+
+    def test_creates_new_file(self, tmp_path: Path) -> None:
+        r = agent_loop._tool_append_file(
+            {"path": "new.txt", "content": "hello"}, self._cfg(tmp_path)
+        )
+        assert "appended" in r
+        assert (tmp_path / "new.txt").read_text(encoding="utf-8") == "hello"
+
+    def test_create_parents_required(self, tmp_path: Path) -> None:
+        r = agent_loop._tool_append_file(
+            {"path": "missing/new.txt", "content": "hello"}, self._cfg(tmp_path)
+        )
+        assert "parent directory does not exist" in r
+        assert not (tmp_path / "missing").exists()
+
+    def test_create_parents_true(self, tmp_path: Path) -> None:
+        r = agent_loop._tool_append_file(
+            {
+                "path": "missing/new.txt",
+                "content": "hello",
+                "create_parents": True,
+            },
+            self._cfg(tmp_path),
+        )
+        assert "appended" in r
+        assert (tmp_path / "missing" / "new.txt").read_text(encoding="utf-8") == "hello"
+
+    def test_directory_returns_error(self, tmp_path: Path) -> None:
+        (tmp_path / "dir").mkdir()
+        r = agent_loop._tool_append_file(
+            {"path": "dir", "content": "hello"}, self._cfg(tmp_path)
+        )
+        assert "cannot append to directory" in r
+
+    def test_in_write_tools_and_blurbs(self) -> None:
+        assert "append_file" in agent_loop.WRITE_TOOLS
+        assert "append_file" in agent_loop.ALL_TOOLS
+        assert "append_file" in agent_loop.DESTRUCTIVE_TOOLS
+        assert "append_file" not in agent_loop.DEFAULT_TOOLS
+        assert "append_file" in agent_loop.TOOL_BLURBS
