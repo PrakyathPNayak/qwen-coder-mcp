@@ -61,6 +61,21 @@ for completions; `@path` expands a file inline.
 **Web**
 - `/search [--max N] <query>` — DuckDuckGo HTML search (no API key)
 - `/fetch <url>` — text body, byte-capped, binary refused
+- `/perplexity_search <query>` — Perplexity `/search` (PERPLEXITY_API_KEY required)
+- `/perplexity_ask <question>` — quick web-grounded Q&A via `sonar-pro`
+- `/perplexity_research <topic>` — deep multi-source research via
+  `sonar-deep-research` (slow)
+- `/perplexity_reason <question>` — step-by-step reasoning via
+  `sonar-reasoning-pro`
+
+**Editing**
+- `/patch_anchor <path> <<<old>>> <<<new>>>` — replace exactly one
+  occurrence of `old_str`; rejects 0 or >1 matches. Complements
+  `/apply` (unified diff) for files not in git or when only a unique
+  surrounding context is known.
+- `/bug [summary]` — write a redacted bug report (last 20 messages +
+  sysinfo) to `.agent/bugs/<UTC-timestamp>.md`. Local-only; nothing
+  uploaded.
 
 **Agent mode (tool-calling loop)**
 - `/agent <task>` / `/agentw <task>` — one-shot agent turn (read-only / write)
@@ -103,10 +118,25 @@ for completions; `@path` expands a file inline.
   - `list_dir` — list a directory inside the repo root
   - `write_file` — write a file inside the repo root (utf-8)
   - `apply_patch` — apply a unified diff via `git apply` (`check_only` supported)
+  - `patch_anchor` — anchor-based string-replace inside the repo root.
+    Replaces exactly one occurrence of `old_str` with `new_str`; rejects
+    0 or >1 matches. Complements `apply_patch` for files not in git or
+    when only a unique surrounding context is known.
   - `run_shell` — run a shell command via `/bin/sh` inside the sandbox
     (deny list, wall-clock cap, output cap, optional `cwd`/`timeout`)
     — added in loop 260 so MCP clients have the same shell access the
     TUI's `/run` already provides.
+  - `perplexity_search` — Perplexity `/search` (ranked web results;
+    requires `PERPLEXITY_API_KEY`).
+  - `perplexity_ask` — quick web-grounded Q&A via Perplexity `sonar-pro`.
+  - `perplexity_research` — deep multi-source research via
+    `sonar-deep-research` (slow; SSE-streamed under the hood).
+  - `perplexity_reason` — step-by-step reasoning via
+    `sonar-reasoning-pro`.
+
+  See [`docs/EXTERNAL_INTEGRATION.md`](docs/EXTERNAL_INTEGRATION.md) for
+  the full inventory of features studied from upstream projects, what
+  was integrated, and what was deliberately skipped.
 
 The filesystem tools are sandboxed to `$QWEN_MCP_FS_ROOT` (default:
 server's cwd). Paths that escape via `..` or symlinks are rejected.
@@ -165,6 +195,10 @@ Copy `.env.example` to `.env` and adjust if needed:
 | `LOOP_INTERVAL_SECONDS` | `45` | Sleep between iterations |
 | `LOOP_MAX_FILE_BYTES` | `60000` | Skip files larger than this |
 | `LOOP_PUSH` | `1` | Set `0` to commit without pushing |
+| `PERPLEXITY_API_KEY` | unset | API key for the Perplexity tools (`perplexity_search`, `perplexity_ask`, `perplexity_research`, `perplexity_reason`). Without this the four Perplexity tools error on first call; the rest of the server still works. |
+| `PERPLEXITY_BASE_URL` | `https://api.perplexity.ai` | Override for testing or self-hosted gateways. |
+| `PERPLEXITY_TIMEOUT_MS` | `300000` | Request timeout in milliseconds (default 5 min, matches the reference Perplexity MCP server). |
+| `PERPLEXITY_PROXY` | unset | HTTP/S proxy URL for Perplexity calls. Falls back to `HTTPS_PROXY` / `HTTP_PROXY` if unset. |
 
 ## Running the MCP server
 

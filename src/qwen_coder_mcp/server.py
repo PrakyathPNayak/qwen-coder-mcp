@@ -16,6 +16,7 @@ from . import prompts
 from . import web_tools
 from . import fs_tools
 from . import shell_tools
+from . import perplexity_tools
 
 
 def _default_fs_config() -> fs_tools.FsConfig:
@@ -213,6 +214,147 @@ def _list_tools() -> list[Tool]:
                 "required": ["cmd"],
             },
         ),
+        Tool(
+            name="patch_anchor",
+            description=(
+                "Apply a single anchor-based string replacement to a file "
+                "inside the repo root. Replaces exactly one occurrence of "
+                "old_str with new_str; rejects 0 or >1 matches. "
+                "Complements apply_patch (unified diff) for files not in "
+                "git or when only a unique surrounding context is known."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": s,
+                    "old_str": s,
+                    "new_str": s,
+                },
+                "required": ["path", "old_str", "new_str"],
+            },
+        ),
+        Tool(
+            name="perplexity_search",
+            description=(
+                "Search the web via the Perplexity Search API. Returns a "
+                "ranked list of {title, url, snippet, date}. Requires "
+                "PERPLEXITY_API_KEY. For AI-synthesised answers use "
+                "perplexity_ask instead."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": s,
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 20},
+                    "max_tokens_per_page": {
+                        "type": "integer",
+                        "minimum": 256,
+                        "maximum": 2048,
+                    },
+                    "country": s,
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
+            name="perplexity_ask",
+            description=(
+                "Quick web-grounded Q&A via Perplexity sonar-pro. Accepts a "
+                "messages array (role/content) and returns the assistant "
+                "reply with a numbered citations footer. Requires "
+                "PERPLEXITY_API_KEY."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "messages": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"role": s, "content": s},
+                            "required": ["role", "content"],
+                        },
+                    },
+                    "search_recency_filter": {
+                        "type": "string",
+                        "enum": list(perplexity_tools.VALID_RECENCY),
+                    },
+                    "search_domain_filter": {
+                        "type": "array",
+                        "items": s,
+                    },
+                    "search_context_size": {
+                        "type": "string",
+                        "enum": list(perplexity_tools.VALID_CONTEXT_SIZE),
+                    },
+                },
+                "required": ["messages"],
+            },
+        ),
+        Tool(
+            name="perplexity_research",
+            description=(
+                "Deep multi-source research via Perplexity sonar-deep-research "
+                "(slow, 30s+). SSE-streamed under the hood. Set "
+                "strip_thinking=true to remove <think>...</think> tags. "
+                "Requires PERPLEXITY_API_KEY."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "messages": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"role": s, "content": s},
+                            "required": ["role", "content"],
+                        },
+                    },
+                    "strip_thinking": {"type": "boolean"},
+                    "reasoning_effort": {
+                        "type": "string",
+                        "enum": list(perplexity_tools.VALID_REASONING_EFFORT),
+                    },
+                },
+                "required": ["messages"],
+            },
+        ),
+        Tool(
+            name="perplexity_reason",
+            description=(
+                "Step-by-step reasoning via Perplexity sonar-reasoning-pro. "
+                "Best for math, logic, and complex analysis. Set "
+                "strip_thinking=true to drop <think>...</think> tags. "
+                "Requires PERPLEXITY_API_KEY."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "messages": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"role": s, "content": s},
+                            "required": ["role", "content"],
+                        },
+                    },
+                    "strip_thinking": {"type": "boolean"},
+                    "search_recency_filter": {
+                        "type": "string",
+                        "enum": list(perplexity_tools.VALID_RECENCY),
+                    },
+                    "search_domain_filter": {
+                        "type": "array",
+                        "items": s,
+                    },
+                    "search_context_size": {
+                        "type": "string",
+                        "enum": list(perplexity_tools.VALID_CONTEXT_SIZE),
+                    },
+                },
+                "required": ["messages"],
+            },
+        ),
     ]
 
 
@@ -317,7 +459,7 @@ def _dispatch(client: QwenClient, name: str, args: dict[str, Any], fs_cfg: fs_to
         if res.get("truncated"):
             prefix += "# truncated\n"
         return prefix + str(res.get("text", ""))
-    if name in {"read_file", "list_dir", "write_file", "apply_patch"}:
+    if name in {"read_file", "list_dir", "write_file", "apply_patch", "patch_anchor"}:
         cfg = fs_cfg or _default_fs_config()
         try:
             if name == "read_file":
@@ -344,6 +486,17 @@ def _dispatch(client: QwenClient, name: str, args: dict[str, Any], fs_cfg: fs_to
                 msg = res.get("message") or ""
                 kind = "check" if res["check_only"] else "apply"
                 return f"{kind}: {tag}\n{msg}"
+            if name == "patch_anchor":
+                res = fs_tools.patch_anchor(
+                    cfg,
+                    str(args["path"]),
+                    str(args["old_str"]),
+                    str(args["new_str"]),
+                )
+                return (
+                    f"patched {res['path']} "
+                    f"({res['size_before']} -> {res['size_after']} bytes)"
+                )
         except (fs_tools.FsError, Exception) as exc:  # noqa: BLE001
             return f"{name} error: {type(exc).__name__}: {exc}"
     if name == "run_shell":
@@ -363,6 +516,43 @@ def _dispatch(client: QwenClient, name: str, args: dict[str, Any], fs_cfg: fs_to
         except Exception as exc:  # noqa: BLE001
             return f"run_shell error: {type(exc).__name__}: {exc}"
         return shell_tools.format_run_result(res)
+    if name == "perplexity_search":
+        try:
+            results = perplexity_tools.perplexity_search(
+                str(args["query"]),
+                max_results=int(args.get("max_results", 10)),
+                max_tokens_per_page=int(args.get("max_tokens_per_page", 1024)),
+                country=(str(args["country"]) if args.get("country") else None),
+            )
+        except (perplexity_tools.PerplexityError, Exception) as exc:  # noqa: BLE001
+            return f"perplexity_search error: {type(exc).__name__}: {exc}"
+        return perplexity_tools.format_search_results(results)
+    if name in {"perplexity_ask", "perplexity_research", "perplexity_reason"}:
+        msgs = args.get("messages")
+        try:
+            if name == "perplexity_ask":
+                return perplexity_tools.perplexity_ask(
+                    msgs,  # type: ignore[arg-type]
+                    search_recency_filter=args.get("search_recency_filter"),
+                    search_domain_filter=args.get("search_domain_filter"),
+                    search_context_size=args.get("search_context_size"),
+                )
+            if name == "perplexity_research":
+                return perplexity_tools.perplexity_research(
+                    msgs,  # type: ignore[arg-type]
+                    strip_thinking=bool(args.get("strip_thinking", False)),
+                    reasoning_effort=args.get("reasoning_effort"),
+                )
+            # perplexity_reason
+            return perplexity_tools.perplexity_reason(
+                msgs,  # type: ignore[arg-type]
+                strip_thinking=bool(args.get("strip_thinking", False)),
+                search_recency_filter=args.get("search_recency_filter"),
+                search_domain_filter=args.get("search_domain_filter"),
+                search_context_size=args.get("search_context_size"),
+            )
+        except (perplexity_tools.PerplexityError, Exception) as exc:  # noqa: BLE001
+            return f"{name} error: {type(exc).__name__}: {exc}"
     raise ValueError(f"unknown tool: {name}")
 
 

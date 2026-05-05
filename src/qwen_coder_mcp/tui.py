@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import sys
 import signal
 import threading
@@ -39,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import agent_loop, fs_tools, prompts, shell_tools, web_tools
+from . import agent_loop, fs_tools, perplexity_tools, prompts, shell_tools, web_tools
 from .qwen_client import ChatMessage, QwenClient
 
 
@@ -195,6 +196,12 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/loop",
     "/agent_loop",
     "/tools",
+    "/patch_anchor",
+    "/perplexity_search",
+    "/perplexity_ask",
+    "/perplexity_research",
+    "/perplexity_reason",
+    "/bug",
 )
 
 
@@ -313,6 +320,18 @@ Slash commands:
                        (`agent/loop.py`) as a detached subprocess.
                        /loop with no arg = /loop status.
   /tools               List the read-only and write tool registries
+  /patch_anchor <path> <<<old>>> <<<new>>>
+                       Anchor-based string replace; rejects 0/>1 matches
+  /perplexity_search <query>
+                       Search via Perplexity API (PERPLEXITY_API_KEY required)
+  /perplexity_ask <question>
+                       Quick web-grounded Q&A via Perplexity sonar-pro
+  /perplexity_research <topic>
+                       Deep multi-source research via sonar-deep-research (slow)
+  /perplexity_reason <question>
+                       Step-by-step reasoning via sonar-reasoning-pro
+  /bug [summary]       Write a redacted bug report (last 20 messages +
+                       sysinfo) to .agent/bugs/<timestamp>.md
   /quit                Exit
 
 @<path> tokens in plain chat are expanded inline as file contents.
@@ -340,6 +359,216 @@ def _render_fetch(url: str) -> str:
         return f"refused non-text: {res.get('content_type')}"
     head = f"# {res['url']} (status={res['status']})\n"
     return head + str(res.get("text", ""))[:8000]
+
+
+def _render_perplexity_search(query: str, max_results: int = 10) -> str:
+    """Run a Perplexity search and render the formatted result block.
+
+    Caller errors (empty query, bad env var) and network/API errors all
+    surface as a one-line ``perplexity_search error: ...`` string -- the
+    same pattern as ``_render_search``."""
+    try:
+        results = perplexity_tools.perplexity_search(
+            query, max_results=max_results
+        )
+    except Exception as exc:  # noqa: BLE001
+        return f"perplexity_search error: {type(exc).__name__}: {exc}"
+    return perplexity_tools.format_search_results(results)
+
+
+def _render_perplexity_chat(
+    kind: str,
+    question: str,
+    *,
+    strip_thinking: bool = False,
+) -> str:
+    """Run one of the perplexity chat tools (``ask``/``research``/``reason``)
+    against a freshly-built single-user-message ``messages`` array.
+
+    The TUI never builds a multi-turn perplexity conversation; it sends
+    one question per slash invocation. ``strip_thinking`` defaults to
+    ``True`` for ``research`` and ``reason`` so the raw ``<think>`` blocks
+    don't flood the response panel."""
+    if not question.strip():
+        return f"usage: /perplexity_{kind} <question>"
+    msgs = [{"role": "user", "content": question}]
+    try:
+        if kind == "ask":
+            return perplexity_tools.perplexity_ask(msgs)
+        if kind == "research":
+            return perplexity_tools.perplexity_research(
+                msgs, strip_thinking=strip_thinking
+            )
+        if kind == "reason":
+            return perplexity_tools.perplexity_reason(
+                msgs, strip_thinking=strip_thinking
+            )
+    except Exception as exc:  # noqa: BLE001
+        return f"perplexity_{kind} error: {type(exc).__name__}: {exc}"
+    return f"perplexity_{kind} error: unknown kind"
+
+
+def _parse_patch_anchor_args(rest: str) -> tuple[str, str, str] | str:
+    """Parse ``/patch_anchor <path> <<<old>>> <<<new>>>``.
+
+    Returns ``(path, old_str, new_str)`` on success or an error message
+    string on failure. The ``<<<...>>>`` delimiter is used so multi-line
+    or whitespace-heavy strings can be passed through the single-line
+    TUI input. Newlines inside the delimited block are preserved as-is.
+    """
+    if not rest:
+        return "usage: /patch_anchor <path> <<<old>>> <<<new>>>"
+    # Split off the path (first whitespace-separated token).
+    parts = rest.split(None, 1)
+    if len(parts) < 2:
+        return "usage: /patch_anchor <path> <<<old>>> <<<new>>>"
+    path, tail = parts[0], parts[1]
+    open_tok, close_tok = "<<<", ">>>"
+    # Find the first <<<...>>> block.
+    o1 = tail.find(open_tok)
+    if o1 < 0:
+        return "usage: /patch_anchor <path> <<<old>>> <<<new>>>  (missing <<<old>>>)"
+    c1 = tail.find(close_tok, o1 + len(open_tok))
+    if c1 < 0:
+        return "/patch_anchor: unterminated <<<old>>> block"
+    old_str = tail[o1 + len(open_tok):c1]
+    # Then the second.
+    o2 = tail.find(open_tok, c1 + len(close_tok))
+    if o2 < 0:
+        return "usage: /patch_anchor <path> <<<old>>> <<<new>>>  (missing <<<new>>>)"
+    c2 = tail.find(close_tok, o2 + len(open_tok))
+    if c2 < 0:
+        return "/patch_anchor: unterminated <<<new>>> block"
+    new_str = tail[o2 + len(open_tok):c2]
+    return path, old_str, new_str
+
+
+def _render_patch_anchor(cfg: fs_tools.FsConfig, rest: str) -> str:
+    parsed = _parse_patch_anchor_args(rest)
+    if isinstance(parsed, str):
+        return parsed
+    path, old_str, new_str = parsed
+    try:
+        res = fs_tools.patch_anchor(cfg, path, old_str, new_str)
+    except fs_tools.FsError as exc:
+        return f"patch_anchor error: {exc}"
+    return (
+        f"patched {res['path']} "
+        f"({res['size_before']} -> {res['size_after']} bytes)"
+    )
+
+
+_BUG_REPORT_PREFIX_REDACTIONS = (
+    # Patterns that capture a *prefix* in group(1); the replacement is
+    # ``prefix + [REDACTED]``. The value matcher allows an optional
+    # surrounding quote so ``api_key = 'pplx-...'`` is caught too.
+    re.compile(
+        r"(?i)((?:api[_-]?key|token|secret|password|authorization)"
+        r"\s*[:=]\s*)['\"]?[^\s,'\"]+['\"]?"
+    ),
+    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._\-]+"),
+)
+_BUG_REPORT_WHOLE_REDACTIONS = (
+    # Patterns that match a whole secret token; the replacement is just
+    # ``[REDACTED]`` (no group(1) prefix).
+    re.compile(r"sk-[A-Za-z0-9]{16,}"),
+    re.compile(r"ghp_[A-Za-z0-9]{20,}"),
+    re.compile(r"pplx-[A-Za-z0-9]{12,}"),
+)
+
+
+def _redact_for_bug_report(text: str) -> str:
+    """Apply best-effort secret redaction before persisting a bug report.
+
+    Pure helper so the test suite can pin behaviour. The redactions are
+    deliberately not exhaustive -- the operator is expected to skim the
+    file before sharing it -- but they catch the obvious env-style and
+    bearer-token leaks that have historically bitten contributors of
+    every codebase that ever shipped a ``/bug``-style command.
+
+    The ordering matters: prefix patterns (``api_key=...``, ``Bearer ...``)
+    run first so they consume the secret value, then the bare-token
+    patterns sweep up anything that leaked outside an obvious assignment.
+    """
+    out = text or ""
+    for pat in _BUG_REPORT_PREFIX_REDACTIONS:
+        out = pat.sub(lambda m: m.group(1) + "[REDACTED]", out)
+    for pat in _BUG_REPORT_WHOLE_REDACTIONS:
+        out = pat.sub("[REDACTED]", out)
+    return out
+
+
+def _render_bug(
+    cfg: fs_tools.FsConfig,
+    history: list[ChatMessage] | None,
+    summary: str,
+) -> str:
+    """Capture a redacted bug report under ``.agent/bugs/<ts>.md``.
+
+    Concept inspired by claude-code's ``/bug`` command (independent
+    implementation, no source code copied -- only the user-facing
+    convention). The report contains:
+
+    * an optional one-line summary supplied by the operator
+    * a UTC timestamp
+    * Python / OS / cwd info (cheap, always-safe)
+    * the last 20 chat messages with each message body redacted via
+      :func:`_redact_for_bug_report`
+
+    No network is touched; nothing is uploaded. The operator is expected
+    to read the file before sharing it. Returns a one-line confirmation
+    with the absolute path.
+    """
+    import datetime
+    import platform
+
+    bugs_dir = cfg.root / ".agent" / "bugs"
+    try:
+        bugs_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return f"bug error: cannot create {bugs_dir}: {exc}"
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = bugs_dir / f"{ts}.md"
+
+    lines: list[str] = [
+        f"# Bug report {ts}",
+        "",
+    ]
+    if summary.strip():
+        lines.append(f"**Summary:** {_redact_for_bug_report(summary.strip())}")
+        lines.append("")
+    lines.extend(
+        [
+            "## Environment",
+            "",
+            f"- python: `{platform.python_version()}`",
+            f"- platform: `{platform.platform()}`",
+            f"- cwd: `{cfg.root}`",
+            "",
+            "## Recent chat history (last 20, redacted)",
+            "",
+        ]
+    )
+    if not history:
+        lines.append("(no chat history)")
+    else:
+        tail = history[-20:]
+        for i, msg in enumerate(tail, 1):
+            role = getattr(msg, "role", "?") or "?"
+            content = getattr(msg, "content", "") or ""
+            redacted = _redact_for_bug_report(content)
+            lines.append(f"### [{i}] {role}")
+            lines.append("")
+            lines.append("```")
+            lines.append(redacted)
+            lines.append("```")
+            lines.append("")
+    body = "\n".join(lines).rstrip() + "\n"
+    try:
+        path.write_text(body, encoding="utf-8")
+    except OSError as exc:
+        return f"bug error: cannot write {path}: {exc}"
+    return f"wrote bug report: {path} ({len(body.encode('utf-8'))} bytes)"
 
 
 def _render_read(cfg: fs_tools.FsConfig, path: str) -> str:
@@ -2949,6 +3178,24 @@ def dispatch_slash(
         if not cmd.args:
             return f"(cwd) {fs_cfg.root}", False
         return _render_cd(fs_cfg, cmd.args[0]), False
+    if name == "patch_anchor":
+        return _render_patch_anchor(fs_cfg, cmd.rest), False
+    if name == "perplexity_search":
+        if not cmd.rest.strip():
+            return "usage: /perplexity_search <query>", False
+        return _render_perplexity_search(cmd.rest.strip()), False
+    if name == "perplexity_ask":
+        return _render_perplexity_chat("ask", cmd.rest.strip()), False
+    if name == "perplexity_research":
+        return _render_perplexity_chat(
+            "research", cmd.rest.strip(), strip_thinking=True
+        ), False
+    if name == "perplexity_reason":
+        return _render_perplexity_chat(
+            "reason", cmd.rest.strip(), strip_thinking=True
+        ), False
+    if name == "bug":
+        return _render_bug(fs_cfg, history, cmd.rest), False
     return f"unknown command: /{name}  (try /help)", False
 
 
