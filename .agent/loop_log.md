@@ -143,6 +143,36 @@ rather than raw hidden-reasoning chunks.
 
 ---
 
+## Loop 296 — live stream display sanitizer
+
+**OBSERVE**: Final output was clean after loops 294-295, but `_on_stream_chunk`
+still rendered raw accumulated stream text. Qwen can start with unwrapped
+reasoning such as "The user wants..." and only later emit `</think>`, which
+means the TUI live region can briefly leak hidden reasoning before finalization
+sanitizes it.
+
+**ORIENT**: This should be fixed in the TUI display layer. The finalizer already
+cleans committed output; the missing piece is a partial-stream guard that does
+not mutate history or tool parsing.
+
+**DECIDE**: Add `sanitize_live_stream_accum()`:
+
+1. Apply `_strip_think_blocks` to any accumulated stream that already has a
+   close tag.
+2. If the stream begins with common reasoning prefixes, hide it until a code
+   fence or `<tool_call>` appears.
+3. Render a neutral "qwen› thinking..." placeholder when no visible content is
+   safe to show.
+
+**DEVIL**: Heuristics can delay a legitimate answer with similar phrasing, but
+they are display-only and final output remains unchanged. The risk of brief
+reasoning leakage in the TUI is worse than a short placeholder delay.
+
+**ACT**: Added tests for plain pass-through, unwrapped-reasoning hiding,
+post-`</think>` reveal, code-fence reveal, and tool-call reveal.
+
+---
+
 ## Loop 1 — pytest harness
 
 **OBSERVE**: zero tests in repo; every parser in `agent/loop.py` was untested

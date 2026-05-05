@@ -103,3 +103,24 @@ prompts.CODER_SYSTEM)` followed by the user prompt, and apply the same
 **DEVIL**: A bare-client benchmark can still be useful for raw model behavior,
 but this script explicitly claims to exercise the TUI render path. A separate
 raw-model benchmark can be added later if needed.
+
+## Loop 296 — hide live unwrapped-reasoning chunks in TUI
+
+**OBSERVE**: Loop 294 cleaned final/plain-stream history, but `_on_stream_chunk`
+still rendered the raw accumulated stream while Qwen was mid-generation. When
+Qwen starts with unwrapped reasoning like "The user wants..." and only later
+emits `</think>`, the TUI could briefly show hidden reasoning before final
+cleanup removed it.
+
+**ORIENT**: This is a display-layer bug. The client and finalizer can keep their
+batch cleanup, while the live widget needs a conservative partial-output guard.
+
+**DECIDE**: Add `sanitize_live_stream_accum()` in `tui.py`: first apply
+`_strip_think_blocks`, then hide common reasoning prefixes until a close tag,
+code fence, or `<tool_call>` appears. `_on_stream_chunk` renders a neutral
+"thinking..." placeholder while the visible stream is empty.
+
+**DEVIL**: Prefix heuristics can hide a legitimate answer that starts with "The
+user..." until it produces visible markers or completes, but that is preferable
+to leaking hidden reasoning in the live UI. Final history/rendering remains the
+source of truth.

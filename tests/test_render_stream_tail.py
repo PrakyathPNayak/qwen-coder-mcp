@@ -4,7 +4,7 @@ of the tail doesn't flicker mid-word as more chunks arrive.
 """
 from __future__ import annotations
 
-from qwen_coder_mcp.tui import render_stream_tail
+from qwen_coder_mcp.tui import render_stream_tail, sanitize_live_stream_accum
 
 
 class TestRenderStreamTail:
@@ -55,3 +55,30 @@ class TestRenderStreamTail:
         # Snap window is 64; the next space sits 100 chars in, so we
         # fall back to the raw cut. Output length stays close to budget.
         assert len(out) >= len(rest) + 100 - 64
+
+
+class TestSanitizeLiveStreamAccum:
+    def test_passes_plain_answer(self) -> None:
+        assert sanitize_live_stream_accum("plain answer") == "plain answer"
+
+    def test_hides_unwrapped_reasoning_until_close(self) -> None:
+        raw = "The user wants code. I should think through edge cases."
+        assert sanitize_live_stream_accum(raw) == ""
+
+    def test_shows_content_after_unwrapped_think_close(self) -> None:
+        raw = "The user wants code.</think>\n\n```python\nprint('ok')\n```"
+        assert sanitize_live_stream_accum(raw).startswith("```python")
+
+    def test_shows_code_fence_if_reasoning_never_closes(self) -> None:
+        raw = (
+            "Here's a thinking process:\n1. analyze\n\n"
+            "```python\nprint('ok')\n```"
+        )
+        assert sanitize_live_stream_accum(raw).startswith("```python")
+
+    def test_shows_tool_call_if_reasoning_never_closes(self) -> None:
+        raw = (
+            "The user wants me to write a file.\n"
+            '<tool_call>{"name":"fs_list","args":{}}</tool_call>'
+        )
+        assert sanitize_live_stream_accum(raw).startswith("<tool_call>")

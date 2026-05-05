@@ -3542,6 +3542,44 @@ def render_stream_tail(accum: str, budget: int = 2000) -> str:
     return accum[cut:]
 
 
+_LIVE_REASONING_PREFIX_RE = re.compile(
+    r"^\s*(?:"
+    r"here(?:'|’)s (?:a |my )?(?:thinking|reasoning) process"
+    r"|the user (?:wants|asked|is asking|needs)"
+    r"|i (?:need|should|will|can) "
+    r"|we need to "
+    r"|let(?:'|’)s (?:think|analy[sz]e)"
+    r"|analy[sz]e (?:the )?user"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def sanitize_live_stream_accum(accum: str) -> str:
+    """Best-effort display sanitizer for the live streaming widget.
+
+    Final replies are batch-cleaned before history/rendering, but the live
+    widget receives partial accumulated text. Qwen3.6 often starts with
+    unwrapped reasoning (for example "The user wants..." or "Here's a
+    thinking process") and only later emits ``</think>``. Hide that live
+    preamble until either the close tag arrives or visible output starts.
+    """
+    if not accum:
+        return ""
+    cleaned = _strip_think_blocks(accum)
+    if cleaned != accum:
+        return cleaned
+    if _LIVE_REASONING_PREFIX_RE.match(accum):
+        marker_positions = [
+            pos for marker in ("\n```", "<tool_call", "\n<tool_call")
+            if (pos := accum.find(marker)) != -1
+        ]
+        if marker_positions:
+            return accum[min(marker_positions) :].lstrip()
+        return ""
+    return accum
+
+
 @dataclass
 class TurnProfile:
     """Timing profile of a single agent turn — drives ``/lat``.
@@ -4667,7 +4705,11 @@ def _build_app(
                 stream = self.query_one("#stream", Static)
             except Exception:  # noqa: BLE001
                 return
-            tail = render_stream_tail(accum, 2000)
+            visible = sanitize_live_stream_accum(accum)
+            if not visible:
+                stream.update("[dim]qwen› thinking…[/dim]")
+                return
+            tail = render_stream_tail(visible, 2000)
             stream.update(f"[green]qwen›[/green] {tail}▍")
 
         def _reset_stream_buffer(self) -> None:
