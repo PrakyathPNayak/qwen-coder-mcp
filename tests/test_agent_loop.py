@@ -25,6 +25,22 @@ class _ScriptedClient:
         return self._replies.pop(0)
 
 
+class _StreamingScriptedClient(_ScriptedClient):
+    """Yields fixed replies through .chat_stream() to exercise stream-only paths."""
+
+    def chat_stream(self, history):
+        self.calls.append([ChatMessage(role=m.role, content=m.content) for m in history])
+        if not self._replies:
+            return
+        reply = self._replies.pop(0)
+        # Deliberately chunk in small pieces so think-tag filtering paths
+        # see split tags, not just one perfectly aligned payload.
+        for i in range(0, len(reply), 5):
+            chunk = reply[i : i + 5]
+            if chunk:
+                yield chunk
+
+
 # ----------------------------------------------------------- parser
 class TestParseToolCalls:
     def test_xml_block(self) -> None:
@@ -228,12 +244,49 @@ class TestRunAgent:
         kinds = [e.kind for e in events]
         assert "tool_call" in kinds
         assert "tool_result" in kinds
+        assert "model_start" in kinds
+        assert kinds.index("model_start") > kinds.index("tool_result")
         assert kinds[-1] == "final"
         assert events[-1].text == "the function returns 1"
         # History got: system, user, assistant(call), user(tool_result), assistant(final)
         roles = [m.role for m in history]
         assert roles == ["system", "user", "assistant", "user", "assistant"]
         assert "tool_result" in history[-2].content
+
+    def test_streaming_dangling_think_is_stripped_before_final(
+        self, tmp_path: Path
+    ) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        client = _StreamingScriptedClient(
+            ["hidden reasoning that should not render</think>\n\nvisible answer"]
+        )
+        history: list[ChatMessage] = []
+        events = list(
+            agent_loop.run_agent(history, "go", client=client, fs_cfg=cfg)
+        )
+        assert events[-1].kind == "final"
+        assert events[-1].text == "visible answer"
+        assert "hidden reasoning" not in history[-1].content
+        assert "</think>" not in history[-1].content
+
+    def test_streaming_empty_visible_reply_retries(
+        self, tmp_path: Path
+    ) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        client = _StreamingScriptedClient(
+            ["<think>only hidden reasoning</think>", "visible final"]
+        )
+        history: list[ChatMessage] = []
+        events = list(
+            agent_loop.run_agent(
+                history, "go", client=client, fs_cfg=cfg, max_steps=3
+            )
+        )
+        kinds = [e.kind for e in events]
+        assert "empty_retry" in kinds
+        assert events[-1].kind == "final"
+        assert events[-1].text == "visible final"
+        assert len(client.calls) == 2
 
     def test_max_steps_limit(self, tmp_path: Path) -> None:
         cfg = fs_tools.FsConfig(root=tmp_path)

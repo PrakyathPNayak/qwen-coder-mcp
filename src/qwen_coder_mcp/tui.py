@@ -4892,6 +4892,13 @@ def _build_app(
                             self.call_from_thread(
                                 self._on_stream_chunk, "".join(live_buf)
                             )
+                        elif ev.kind == "model_start":
+                            live_buf.clear()
+                            self.call_from_thread(self._reset_stream_buffer)
+                            self.call_from_thread(
+                                self._agent_status,
+                                "[dim]· model continuing after tool result[/dim]",
+                            )
                         elif ev.kind == "assistant":
                             # End of one model turn -- reset live buffer
                             # so the next turn's chunks render fresh.
@@ -4947,6 +4954,13 @@ def _build_app(
                             self.call_from_thread(
                                 self._agent_status,
                                 f"[dim]· {_safe_markup(ev.text)}[/dim]",
+                            )
+                        elif ev.kind == "empty_retry":
+                            live_buf.clear()
+                            self.call_from_thread(self._reset_stream_buffer)
+                            self.call_from_thread(
+                                self._agent_status,
+                                "[yellow]· empty model turn; requesting visible continuation[/yellow]",
                             )
                         elif ev.kind == "ttft":
                             if ev.latency_s is not None:

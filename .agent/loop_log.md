@@ -4,6 +4,52 @@ Append-only. Read this at the start of every OBSERVE step.
 
 ---
 
+## Loop 292 — tool-continuation visibility + streamed-think cleanup
+
+**OBSERVE**: Operator reported the TUI "stops after tool calls." A real
+Qwen3.6-27B/vLLM probe requiring `fs_read` did continue to a final answer, but
+it exposed two bugs in the exact path:
+
+- streamed agent replies were not batch-sanitized after chunk assembly, so
+  Qwen's unwrapped reasoning ending in `</think>` leaked into assistant/final
+  text;
+- the TUI showed only a bare reset/ellipsis between `tool_result` and the next
+  model turn, making long hidden-thinking gaps look like a stopped generation.
+
+**ORIENT**: The root problem was not the dispatcher failing to run the next
+model call in the simple repro; it was insufficient visibility and a dangerous
+empty-reply terminal condition. A streamed response whose visible content is
+empty after think stripping should not be treated as a successful final answer.
+
+**DECIDE**:
+
+1. In `run_agent`, after `chat_stream` chunks are joined, run the same
+   `_strip_think_blocks` batch cleanup used by non-streaming responses before
+   parsing tool calls or appending to history.
+2. If the cleaned streamed reply is empty, append a concise user nudge and
+   continue the loop instead of finalizing blank output.
+3. Emit `AgentEvent(kind="model_start")` on post-tool model iterations, and
+   render it in the TUI as "model continuing after tool result."
+4. Refresh the static `CODER_SYSTEM` tool summary to mention
+   `http_request`, `json_query`, `env_get`, and `cp` so the hand-written summary
+   stays aligned with the dynamic catalog.
+
+**DEVIL**: The streaming UI can still receive thought chunks before the full
+turn is sanitized because chunk-level filtering cannot retroactively hide
+unwrapped thoughts; however, `_start_agent_turn` clears the live buffer on
+assistant event boundaries and the persisted/final reply is now clean. Empty
+retry could consume agent steps if Qwen repeats invisible thoughts, but
+`max_steps` bounds the loop and an explicit retry is safer than silently ending
+with nothing after a tool call.
+
+**ACT**: Added tests for `model_start`, dangling `</think>` stripping on
+streamed final output, and retrying empty visible streamed replies. Targeted
+agent/TUI/think-strip tests passed. Live Qwen probe now shows:
+`tool_call(fs_read)` -> `tool_result` -> `model_start step 2` -> clean final
+answer.
+
+---
+
 ## Loop 1 — pytest harness
 
 **OBSERVE**: zero tests in repo; every parser in `agent/loop.py` was untested

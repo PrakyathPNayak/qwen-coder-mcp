@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Iterator
 
 from . import fs_tools, shell_tools, web_tools
-from .qwen_client import ChatMessage, QwenClient
+from .qwen_client import ChatMessage, QwenClient, _strip_think_blocks
 
 TOOL_CALL_RE = re.compile(
     r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL
@@ -96,7 +96,7 @@ class AgentEvent:
     treat it as advisory — it's monotonic-clock-based so it's safe to
     sum, but a process suspended mid-call will report inflated values.
     """
-    kind: str  # "assistant" | "tool_call" | "tool_result" | "limit" | "final" | "chunk"
+    kind: str  # "model_start" | "assistant" | "tool_call" | "tool_result" | "empty_retry" | "limit" | "final" | "chunk"
     text: str = ""
     tool: str = ""
     args: dict[str, Any] | None = None
@@ -1642,6 +1642,8 @@ def run_agent(
         return f"{tool_count} tool call{plural}, {tool_time_total:.2f}s total"
 
     for _step in range(max_steps):
+        if _step > 0:
+            yield AgentEvent(kind="model_start", text=f"step {_step + 1}")
         try:
             if use_stream:
                 buf: list[str] = []
@@ -1658,7 +1660,13 @@ def run_agent(
                         _ttft_emitted = True
                     buf.append(chunk)
                     yield AgentEvent(kind="chunk", text=chunk)
-                reply = "".join(buf)
+                # chat_stream strips normal wrapped <think> blocks while
+                # chunks arrive, but Qwen3.6 often emits unwrapped reasoning
+                # followed by a dangling </think>. Apply the batch stripper
+                # to the full turn before parsing tool calls or persisting
+                # history so speculative tool calls inside hidden reasoning
+                # cannot execute and final answers don't leak thoughts.
+                reply = _strip_think_blocks("".join(buf))
             else:
                 reply = client.chat(history)
         except Exception as exc:  # noqa: BLE001
@@ -1673,6 +1681,22 @@ def run_agent(
             yield AgentEvent(kind="assistant", text=err)
             yield AgentEvent(kind="final", text=err)
             return
+
+        if not reply.strip():
+            nudge = (
+                "The previous assistant response contained no visible "
+                "content after hidden reasoning was removed. Continue now "
+                "with either a valid <tool_call> block or a concise final "
+                "answer; do not emit only hidden reasoning."
+            )
+            history.append(ChatMessage(role="user", content=nudge))
+            yield AgentEvent(kind="empty_retry", text=nudge)
+            if checkpoint is not None:
+                try:
+                    checkpoint(list(history), _step + 1)
+                except Exception:  # noqa: BLE001
+                    pass
+            continue
 
         history.append(ChatMessage(role="assistant", content=reply))
         yield AgentEvent(kind="assistant", text=reply)
