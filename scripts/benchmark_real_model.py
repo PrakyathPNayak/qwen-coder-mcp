@@ -34,8 +34,13 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from qwen_coder_mcp.qwen_client import ChatMessage, QwenClient, load_settings  # noqa: E402
-from qwen_coder_mcp import agent_loop, fs_tools, tui  # noqa: E402
+from qwen_coder_mcp.qwen_client import (  # noqa: E402
+    ChatMessage,
+    QwenClient,
+    _strip_think_blocks,
+    load_settings,
+)
+from qwen_coder_mcp import agent_loop, fs_tools, prompts, tui  # noqa: E402
 
 
 # Scenarios deliberately mix:
@@ -153,7 +158,13 @@ SCENARIOS: list[dict[str, Any]] = [
 def _bench_chat(client: QwenClient, prompt: str, max_tokens: int) -> dict[str, Any]:
     """Stream a single chat turn, recording TTFT and total wall-clock.
     Falls back to non-streaming if the client can't stream."""
-    history = [ChatMessage(role="user", content=prompt)]
+    # Mirror the TUI/plain-chat path, not a bare user-only request. The
+    # coder system prompt is what tells Qwen not to expose reasoning and
+    # makes benchmark output comparable with what operators actually see.
+    history = [
+        ChatMessage(role="system", content=prompts.CODER_SYSTEM),
+        ChatMessage(role="user", content=prompt),
+    ]
     t0 = time.monotonic()
     ttft: float | None = None
     chunks: list[str] = []
@@ -162,7 +173,7 @@ def _bench_chat(client: QwenClient, prompt: str, max_tokens: int) -> dict[str, A
             if ttft is None:
                 ttft = time.monotonic() - t0
             chunks.append(piece)
-        reply = "".join(chunks)
+        reply = _strip_think_blocks("".join(chunks))
     except Exception as exc:  # noqa: BLE001
         return {
             "error": f"{type(exc).__name__}: {exc}",
@@ -336,6 +347,7 @@ def main() -> int:
                 writes=bool(sc.get("writes")),
             )
         r["scenario"] = sc["name"]
+        r["name"] = sc["name"]
         r["kind"] = sc["kind"]
         r["bench_wall_s"] = time.monotonic() - t0
         results.append(r)

@@ -83,3 +83,23 @@ contents by hand.
 
 **ACT**: Added parser and TUI streaming tests. Live probe now parses the
 newline-containing `fs_write` call from sanitized history.
+
+## Loop 295 — make real-model benchmark chat scenarios mirror TUI
+
+**OBSERVE**: The `loop294-scan` benchmark reported chat scenario reasoning
+leaks, but `_bench_chat` sent bare user-only histories while the TUI always
+injects `prompts.CODER_SYSTEM`. The JSON also stored scenario names only under
+`scenario`, while downstream inspection expected `name`.
+
+**ORIENT**: The benchmark is only useful if it tests the same contract users see.
+Bare-user chat exaggerates reasoning leaks and can hide TUI-specific prompt
+regressions.
+
+**DECIDE**: Seed `_bench_chat` history with `ChatMessage("system",
+prompts.CODER_SYSTEM)` followed by the user prompt, and apply the same
+`_strip_think_blocks` final cleanup used by TUI streaming. Preserve both
+`scenario` and `name` keys in each result for compatibility.
+
+**DEVIL**: A bare-client benchmark can still be useful for raw model behavior,
+but this script explicitly claims to exercise the TUI render path. A separate
+raw-model benchmark can be added later if needed.

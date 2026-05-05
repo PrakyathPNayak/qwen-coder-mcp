@@ -1,0 +1,193 @@
+{
+  "tag": "loop295-tui-chat",
+  "base_url": "http://127.0.0.1:8000/v1",
+  "model": "qwen3.6-27b",
+  "wall_s": 39.88770700299756,
+  "scenarios": [
+    {
+      "ttft_s": 0.23652040799970564,
+      "wall_s": 2.6011543050008186,
+      "completion_chars": 144,
+      "completion_words": 31,
+      "words_per_s": 11.917785861608177,
+      "reply_head": "```python\ndef fizzbuzz(n):\n    for i in range(1, n + 1):\n        s = (\"Fizz\" * (i % 3 == 0)) + (\"Buzz\" * (i % 5 == 0))\n        print(s or i)\n```",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": false,
+        "safe_path_renders": true
+      },
+      "scenario": "warmup_plain_python",
+      "name": "warmup_plain_python",
+      "kind": "chat",
+      "bench_wall_s": 2.6012898289991426
+    },
+    {
+      "ttft_s": 0.21930353100106004,
+      "wall_s": 5.2598305709998385,
+      "completion_chars": 649,
+      "completion_words": 64,
+      "words_per_s": 12.16769231177617,
+      "reply_head": "```python\nfrom collections import OrderedDict\n\n\nclass LRUCache:\n    \"\"\"A Least Recently Used (LRU) cache implemented using OrderedDict.\"\"\"\n\n    def __init__(self, capacity: int):\n        self.cache = OrderedDict()\n        self.capacity = capacity\n\n    def get(self, key: int) -> int:\n        if key not in self.cache:\n            return -1\n        self.cache.move_to_end(key)\n        return self.cach",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": false,
+        "safe_path_renders": true
+      },
+      "scenario": "tokens_per_second_long",
+      "name": "tokens_per_second_long",
+      "kind": "chat",
+      "bench_wall_s": 5.2599863249997725
+    },
+    {
+      "ttft_s": 0.23756184900048538,
+      "wall_s": 2.7446545279999555,
+      "completion_chars": 163,
+      "completion_words": 25,
+      "words_per_s": 9.108614488621136,
+      "reply_head": "```text\n[INFO] [/\u258d] progress 50%\nregex matched: /\\[(.*?)\\]/g\nTraceback (most recent call last):\n  File '[/x]', line 1\n[ERROR] closing tag '[/\u258d]' does not match\n```",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": true,
+        "safe_path_renders": true
+      },
+      "scenario": "bracket_heavy_output",
+      "name": "bracket_heavy_output",
+      "kind": "chat",
+      "bench_wall_s": 2.74477842899978
+    },
+    {
+      "wall_s": 5.4679417020015535,
+      "tool_calls": 1,
+      "stream_chunks": 153,
+      "final_chars": 229,
+      "final_head": "This project is a locally-hosted MCP server running Qwen3.6-27B on a single RTX 4090 via vLLM, providing coding-focused tools and a self-improving agentic loop that audits, critiques, and auto-commits fixes to its own repository.",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": false,
+        "safe_path_renders": true
+      },
+      "tool_result_markup_safe": [
+        {
+          "checked": true,
+          "raw_would_raise": false,
+          "safe_path_renders": true
+        }
+      ],
+      "tool_result_heads": [
+        "# README.md lines 1-30 of 454\n# qwen-coder-mcp\n\nA Model Context Protocol (MCP) server backed by **Qwen3.6-27B running\nlocally on a single RTX 4090** via vLLM (4-bit AutoRound, OpenAI-compatible),\nfocu"
+      ],
+      "scenario": "agent_one_step_fs_read",
+      "name": "agent_one_step_fs_read",
+      "kind": "agent",
+      "bench_wall_s": 5.468193443999553
+    },
+    {
+      "wall_s": 7.315686480000295,
+      "tool_calls": 2,
+      "stream_chunks": 167,
+      "final_chars": 101,
+      "final_head": "The file was created and read back successfully, confirming the content matches exactly as requested.",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": false,
+        "safe_path_renders": true
+      },
+      "tool_result_markup_safe": [
+        {
+          "checked": true,
+          "raw_would_raise": false,
+          "safe_path_renders": true
+        },
+        {
+          "checked": true,
+          "raw_would_raise": true,
+          "safe_path_renders": true
+        }
+      ],
+      "tool_result_heads": [
+        "wrote 52 bytes to .agent/benchmarks/_bench_write_probe.txt",
+        "[INFO] [/\u258d] progress\n[ERROR] closing tag '[/\u258d]'\n"
+      ],
+      "scenario": "agent_write_bracket_file",
+      "name": "agent_write_bracket_file",
+      "kind": "agent",
+      "bench_wall_s": 7.31585361299949
+    },
+    {
+      "wall_s": 4.9628156300004775,
+      "tool_calls": 1,
+      "stream_chunks": 115,
+      "final_chars": 92,
+      "final_head": "The command printed two lines: `[INFO] [/\u258d] progress 50%` followed by `[ERROR] closing tag`.",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": true,
+        "safe_path_renders": true
+      },
+      "tool_result_markup_safe": [
+        {
+          "checked": true,
+          "raw_would_raise": true,
+          "safe_path_renders": true
+        }
+      ],
+      "tool_result_heads": [
+        "$ echo '[INFO] [/\u258d] progress 50%' && echo '[ERROR] closing tag'\nexit=0\n--- stdout ---\n[INFO] [/\u258d] progress 50%\n[ERROR] closing tag"
+      ],
+      "scenario": "agent_run_shell_bracket",
+      "name": "agent_run_shell_bracket",
+      "kind": "agent",
+      "bench_wall_s": 4.962944967999647
+    },
+    {
+      "wall_s": 11.534454204000212,
+      "tool_calls": 3,
+      "stream_chunks": 288,
+      "final_chars": 62,
+      "final_head": "The file now correctly prints `'HI, '` instead of `'hello, '`.",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": false,
+        "safe_path_renders": true
+      },
+      "tool_result_markup_safe": [
+        {
+          "checked": true,
+          "raw_would_raise": false,
+          "safe_path_renders": true
+        },
+        {
+          "checked": true,
+          "raw_would_raise": false,
+          "safe_path_renders": true
+        },
+        {
+          "checked": true,
+          "raw_would_raise": false,
+          "safe_path_renders": true
+        }
+      ],
+      "tool_result_heads": [
+        "wrote 61 bytes to .agent/benchmarks/_bench_regex_probe.py",
+        "edited .agent/benchmarks/_bench_regex_probe.py (regex): 1 replacement(s), size 61 -> 58 bytes",
+        "def greet(name):\n    print('HI, ' + name)\n    return None\n"
+      ],
+      "scenario": "agent_regex_edit_indent_drift",
+      "name": "agent_regex_edit_indent_drift",
+      "kind": "agent",
+      "bench_wall_s": 11.534660395000174
+    }
+  ],
+  "summary": {
+    "n_scenarios": 7,
+    "n_errors": 0,
+    "total_wall_s": 39.88653742000315,
+    "median_ttft_s": 0.23652040799970564,
+    "median_words_per_s": 11.917785861608177,
+    "n_replies_unprotected_would_crash": 2,
+    "n_replies_safe_path_rendered": 7,
+    "n_tool_results_checked": 7,
+    "n_tool_results_unprotected_would_crash": 2,
+    "n_tool_results_safe_path_rendered": 7
+  }
+}

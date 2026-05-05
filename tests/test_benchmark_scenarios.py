@@ -81,6 +81,35 @@ class TestScenarioInventory:
 
 
 class TestBenchAgentWiring:
+    def test_bench_chat_uses_coder_system_prompt(self, bench_module):
+        captured: dict[str, Any] = {}
+
+        class _Client:
+            def chat_stream(self, history, **kwargs):
+                captured["history"] = history
+                captured["kwargs"] = kwargs
+                yield "ok"
+
+        out = bench_module._bench_chat(_Client(), "write code", 123)
+        assert "error" not in out
+        hist = captured["history"]
+        assert hist[0].role == "system"
+        assert "TOOLS YOU CAN CALL" in hist[0].content
+        assert hist[1].role == "user"
+        assert hist[1].content == "write code"
+        assert captured["kwargs"]["max_tokens"] == 123
+
+    def test_bench_chat_reports_final_sanitized_stream(self, bench_module):
+        class _Client:
+            def chat_stream(self, history, **kwargs):
+                yield "hidden analysis"
+                yield "</think>\n\n"
+                yield "visible final"
+
+        out = bench_module._bench_chat(_Client(), "write code", 123)
+        assert out["reply_head"] == "visible final"
+        assert out["completion_chars"] == len("visible final")
+
     def test_writes_true_passes_all_tools_and_always_allow(self, bench_module, monkeypatch):
         captured: dict[str, Any] = {}
 

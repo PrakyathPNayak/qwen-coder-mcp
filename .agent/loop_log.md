@@ -117,6 +117,32 @@ now parses `fs_write(path='fizzbuzz.py')` from the sanitized TUI-like history.
 
 ---
 
+## Loop 295 — benchmark chat uses the TUI system prompt
+
+**OBSERVE**: The real-model benchmark chat scenarios showed visible "Here's a
+thinking process" output. A direct probe using the same prompt plus
+`prompts.CODER_SYSTEM` returned clean code, revealing that `_bench_chat` was not
+actually mirroring the TUI/plain-chat path.
+
+**ORIENT**: Benchmark failures must be actionable. If the harness omits the
+system prompt, it can report raw-model behavior that users do not see and miss
+regressions in the actual TUI contract.
+
+**DECIDE**: Import `prompts`, seed `_bench_chat` with
+`ChatMessage(role="system", content=prompts.CODER_SYSTEM)`, apply the same
+`_strip_think_blocks` final cleanup that TUI streaming uses, and store each
+scenario name under both `scenario` and `name`.
+
+**DEVIL**: This reduces coverage of bare OpenAI-compatible client behavior, but
+the script documentation says it benchmarks the TUI render path. Raw-client
+behavior deserves a separate scenario kind rather than contaminating this one.
+
+**ACT**: Added unit tests proving `_bench_chat` passes the coder system prompt,
+preserves the requested max token budget, and reports the sanitized final stream
+rather than raw hidden-reasoning chunks.
+
+---
+
 ## Loop 1 — pytest harness
 
 **OBSERVE**: zero tests in repo; every parser in `agent/loop.py` was untested
