@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import sys
 import signal
 import threading
@@ -39,7 +40,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import agent_loop, fs_tools, prompts, shell_tools, web_tools
+from . import agent_loop, fs_tools, perplexity_tools, prompts, shell_tools, web_tools
 from .qwen_client import ChatMessage, QwenClient
 
 
@@ -195,6 +196,14 @@ SLASH_COMMANDS: tuple[str, ...] = (
     "/loop",
     "/agent_loop",
     "/tools",
+    "/patch_anchor",
+    "/perplexity_search",
+    "/perplexity_ask",
+    "/perplexity_research",
+    "/perplexity_reason",
+    "/perplexity_embed",
+    "/perplexity_async",
+    "/bug",
 )
 
 
@@ -313,6 +322,37 @@ Slash commands:
                        (`agent/loop.py`) as a detached subprocess.
                        /loop with no arg = /loop status.
   /tools               List the read-only and write tool registries
+  /patch_anchor <path> <<<old>>> <<<new>>>
+                       Anchor-based string replace; rejects 0/>1 matches
+  /perplexity_search [flags] <query>
+                       Perplexity /search. Flags: --max N, --tpp N (tokens
+                       per page), --country CC, --mode web|academic|sec,
+                       --recency hour|day|week|month|year,
+                       --domain a.com[,b.com] (repeatable),
+                       --lang en[,es] (repeatable),
+                       --after YYYY-MM-DD, --before YYYY-MM-DD.
+  /perplexity_ask [flags] <question>
+                       Quick web-grounded Q&A via sonar-pro. All chat flags:
+                       --recency, --domain, --lang, --mode,
+                       --context low|medium|high, --search-type fast|pro|auto,
+                       --no-search, --related, --max-tokens N,
+                       --temperature F, --top-p F, --country CC.
+  /perplexity_research [flags] <topic>
+                       Deep research via sonar-deep-research (slow).
+                       Adds: --effort minimal|low|medium|high, --keep-think
+                       (preserve <think> blocks; default: stripped).
+  /perplexity_reason [flags] <question>
+                       Step-by-step reasoning via sonar-reasoning-pro.
+                       All chat flags + --keep-think.
+  /perplexity_embed [--dim N] [--encoding base64_int8|base64_binary] <model> <text>
+                       Generate vector embeddings via /v1/embeddings.
+                       Model is one of pplx-embed-v1-0.6b / pplx-embed-v1-4b.
+  /perplexity_async create <model> [chat flags] <question>
+  /perplexity_async get <id>
+  /perplexity_async list
+                       Submit / poll / list async chat-completions jobs.
+  /bug [summary]       Write a redacted bug report (last 20 messages +
+                       sysinfo) to .agent/bugs/<timestamp>.md
   /quit                Exit
 
 @<path> tokens in plain chat are expanded inline as file contents.
@@ -340,6 +380,491 @@ def _render_fetch(url: str) -> str:
         return f"refused non-text: {res.get('content_type')}"
     head = f"# {res['url']} (status={res['status']})\n"
     return head + str(res.get("text", ""))[:8000]
+
+
+def _parse_perplexity_flags(rest: str) -> tuple[dict[str, Any], str]:
+    """Parse a leading run of ``--flag value`` pairs out of ``rest`` and
+    return ``(opts, remainder)``.
+
+    Supports every option the perplexity-py SDK documents for
+    ``/chat/completions`` and ``/search``. Keeps the syntax grep-friendly:
+
+    * ``--recency week`` -> ``search_recency_filter="week"``
+    * ``--domain a.com,b.com`` -> ``search_domain_filter=["a.com","b.com"]``
+      (repeatable; subsequent occurrences extend the list)
+    * ``--lang en`` -> ``search_language_filter=["en"]`` (repeatable)
+    * ``--mode academic`` -> ``search_mode="academic"``
+    * ``--context medium`` -> ``search_context_size="medium"``
+    * ``--search-type pro`` -> ``search_type="pro"``
+    * ``--effort high`` -> ``reasoning_effort="high"``
+    * ``--country US`` -> ``country="US"``
+    * ``--after 2024-01-01`` -> ``search_after_date_filter="2024-01-01"``
+    * ``--before 2024-12-31`` -> ``search_before_date_filter="2024-12-31"``
+    * ``--updated-after / --updated-before`` -> ``last_updated_*_filter``
+    * ``--max N`` / ``--tpp N`` -> search-only ``max_results`` / ``max_tokens_per_page``
+    * ``--max-tokens N`` -> chat ``max_tokens``
+    * ``--temperature F`` / ``--top-p F`` / ``--top-k N``
+    * ``--frequency-penalty F`` / ``--presence-penalty F``
+    * ``--no-search`` -> ``disable_search=True``
+    * ``--related`` -> ``return_related_questions=True``
+    * ``--images`` -> ``return_images=True``
+    * ``--keep-think`` -> ``strip_thinking=False`` (research/reason only)
+    * ``--strip-think`` -> ``strip_thinking=True``
+    * ``--dim N`` / ``--encoding fmt`` -> embeddings only
+    * ``--id KEY`` -> async ``idempotency_key``
+
+    Parsing stops at the first non-``--`` token; everything from that
+    token onward is returned as the remainder so the caller can use it
+    as the query / question. This keeps queries that legitimately
+    contain "--" inside them (e.g. shell-style examples) from being
+    eaten as flags.
+    """
+    opts: dict[str, Any] = {}
+    tokens = rest.strip().split()
+    i = 0
+
+    def _take_value(flag: str) -> str:
+        nonlocal i
+        if i + 1 >= len(tokens):
+            raise ValueError(f"flag {flag} expects a value")
+        i += 1
+        return tokens[i]
+
+    list_flags = {
+        "--domain": "search_domain_filter",
+        "--lang": "search_language_filter",
+    }
+    str_flags = {
+        "--recency": "search_recency_filter",
+        "--mode": "search_mode",
+        "--context": "search_context_size",
+        "--search-type": "search_type",
+        "--effort": "reasoning_effort",
+        "--country": "country",
+        "--after": "search_after_date_filter",
+        "--before": "search_before_date_filter",
+        "--updated-after": "last_updated_after_filter",
+        "--updated-before": "last_updated_before_filter",
+        "--encoding": "encoding_format",
+        "--id": "idempotency_key",
+    }
+    int_flags = {
+        "--max": "max_results",
+        "--tpp": "max_tokens_per_page",
+        "--max-tokens": "max_tokens",
+        "--top-k": "top_k",
+        "--dim": "dimensions",
+    }
+    float_flags = {
+        "--temperature": "temperature",
+        "--top-p": "top_p",
+        "--frequency-penalty": "frequency_penalty",
+        "--presence-penalty": "presence_penalty",
+    }
+    bool_flags = {
+        "--no-search": ("disable_search", True),
+        "--related": ("return_related_questions", True),
+        "--images": ("return_images", True),
+        "--keep-think": ("strip_thinking", False),
+        "--strip-think": ("strip_thinking", True),
+    }
+
+    while i < len(tokens):
+        tok = tokens[i]
+        if not tok.startswith("--"):
+            break
+        if tok in bool_flags:
+            key, val = bool_flags[tok]
+            opts[key] = val
+            i += 1
+            continue
+        if tok in list_flags:
+            key = list_flags[tok]
+            val = _take_value(tok)
+            existing = opts.get(key) or []
+            opts[key] = list(existing) + [v for v in val.split(",") if v]
+            i += 1
+            continue
+        if tok in str_flags:
+            opts[str_flags[tok]] = _take_value(tok)
+            i += 1
+            continue
+        if tok in int_flags:
+            opts[int_flags[tok]] = int(_take_value(tok))
+            i += 1
+            continue
+        if tok in float_flags:
+            opts[float_flags[tok]] = float(_take_value(tok))
+            i += 1
+            continue
+        # Unknown flag -- stop so it ends up in the remainder verbatim.
+        break
+
+    remainder = " ".join(tokens[i:])
+    return opts, remainder
+
+
+def _split_search_opts(opts: dict[str, Any]) -> dict[str, Any]:
+    """Drop chat-only keys from ``opts`` so we can pass it to
+    :func:`perplexity_tools.perplexity_search`. Mutates a copy."""
+    chat_only = {
+        "search_context_size",
+        "search_type",
+        "user_location",
+        "image_results_enhanced_relevance",
+        "reasoning_effort",
+        "temperature",
+        "top_p",
+        "top_k",
+        "frequency_penalty",
+        "presence_penalty",
+        "stop",
+        "disable_search",
+        "return_related_questions",
+        "return_images",
+        "strip_thinking",
+        "encoding_format",
+        "dimensions",
+        "idempotency_key",
+        "response_format",
+    }
+    return {k: v for k, v in opts.items() if k not in chat_only}
+
+
+def _split_chat_opts(opts: dict[str, Any]) -> dict[str, Any]:
+    """Drop search-only / embed-only / async-only keys so we can pass
+    ``opts`` to :func:`perplexity_tools.perplexity_chat`."""
+    drop = {
+        "max_results",
+        "max_tokens_per_page",
+        "encoding_format",
+        "dimensions",
+        "idempotency_key",
+        "strip_thinking",
+    }
+    return {k: v for k, v in opts.items() if k not in drop}
+
+
+def _render_perplexity_search(rest: str) -> str:
+    """Run a Perplexity ``/search`` request and render the formatted
+    result block.
+
+    Caller errors (empty query, bad env var) and network/API errors all
+    surface as a one-line ``perplexity_search error: ...`` string -- the
+    same pattern as ``_render_search``. ``rest`` may begin with ``--``
+    flag pairs (parsed by :func:`_parse_perplexity_flags`) before the
+    actual query."""
+    try:
+        opts, query = _parse_perplexity_flags(rest)
+    except ValueError as exc:
+        return f"perplexity_search error: {exc}"
+    if not query.strip():
+        return "usage: /perplexity_search [flags] <query>"
+    search_opts = _split_search_opts(opts)
+    # Map TUI-friendly --max / --tpp aliases to the kwarg names. Both
+    # "max_results" and "max_tokens_per_page" are already valid kwargs
+    # so this is a passthrough; explicit mapping kept for clarity.
+    try:
+        results = perplexity_tools.perplexity_search(query, **search_opts)
+    except Exception as exc:  # noqa: BLE001
+        return f"perplexity_search error: {type(exc).__name__}: {exc}"
+    return perplexity_tools.format_search_results(results)
+
+
+def _render_perplexity_chat(
+    kind: str,
+    rest: str,
+    *,
+    default_strip_thinking: bool = False,
+) -> str:
+    """Run one of the perplexity chat tools (``ask``/``research``/``reason``)
+    against a freshly-built single-user-message ``messages`` array.
+
+    The TUI never builds a multi-turn perplexity conversation; it sends
+    one question per slash invocation. ``--keep-think`` / ``--strip-think``
+    flags override the per-tool default for stripping ``<think>`` blocks.
+    """
+    try:
+        opts, question = _parse_perplexity_flags(rest)
+    except ValueError as exc:
+        return f"perplexity_{kind} error: {exc}"
+    if not question.strip():
+        return f"usage: /perplexity_{kind} [flags] <question>"
+    strip_thinking = opts.pop("strip_thinking", default_strip_thinking)
+    chat_opts = _split_chat_opts(opts)
+    msgs = [{"role": "user", "content": question}]
+    try:
+        if kind == "ask":
+            return perplexity_tools.perplexity_ask(  # type: ignore[return-value]
+                msgs, **chat_opts
+            )
+        if kind == "research":
+            return perplexity_tools.perplexity_research(  # type: ignore[return-value]
+                msgs, strip_thinking=strip_thinking, **chat_opts
+            )
+        if kind == "reason":
+            return perplexity_tools.perplexity_reason(  # type: ignore[return-value]
+                msgs, strip_thinking=strip_thinking, **chat_opts
+            )
+    except Exception as exc:  # noqa: BLE001
+        return f"perplexity_{kind} error: {type(exc).__name__}: {exc}"
+    return f"perplexity_{kind} error: unknown kind"
+
+
+def _render_perplexity_embed(rest: str) -> str:
+    """Run a ``/v1/embeddings`` request from a TUI line like
+    ``[--dim N] [--encoding fmt] <model> <text...>``.
+
+    The model is parsed positionally (first non-flag token) and the
+    rest of the line is taken as a single embedding input. For batched
+    inputs use the MCP tool directly -- the TUI keeps the line-oriented
+    flow simple."""
+    try:
+        opts, remainder = _parse_perplexity_flags(rest)
+    except ValueError as exc:
+        return f"perplexity_embed error: {exc}"
+    parts = remainder.split(None, 1)
+    if len(parts) < 2:
+        return (
+            "usage: /perplexity_embed [--dim N] [--encoding fmt] "
+            "<model> <text>"
+        )
+    model, text = parts[0], parts[1]
+    try:
+        res = perplexity_tools.perplexity_embed(
+            text,
+            model=model,
+            dimensions=opts.get("dimensions"),
+            encoding_format=opts.get("encoding_format"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return f"perplexity_embed error: {type(exc).__name__}: {exc}"
+    return perplexity_tools.format_embeddings_result(res)
+
+
+def _render_perplexity_async(rest: str) -> str:
+    """Dispatch ``/perplexity_async <subcmd> ...``.
+
+    Subcommands:
+
+    * ``create <model> [chat flags] <question>`` -- submit a job
+    * ``get <id>``                                -- poll one job
+    * ``list``                                    -- list all jobs
+
+    The subcmd is the first whitespace-separated token; everything
+    after is parsed by the corresponding handler."""
+    rest = rest.strip()
+    parts = rest.split(None, 1)
+    sub = (parts[0] if parts else "").lower()
+    tail = parts[1] if len(parts) > 1 else ""
+    if sub == "list":
+        try:
+            payload = perplexity_tools.perplexity_async_list()
+        except Exception as exc:  # noqa: BLE001
+            return f"perplexity_async_list error: {type(exc).__name__}: {exc}"
+        return perplexity_tools.format_async_list(payload)
+    if sub == "get":
+        rid = tail.strip()
+        if not rid:
+            return "usage: /perplexity_async get <id>"
+        try:
+            payload = perplexity_tools.perplexity_async_get(rid)
+        except Exception as exc:  # noqa: BLE001
+            return f"perplexity_async_get error: {type(exc).__name__}: {exc}"
+        return perplexity_tools.format_async_record(payload)
+    if sub == "create":
+        # Model is positional and comes first; everything after it may
+        # contain flags + the question text. Splitting model off before
+        # parsing flags keeps `--flag value` recognition consistent
+        # with the other slash commands.
+        seg = tail.split(None, 1)
+        if len(seg) < 2:
+            return (
+                "usage: /perplexity_async create <model> [flags] <question>"
+            )
+        model, after_model = seg[0], seg[1]
+        try:
+            opts, question = _parse_perplexity_flags(after_model)
+        except ValueError as exc:
+            return f"perplexity_async_create error: {exc}"
+        if not question.strip():
+            return (
+                "usage: /perplexity_async create <model> [flags] <question>"
+            )
+        idem = opts.pop("idempotency_key", None)
+        chat_opts = _split_chat_opts(opts)
+        msgs = [{"role": "user", "content": question}]
+        try:
+            payload = perplexity_tools.perplexity_async_create(
+                msgs, model=model, idempotency_key=idem, **chat_opts
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"perplexity_async_create error: {type(exc).__name__}: {exc}"
+        return perplexity_tools.format_async_record(payload)
+    return "usage: /perplexity_async <create|get|list> [...]"
+
+
+def _parse_patch_anchor_args(rest: str) -> tuple[str, str, str] | str:
+    """Parse ``/patch_anchor <path> <<<old>>> <<<new>>>``.
+
+    Returns ``(path, old_str, new_str)`` on success or an error message
+    string on failure. The ``<<<...>>>`` delimiter is used so multi-line
+    or whitespace-heavy strings can be passed through the single-line
+    TUI input. Newlines inside the delimited block are preserved as-is.
+    """
+    if not rest:
+        return "usage: /patch_anchor <path> <<<old>>> <<<new>>>"
+    # Split off the path (first whitespace-separated token).
+    parts = rest.split(None, 1)
+    if len(parts) < 2:
+        return "usage: /patch_anchor <path> <<<old>>> <<<new>>>"
+    path, tail = parts[0], parts[1]
+    open_tok, close_tok = "<<<", ">>>"
+    # Find the first <<<...>>> block.
+    o1 = tail.find(open_tok)
+    if o1 < 0:
+        return "usage: /patch_anchor <path> <<<old>>> <<<new>>>  (missing <<<old>>>)"
+    c1 = tail.find(close_tok, o1 + len(open_tok))
+    if c1 < 0:
+        return "/patch_anchor: unterminated <<<old>>> block"
+    old_str = tail[o1 + len(open_tok):c1]
+    # Then the second.
+    o2 = tail.find(open_tok, c1 + len(close_tok))
+    if o2 < 0:
+        return "usage: /patch_anchor <path> <<<old>>> <<<new>>>  (missing <<<new>>>)"
+    c2 = tail.find(close_tok, o2 + len(open_tok))
+    if c2 < 0:
+        return "/patch_anchor: unterminated <<<new>>> block"
+    new_str = tail[o2 + len(open_tok):c2]
+    return path, old_str, new_str
+
+
+def _render_patch_anchor(cfg: fs_tools.FsConfig, rest: str) -> str:
+    parsed = _parse_patch_anchor_args(rest)
+    if isinstance(parsed, str):
+        return parsed
+    path, old_str, new_str = parsed
+    try:
+        res = fs_tools.patch_anchor(cfg, path, old_str, new_str)
+    except fs_tools.FsError as exc:
+        return f"patch_anchor error: {exc}"
+    return (
+        f"patched {res['path']} "
+        f"({res['size_before']} -> {res['size_after']} bytes)"
+    )
+
+
+_BUG_REPORT_PREFIX_REDACTIONS = (
+    # Patterns that capture a *prefix* in group(1); the replacement is
+    # ``prefix + [REDACTED]``. The value matcher allows an optional
+    # surrounding quote so ``api_key = 'pplx-...'`` is caught too.
+    re.compile(
+        r"(?i)((?:api[_-]?key|token|secret|password|authorization)"
+        r"\s*[:=]\s*)['\"]?[^\s,'\"]+['\"]?"
+    ),
+    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._\-]+"),
+)
+_BUG_REPORT_WHOLE_REDACTIONS = (
+    # Patterns that match a whole secret token; the replacement is just
+    # ``[REDACTED]`` (no group(1) prefix).
+    re.compile(r"sk-[A-Za-z0-9]{16,}"),
+    re.compile(r"ghp_[A-Za-z0-9]{20,}"),
+    re.compile(r"pplx-[A-Za-z0-9]{12,}"),
+)
+
+
+def _redact_for_bug_report(text: str) -> str:
+    """Apply best-effort secret redaction before persisting a bug report.
+
+    Pure helper so the test suite can pin behaviour. The redactions are
+    deliberately not exhaustive -- the operator is expected to skim the
+    file before sharing it -- but they catch the obvious env-style and
+    bearer-token leaks that have historically bitten contributors of
+    every codebase that ever shipped a ``/bug``-style command.
+
+    The ordering matters: prefix patterns (``api_key=...``, ``Bearer ...``)
+    run first so they consume the secret value, then the bare-token
+    patterns sweep up anything that leaked outside an obvious assignment.
+    """
+    out = text or ""
+    for pat in _BUG_REPORT_PREFIX_REDACTIONS:
+        out = pat.sub(lambda m: m.group(1) + "[REDACTED]", out)
+    for pat in _BUG_REPORT_WHOLE_REDACTIONS:
+        out = pat.sub("[REDACTED]", out)
+    return out
+
+
+def _render_bug(
+    cfg: fs_tools.FsConfig,
+    history: list[ChatMessage] | None,
+    summary: str,
+) -> str:
+    """Capture a redacted bug report under ``.agent/bugs/<ts>.md``.
+
+    Concept inspired by claude-code's ``/bug`` command (independent
+    implementation, no source code copied -- only the user-facing
+    convention). The report contains:
+
+    * an optional one-line summary supplied by the operator
+    * a UTC timestamp
+    * Python / OS / cwd info (cheap, always-safe)
+    * the last 20 chat messages with each message body redacted via
+      :func:`_redact_for_bug_report`
+
+    No network is touched; nothing is uploaded. The operator is expected
+    to read the file before sharing it. Returns a one-line confirmation
+    with the absolute path.
+    """
+    import datetime
+    import platform
+
+    bugs_dir = cfg.root / ".agent" / "bugs"
+    try:
+        bugs_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return f"bug error: cannot create {bugs_dir}: {exc}"
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = bugs_dir / f"{ts}.md"
+
+    lines: list[str] = [
+        f"# Bug report {ts}",
+        "",
+    ]
+    if summary.strip():
+        lines.append(f"**Summary:** {_redact_for_bug_report(summary.strip())}")
+        lines.append("")
+    lines.extend(
+        [
+            "## Environment",
+            "",
+            f"- python: `{platform.python_version()}`",
+            f"- platform: `{platform.platform()}`",
+            f"- cwd: `{cfg.root}`",
+            "",
+            "## Recent chat history (last 20, redacted)",
+            "",
+        ]
+    )
+    if not history:
+        lines.append("(no chat history)")
+    else:
+        tail = history[-20:]
+        for i, msg in enumerate(tail, 1):
+            role = getattr(msg, "role", "?") or "?"
+            content = getattr(msg, "content", "") or ""
+            redacted = _redact_for_bug_report(content)
+            lines.append(f"### [{i}] {role}")
+            lines.append("")
+            lines.append("```")
+            lines.append(redacted)
+            lines.append("```")
+            lines.append("")
+    body = "\n".join(lines).rstrip() + "\n"
+    try:
+        path.write_text(body, encoding="utf-8")
+    except OSError as exc:
+        return f"bug error: cannot write {path}: {exc}"
+    return f"wrote bug report: {path} ({len(body.encode('utf-8'))} bytes)"
 
 
 def _render_read(cfg: fs_tools.FsConfig, path: str) -> str:
@@ -2949,6 +3474,26 @@ def dispatch_slash(
         if not cmd.args:
             return f"(cwd) {fs_cfg.root}", False
         return _render_cd(fs_cfg, cmd.args[0]), False
+    if name == "patch_anchor":
+        return _render_patch_anchor(fs_cfg, cmd.rest), False
+    if name == "perplexity_search":
+        return _render_perplexity_search(cmd.rest), False
+    if name == "perplexity_ask":
+        return _render_perplexity_chat("ask", cmd.rest), False
+    if name == "perplexity_research":
+        return _render_perplexity_chat(
+            "research", cmd.rest, default_strip_thinking=True
+        ), False
+    if name == "perplexity_reason":
+        return _render_perplexity_chat(
+            "reason", cmd.rest, default_strip_thinking=True
+        ), False
+    if name == "perplexity_embed":
+        return _render_perplexity_embed(cmd.rest), False
+    if name == "perplexity_async":
+        return _render_perplexity_async(cmd.rest), False
+    if name == "bug":
+        return _render_bug(fs_cfg, history, cmd.rest), False
     return f"unknown command: /{name}  (try /help)", False
 
 

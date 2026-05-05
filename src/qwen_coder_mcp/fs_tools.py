@@ -698,6 +698,94 @@ def apply_patch(cfg: FsConfig, diff_text: str, *, check_only: bool = False) -> d
             pass
 
 
+def patch_anchor(
+    cfg: FsConfig,
+    rel: str,
+    old_str: str,
+    new_str: str,
+) -> dict[str, object]:
+    """Anchor-based string-edit on ``rel``: replace exactly one
+    occurrence of ``old_str`` with ``new_str``.
+
+    Complements :func:`apply_patch` (which takes a unified diff). Useful
+    when the caller knows a unique surrounding context but doesn't have
+    line numbers, or when the file isn't in a git tree so ``git apply``
+    can't be used. The pattern is well-known (``str_replace_editor`` and
+    pReAct's ``FileWorkspace.patch``) and is intentionally strict:
+
+    * ``old_str`` must be non-empty.
+    * The file must contain ``old_str`` **exactly once** -- 0 matches
+      raises (so the caller knows their anchor is wrong) and 2+ matches
+      raises (so the caller is forced to disambiguate with more context).
+    * ``new_str == old_str`` is rejected as a no-op so dry-run mistakes
+      surface immediately rather than silently rewriting the file.
+
+    Path resolution and write-size limits piggy-back on
+    :func:`_resolve_inside_root` and ``cfg.max_write_bytes`` -- same
+    sandboxing as :func:`write_file`. The replacement is written
+    atomically via ``.tmp`` + ``os.replace`` (same pattern as
+    :func:`write_file`).
+    """
+    if old_str is None or not isinstance(old_str, str):
+        raise FsError("old_str must be a string")
+    if new_str is None or not isinstance(new_str, str):
+        raise FsError("new_str must be a string")
+    if old_str == "":
+        raise FsError("old_str must be non-empty")
+    if old_str == new_str:
+        raise FsError("old_str and new_str are identical (no-op)")
+
+    p = _resolve_inside_root(cfg, rel)
+    if not p.exists():
+        raise FsError(f"file not found: {rel}")
+    if p.is_dir():
+        raise FsError(f"is a directory: {rel}")
+    try:
+        original = p.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise FsError(f"file is not utf-8 text: {rel}") from exc
+    except OSError as exc:
+        raise FsError(f"read failed: {exc}") from exc
+
+    occurrences = original.count(old_str)
+    if occurrences == 0:
+        raise FsError(f"old_str not found in {rel}")
+    if occurrences > 1:
+        raise FsError(
+            f"old_str matches {occurrences} times in {rel}; "
+            f"add surrounding context to disambiguate"
+        )
+
+    updated = original.replace(old_str, new_str, 1)
+    encoded = updated.encode("utf-8")
+    if len(encoded) > cfg.max_write_bytes:
+        raise FsError(
+            f"resulting content too large ({len(encoded)} > {cfg.max_write_bytes})"
+        )
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    try:
+        with open(tmp, "wb") as fh:
+            fh.write(encoded)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, p)
+    except OSError as exc:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise FsError(f"write failed: {exc}") from exc
+    return {
+        "path": rel,
+        "size_before": len(original.encode("utf-8")),
+        "size_after": len(encoded),
+        "replaced": 1,
+    }
+
+
 def format_read(res: dict[str, object]) -> str:
     head = f"# {res['path']} (size={res['size']}"
     if res.get("truncated"):

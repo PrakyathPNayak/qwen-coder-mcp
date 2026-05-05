@@ -61,6 +61,41 @@ for completions; `@path` expands a file inline.
 **Web**
 - `/search [--max N] <query>` — DuckDuckGo HTML search (no API key)
 - `/fetch <url>` — text body, byte-capped, binary refused
+- `/perplexity_search [flags] <query>` — Perplexity `/search`
+  (PERPLEXITY_API_KEY required). Flags: `--max N`, `--tpp N`,
+  `--country CC`, `--mode web|academic|sec`,
+  `--recency hour|day|week|month|year`, `--domain a.com[,b.com]`
+  (repeatable), `--lang en[,es]` (repeatable),
+  `--after YYYY-MM-DD`, `--before YYYY-MM-DD`,
+  `--updated-after`, `--updated-before`.
+- `/perplexity_ask [flags] <question>` — quick web-grounded Q&A via
+  `sonar-pro`. Accepts every chat flag: search filters above plus
+  `--context low|medium|high`, `--search-type fast|pro|auto`,
+  `--no-search`, `--related`, `--images`, `--max-tokens N`,
+  `--temperature F`, `--top-p F`, `--top-k N`,
+  `--frequency-penalty F`, `--presence-penalty F`, `--country CC`.
+- `/perplexity_research [flags] <topic>` — deep multi-source research
+  via `sonar-deep-research` (slow). Adds
+  `--effort minimal|low|medium|high` and `--keep-think` (preserve
+  `<think>` blocks; default: stripped).
+- `/perplexity_reason [flags] <question>` — step-by-step reasoning via
+  `sonar-reasoning-pro`. Same flag surface plus `--keep-think`.
+- `/perplexity_embed [--dim N] [--encoding base64_int8|base64_binary] <model> <text>`
+  — generate a vector embedding via `/v1/embeddings`. Models are
+  `pplx-embed-v1-0.6b` and `pplx-embed-v1-4b`.
+- `/perplexity_async create <model> [chat flags] <question>` /
+  `/perplexity_async get <id>` / `/perplexity_async list` — submit,
+  poll, or list async chat-completions jobs (use for long-running
+  deep-research queries that exceed the sync timeout).
+
+**Editing**
+- `/patch_anchor <path> <<<old>>> <<<new>>>` — replace exactly one
+  occurrence of `old_str`; rejects 0 or >1 matches. Complements
+  `/apply` (unified diff) for files not in git or when only a unique
+  surrounding context is known.
+- `/bug [summary]` — write a redacted bug report (last 20 messages +
+  sysinfo) to `.agent/bugs/<UTC-timestamp>.md`. Local-only; nothing
+  uploaded.
 
 **Agent mode (tool-calling loop)**
 - `/agent <task>` / `/agentw <task>` — one-shot agent turn (read-only / write)
@@ -103,10 +138,40 @@ for completions; `@path` expands a file inline.
   - `list_dir` — list a directory inside the repo root
   - `write_file` — write a file inside the repo root (utf-8)
   - `apply_patch` — apply a unified diff via `git apply` (`check_only` supported)
+  - `patch_anchor` — anchor-based string-replace inside the repo root.
+    Replaces exactly one occurrence of `old_str` with `new_str`; rejects
+    0 or >1 matches. Complements `apply_patch` for files not in git or
+    when only a unique surrounding context is known.
   - `run_shell` — run a shell command via `/bin/sh` inside the sandbox
     (deny list, wall-clock cap, output cap, optional `cwd`/`timeout`)
     — added in loop 260 so MCP clients have the same shell access the
     TUI's `/run` already provides.
+  - `perplexity_search` — Perplexity `/search` (ranked web results;
+    requires `PERPLEXITY_API_KEY`). Full SDK option surface:
+    recency / domain / language / date filters, `search_mode`
+    (web / academic / sec), `country`.
+  - `perplexity_ask` — quick web-grounded Q&A via Perplexity
+    `sonar-pro`. Accepts the full chat option surface from the
+    `perplexity-py` SDK: search filters, generation knobs
+    (`temperature`, `top_p`, `max_tokens`, etc.), `web_search_options`
+    (`search_context_size`, `search_type`, `user_location`),
+    `disable_search`, `return_related_questions`, `return_images`,
+    structured-output `response_format`.
+  - `perplexity_research` — deep multi-source research via
+    `sonar-deep-research` (slow; SSE-streamed under the hood). Adds
+    `reasoning_effort`.
+  - `perplexity_reason` — step-by-step reasoning via
+    `sonar-reasoning-pro`.
+  - `perplexity_embed` — vector embeddings via `/v1/embeddings`
+    (`pplx-embed-v1-0.6b` / `pplx-embed-v1-4b`, optional Matryoshka
+    `dimensions`, optional `base64_int8` / `base64_binary` encoding).
+  - `perplexity_async_create` / `perplexity_async_get` /
+    `perplexity_async_list` — submit / poll / list async
+    chat-completions jobs (POST/GET `/async/chat/completions`).
+
+  See [`docs/EXTERNAL_INTEGRATION.md`](docs/EXTERNAL_INTEGRATION.md) for
+  the full inventory of features studied from upstream projects, what
+  was integrated, and what was deliberately skipped.
 
 The filesystem tools are sandboxed to `$QWEN_MCP_FS_ROOT` (default:
 server's cwd). Paths that escape via `..` or symlinks are rejected.
@@ -165,6 +230,10 @@ Copy `.env.example` to `.env` and adjust if needed:
 | `LOOP_INTERVAL_SECONDS` | `45` | Sleep between iterations |
 | `LOOP_MAX_FILE_BYTES` | `60000` | Skip files larger than this |
 | `LOOP_PUSH` | `1` | Set `0` to commit without pushing |
+| `PERPLEXITY_API_KEY` | unset | API key for the Perplexity tools (`perplexity_search`, `perplexity_ask`, `perplexity_research`, `perplexity_reason`, `perplexity_embed`, `perplexity_async_*`). Without this the perplexity tools error on first call; the rest of the server still works. |
+| `PERPLEXITY_BASE_URL` | `https://api.perplexity.ai` | Override for testing or self-hosted gateways. |
+| `PERPLEXITY_TIMEOUT_MS` | `300000` | Request timeout in milliseconds (default 5 min, matches the reference Perplexity MCP server). |
+| `PERPLEXITY_PROXY` | unset | HTTP/S proxy URL for Perplexity calls. Falls back to `HTTPS_PROXY` / `HTTP_PROXY` if unset. |
 
 ## Running the MCP server
 

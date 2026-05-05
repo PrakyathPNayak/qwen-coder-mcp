@@ -1,0 +1,53 @@
+qwen-coder-mcp
+Copyright (c) the qwen-coder-mcp contributors.
+
+Licensed under the GNU General Public License v3.0; see LICENSE.
+
+This product includes original code inspired by, and HTTP/tool contracts
+re-implemented from, the following open-source projects. No source code
+has been copied verbatim from these projects -- only the publicly
+documented HTTP request/response shapes, tool surfaces, and user-facing
+conventions are re-used.
+
+----------------------------------------------------------------------
+Perplexity AI MCP Server  (https://github.com/perplexityai/modelcontextprotocol)
+Copyright (c) Perplexity AI
+Licensed under the MIT License.
+
+The Perplexity tool surface (`perplexity_search`, `perplexity_ask`,
+`perplexity_research`, `perplexity_reason`), the documented request
+options (`search_recency_filter`, `search_domain_filter`,
+`search_context_size`, `reasoning_effort`, `strip_thinking`), and the
+configuration env vars (`PERPLEXITY_API_KEY`, `PERPLEXITY_BASE_URL`,
+`PERPLEXITY_TIMEOUT_MS`, `PERPLEXITY_PROXY`) follow this project's
+contract so existing operator habits carry over.
+Implementation in `src/qwen_coder_mcp/perplexity_tools.py` is original
+Python written for this project.
+
+----------------------------------------------------------------------
+Perplexity Python SDK  (https://github.com/perplexityai/perplexity-py)
+Copyright (c) Perplexity AI
+Licensed under the Apache License, Version 2.0.
+
+The REST endpoint paths (`/search`, `/chat/completions`) and request
+body shapes used by `perplexity_tools.py` follow the documented public
+API surfaced by this SDK. No SDK code is bundled.
+
+----------------------------------------------------------------------
+pReAct  (https://github.com/nikhilr612/pReAct)
+Copyright (c) the pReAct authors
+Licensed under the Mozilla Public License, version 2.0.
+
+The anchor-based string-edit pattern used in
+`fs_tools.patch_anchor` (replace a single occurrence of `old_str` with
+`new_str`, reject 0 or multi-match) is a well-known pattern that also
+appears in pReAct's `FileWorkspace.patch`. Implementation is original.
+
+----------------------------------------------------------------------
+claude-code  (https://github.com/anthropics/claude-code)
+Copyright (c) Anthropic
+Proprietary -- Anthropic Commercial Terms.
+
+Only the user-facing concept of a `/bug` slash command (capture local
+context into a redacted bug report file) is reused. No source code from
+claude-code is copied or referenced.
