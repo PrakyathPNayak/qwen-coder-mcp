@@ -120,9 +120,12 @@ class TestPerplexitySearch:
                         },
                         {"title": "No url", "url": "", "snippet": "schema-valid empty url"},
                         {"title": "Solo", "url": "https://s.example/"},
-                        {"title": "Bad row not a dict"},  # noqa: this row is fine -- next row tests skip
+                        # Following rows are intentionally malformed --
+                        # they exercise the parser's skip behaviour:
+                        # missing url field, non-dict, non-string title.
+                        {"title": "Has no url field"},
                         "not-a-dict",
-                        {"title": 123, "url": "https://nope.example/"},  # non-string title -> skip
+                        {"title": 123, "url": "https://nope.example/"},
                     ]
                 },
             )

@@ -701,10 +701,7 @@ def _render_perplexity_async(rest: str) -> str:
         except Exception as exc:  # noqa: BLE001
             return f"perplexity_async_create error: {type(exc).__name__}: {exc}"
         return perplexity_tools.format_async_record(payload)
-    return (
-        "usage: /perplexity_async <create|get|list> [...]"
-        if sub else "usage: /perplexity_async <create|get|list> [...]"
-    )
+    return "usage: /perplexity_async <create|get|list> [...]"
 
 
 def _parse_patch_anchor_args(rest: str) -> tuple[str, str, str] | str:

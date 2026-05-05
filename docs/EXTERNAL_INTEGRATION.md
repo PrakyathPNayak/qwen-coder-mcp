@@ -22,19 +22,45 @@ All upstream code was treated as read-only reference material.
 
 ### Perplexity tools (from `perplexityai/modelcontextprotocol`, `perplexity-py`)
 
-* New module `src/qwen_coder_mcp/perplexity_tools.py` exposes:
+* New module `src/qwen_coder_mcp/perplexity_tools.py` exposes the full
+  endpoint surface documented by the upstream SDK:
   * `perplexity_search` -- POST `/search`, returns ranked results.
   * `perplexity_ask` -- POST `/chat/completions`, model `sonar-pro`.
   * `perplexity_research` -- POST `/chat/completions`, model
     `sonar-deep-research` (SSE-buffered).
   * `perplexity_reason` -- POST `/chat/completions`, model
     `sonar-reasoning-pro`.
+  * `perplexity_embed` -- POST `/v1/embeddings`, models
+    `pplx-embed-v1-0.6b` / `pplx-embed-v1-4b` with optional
+    Matryoshka `dimensions` and `base64_int8` / `base64_binary`
+    encoding formats.
+  * `perplexity_async_create` / `perplexity_async_get` /
+    `perplexity_async_list` -- POST/GET `/async/chat/completions`,
+    submit and poll long-running jobs (the SDK's request body wrapper
+    `{"request": {...}, "idempotency_key": ...}` is reproduced
+    verbatim).
+* The chat-completions surface accepts every option documented by
+  `perplexity-py`'s `CompletionCreateParams`: `temperature`, `top_p`,
+  `top_k`, `max_tokens`, `frequency_penalty`, `presence_penalty`,
+  `country`, `search_mode` (web/academic/sec), all four date filters
+  (`search_after_date_filter`, `search_before_date_filter`,
+  `last_updated_after_filter`, `last_updated_before_filter`),
+  `search_recency_filter`, `search_domain_filter`,
+  `search_language_filter`, `disable_search`,
+  `return_related_questions`, `return_images`, `stop`,
+  `response_format` (structured-output JSON Schema / regex), and the
+  full `web_search_options` sub-object (`search_context_size`,
+  `search_type`, `user_location`, `image_results_enhanced_relevance`).
 * Configuration mirrors the reference server:
   `PERPLEXITY_API_KEY`, `PERPLEXITY_BASE_URL`, `PERPLEXITY_TIMEOUT_MS`,
   `PERPLEXITY_PROXY` (with `HTTPS_PROXY` / `HTTP_PROXY` fallback).
 * Wired into the MCP server (`server.py`) and the TUI as
   `/perplexity_search`, `/perplexity_ask`, `/perplexity_research`,
-  `/perplexity_reason`.
+  `/perplexity_reason`, `/perplexity_embed`, `/perplexity_async`.
+* The TUI commands all accept a shared `--flag value` syntax exposing
+  the full option surface (recency / domain / language filters,
+  search modes, web_search_options, generation knobs, ...). See the
+  `/help` text for the canonical list.
 * The reference TypeScript implementation was studied for HTTP contract
   details (request body shape, SSE handling, citation rendering) but
   the Python implementation is independent.
@@ -106,9 +132,19 @@ All upstream code was treated as read-only reference material.
 
 ### From `perplexityai/perplexity-py`
 
-* **`Async` client variant, `Embeddings`, `Responses` API surfaces.**
-  None of the four MCP tools we exposed need them. Add when a tool that
-  exercises them lands.
+* **`Responses` API surface** (`/v1/responses`). Skipped: it duplicates
+  the chat-completions surface with a wholly different schema
+  (annotations, content parts, function-tool calling) for marginal
+  benefit in a coding-agent context. Re-evaluate when a tool needs
+  function-calling or structured annotations beyond what
+  `response_format` already provides.
+* **`ContextualizedEmbeddings` API** (`/v1/contextualizedembeddings`).
+  Skipped: niche -- it exists for retrieval pipelines that pre-embed
+  (query, doc) pairs together. The plain `Embeddings` endpoint is
+  enough for the agent's "embed this question" use case.
+* **`Browser` sessions** (`/v1/browser/sessions`). Skipped: needs a
+  separate session-lifecycle subsystem (create/use/delete) and is
+  paired with paid Perplexity browser tooling we don't drive.
 
 ### From `anthropics/claude-code`
 
