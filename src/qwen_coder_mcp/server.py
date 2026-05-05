@@ -24,6 +24,143 @@ def _default_fs_config() -> fs_tools.FsConfig:
     return fs_tools.FsConfig(root=Path(root_str))
 
 
+def _perplexity_chat_input_schema(
+    s: dict[str, str],
+    *,
+    with_strip_thinking: bool = False,
+    with_async_extras: bool = False,
+) -> dict[str, Any]:
+    """Build the JSON-Schema for the perplexity chat tools.
+
+    Centralised because three tools share an identical option surface;
+    duplicating the literal at three call sites was the original cause
+    of recurring drift between this server and the perplexity-py SDK.
+    Variants:
+
+    * ``with_strip_thinking`` -- adds the boolean toggle that drops
+      ``<think>...</think>`` blocks (only meaningful for the deep-research
+      and reasoning models).
+    * ``with_async_extras`` -- adds ``model`` (required) and
+      ``idempotency_key`` for the async-create surface, where the model
+      isn't fixed by the tool name."""
+    props: dict[str, Any] = {
+        "messages": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"role": s, "content": s},
+                "required": ["role", "content"],
+            },
+        },
+        # Search/web options
+        "search_recency_filter": {
+            "type": "string",
+            "enum": list(perplexity_tools.VALID_RECENCY),
+        },
+        "search_domain_filter": {"type": "array", "items": s},
+        "search_language_filter": {"type": "array", "items": s},
+        "search_mode": {
+            "type": "string",
+            "enum": list(perplexity_tools.VALID_SEARCH_MODE),
+        },
+        "search_after_date_filter": s,
+        "search_before_date_filter": s,
+        "last_updated_after_filter": s,
+        "last_updated_before_filter": s,
+        "disable_search": {"type": "boolean"},
+        "return_related_questions": {"type": "boolean"},
+        "return_images": {"type": "boolean"},
+        # web_search_options sub-object
+        "search_context_size": {
+            "type": "string",
+            "enum": list(perplexity_tools.VALID_CONTEXT_SIZE),
+        },
+        "search_type": {
+            "type": "string",
+            "enum": list(perplexity_tools.VALID_SEARCH_TYPE),
+        },
+        "user_location": {
+            "type": "object",
+            "properties": {
+                "city": s,
+                "country": s,
+                "region": s,
+                "latitude": {"type": "number"},
+                "longitude": {"type": "number"},
+            },
+        },
+        "image_results_enhanced_relevance": {"type": "boolean"},
+        # Generation knobs
+        "reasoning_effort": {
+            "type": "string",
+            "enum": list(perplexity_tools.VALID_REASONING_EFFORT),
+        },
+        "temperature": {"type": "number"},
+        "top_p": {"type": "number"},
+        "top_k": {"type": "integer"},
+        "max_tokens": {"type": "integer", "minimum": 1},
+        "frequency_penalty": {"type": "number"},
+        "presence_penalty": {"type": "number"},
+        "stop": {
+            "oneOf": [s, {"type": "array", "items": s}],
+        },
+        "country": s,
+        "response_format": {"type": "object"},
+    }
+    required: list[str] = ["messages"]
+    if with_strip_thinking:
+        props["strip_thinking"] = {"type": "boolean"}
+    if with_async_extras:
+        props["model"] = s
+        props["idempotency_key"] = s
+        required.append("model")
+    return {"type": "object", "properties": props, "required": required}
+
+
+# Keys forwarded to perplexity_chat / perplexity_async_create when set.
+# Listed once here so the dispatcher and the schema stay aligned.
+_PERPLEXITY_CHAT_OPTION_KEYS = (
+    "search_recency_filter",
+    "search_domain_filter",
+    "search_language_filter",
+    "search_mode",
+    "search_after_date_filter",
+    "search_before_date_filter",
+    "last_updated_after_filter",
+    "last_updated_before_filter",
+    "disable_search",
+    "return_related_questions",
+    "return_images",
+    "search_context_size",
+    "search_type",
+    "user_location",
+    "image_results_enhanced_relevance",
+    "reasoning_effort",
+    "temperature",
+    "top_p",
+    "top_k",
+    "max_tokens",
+    "frequency_penalty",
+    "presence_penalty",
+    "stop",
+    "country",
+    "response_format",
+)
+
+
+def _extract_chat_options(args: dict[str, Any]) -> dict[str, Any]:
+    """Pluck the perplexity-chat options the caller actually set.
+
+    Avoids forwarding ``None`` for unset keys so we don't accidentally
+    override a server-side default. Booleans are passed through as-is
+    so ``disable_search=False`` is distinguishable from "unset"."""
+    out: dict[str, Any] = {}
+    for k in _PERPLEXITY_CHAT_OPTION_KEYS:
+        if k in args and args[k] is not None:
+            out[k] = args[k]
+    return out
+
+
 def _list_tools() -> list[Tool]:
     """Return the static tool registry exposed over MCP. Loop 260
     extracted this from the inner closure so the registry can be
@@ -237,9 +374,11 @@ def _list_tools() -> list[Tool]:
             name="perplexity_search",
             description=(
                 "Search the web via the Perplexity Search API. Returns a "
-                "ranked list of {title, url, snippet, date}. Requires "
-                "PERPLEXITY_API_KEY. For AI-synthesised answers use "
-                "perplexity_ask instead."
+                "ranked list of {title, url, snippet, date, score?}. "
+                "Requires PERPLEXITY_API_KEY. For AI-synthesised answers "
+                "use perplexity_ask instead. Supports the full SearchCreateParams "
+                "surface from the perplexity-py SDK -- recency / domain / "
+                "language filters, date filters, academic / SEC search modes."
             ),
             inputSchema={
                 "type": "object",
@@ -251,7 +390,22 @@ def _list_tools() -> list[Tool]:
                         "minimum": 256,
                         "maximum": 2048,
                     },
+                    "max_tokens": {"type": "integer", "minimum": 1},
                     "country": s,
+                    "search_mode": {
+                        "type": "string",
+                        "enum": list(perplexity_tools.VALID_SEARCH_MODE),
+                    },
+                    "search_recency_filter": {
+                        "type": "string",
+                        "enum": list(perplexity_tools.VALID_RECENCY),
+                    },
+                    "search_domain_filter": {"type": "array", "items": s},
+                    "search_language_filter": {"type": "array", "items": s},
+                    "last_updated_after_filter": s,
+                    "last_updated_before_filter": s,
+                    "search_after_date_filter": s,
+                    "search_before_date_filter": s,
                 },
                 "required": ["query"],
             },
@@ -262,34 +416,13 @@ def _list_tools() -> list[Tool]:
                 "Quick web-grounded Q&A via Perplexity sonar-pro. Accepts a "
                 "messages array (role/content) and returns the assistant "
                 "reply with a numbered citations footer. Requires "
-                "PERPLEXITY_API_KEY."
+                "PERPLEXITY_API_KEY. Supports the full perplexity-py SDK "
+                "option surface: search filters, date filters, "
+                "web_search_options (search_context_size / search_type / "
+                "user_location), generation knobs (temperature / top_p / "
+                "max_tokens), and structured-output response_format."
             ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "messages": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {"role": s, "content": s},
-                            "required": ["role", "content"],
-                        },
-                    },
-                    "search_recency_filter": {
-                        "type": "string",
-                        "enum": list(perplexity_tools.VALID_RECENCY),
-                    },
-                    "search_domain_filter": {
-                        "type": "array",
-                        "items": s,
-                    },
-                    "search_context_size": {
-                        "type": "string",
-                        "enum": list(perplexity_tools.VALID_CONTEXT_SIZE),
-                    },
-                },
-                "required": ["messages"],
-            },
+            inputSchema=_perplexity_chat_input_schema(s),
         ),
         Tool(
             name="perplexity_research",
@@ -297,27 +430,10 @@ def _list_tools() -> list[Tool]:
                 "Deep multi-source research via Perplexity sonar-deep-research "
                 "(slow, 30s+). SSE-streamed under the hood. Set "
                 "strip_thinking=true to remove <think>...</think> tags. "
-                "Requires PERPLEXITY_API_KEY."
+                "Requires PERPLEXITY_API_KEY. Accepts the full chat option "
+                "surface plus reasoning_effort."
             ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "messages": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {"role": s, "content": s},
-                            "required": ["role", "content"],
-                        },
-                    },
-                    "strip_thinking": {"type": "boolean"},
-                    "reasoning_effort": {
-                        "type": "string",
-                        "enum": list(perplexity_tools.VALID_REASONING_EFFORT),
-                    },
-                },
-                "required": ["messages"],
-            },
+            inputSchema=_perplexity_chat_input_schema(s, with_strip_thinking=True),
         ),
         Tool(
             name="perplexity_reason",
@@ -325,35 +441,80 @@ def _list_tools() -> list[Tool]:
                 "Step-by-step reasoning via Perplexity sonar-reasoning-pro. "
                 "Best for math, logic, and complex analysis. Set "
                 "strip_thinking=true to drop <think>...</think> tags. "
-                "Requires PERPLEXITY_API_KEY."
+                "Requires PERPLEXITY_API_KEY. Accepts the full chat option "
+                "surface."
+            ),
+            inputSchema=_perplexity_chat_input_schema(s, with_strip_thinking=True),
+        ),
+        Tool(
+            name="perplexity_embed",
+            description=(
+                "Generate vector embeddings via Perplexity /v1/embeddings. "
+                "Accepts a single string or up to 512 strings in one call. "
+                "Pick model from "
+                + ", ".join(perplexity_tools.EMBED_MODELS)
+                + ". Optional dimensions truncates the output (Matryoshka). "
+                "Optional encoding_format compresses to base64_int8 / "
+                "base64_binary. Requires PERPLEXITY_API_KEY."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "messages": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {"role": s, "content": s},
-                            "required": ["role", "content"],
-                        },
+                    "input": {
+                        "oneOf": [
+                            s,
+                            {"type": "array", "items": s, "minItems": 1, "maxItems": 512},
+                        ]
                     },
-                    "strip_thinking": {"type": "boolean"},
-                    "search_recency_filter": {
+                    "model": {
                         "type": "string",
-                        "enum": list(perplexity_tools.VALID_RECENCY),
+                        "enum": list(perplexity_tools.EMBED_MODELS),
                     },
-                    "search_domain_filter": {
-                        "type": "array",
-                        "items": s,
-                    },
-                    "search_context_size": {
+                    "dimensions": {"type": "integer", "minimum": 1},
+                    "encoding_format": {
                         "type": "string",
-                        "enum": list(perplexity_tools.VALID_CONTEXT_SIZE),
+                        "enum": list(perplexity_tools.VALID_EMBED_ENCODING),
                     },
                 },
-                "required": ["messages"],
+                "required": ["input", "model"],
             },
+        ),
+        Tool(
+            name="perplexity_async_create",
+            description=(
+                "Submit an async chat-completions job. Returns immediately "
+                "with {id, status, created_at, ...}; poll with "
+                "perplexity_async_get. Use for long-running deep-research "
+                "queries that exceed your client timeout. Accepts the full "
+                "chat option surface plus optional idempotency_key. "
+                "Requires PERPLEXITY_API_KEY."
+            ),
+            inputSchema=_perplexity_chat_input_schema(
+                s, with_async_extras=True
+            ),
+        ),
+        Tool(
+            name="perplexity_async_get",
+            description=(
+                "Poll one async chat-completions job by id. Returns the full "
+                "record including status (CREATED / IN_PROGRESS / COMPLETED "
+                "/ FAILED) and the assistant response when COMPLETED. "
+                "Requires PERPLEXITY_API_KEY."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {"api_request_id": s},
+                "required": ["api_request_id"],
+            },
+        ),
+        Tool(
+            name="perplexity_async_list",
+            description=(
+                "List all async chat-completions jobs. Returns the API's "
+                "envelope with one record per job. Requires "
+                "PERPLEXITY_API_KEY."
+            ),
+            inputSchema={"type": "object", "properties": {}},
         ),
     ]
 
@@ -522,37 +683,86 @@ def _dispatch(client: QwenClient, name: str, args: dict[str, Any], fs_cfg: fs_to
                 str(args["query"]),
                 max_results=int(args.get("max_results", 10)),
                 max_tokens_per_page=int(args.get("max_tokens_per_page", 1024)),
+                max_tokens=(int(args["max_tokens"]) if args.get("max_tokens") else None),
                 country=(str(args["country"]) if args.get("country") else None),
+                search_mode=args.get("search_mode"),
+                search_recency_filter=args.get("search_recency_filter"),
+                search_domain_filter=args.get("search_domain_filter"),
+                search_language_filter=args.get("search_language_filter"),
+                last_updated_after_filter=args.get("last_updated_after_filter"),
+                last_updated_before_filter=args.get("last_updated_before_filter"),
+                search_after_date_filter=args.get("search_after_date_filter"),
+                search_before_date_filter=args.get("search_before_date_filter"),
             )
         except (perplexity_tools.PerplexityError, Exception) as exc:  # noqa: BLE001
             return f"perplexity_search error: {type(exc).__name__}: {exc}"
         return perplexity_tools.format_search_results(results)
     if name in {"perplexity_ask", "perplexity_research", "perplexity_reason"}:
         msgs = args.get("messages")
+        # Forward every documented chat option that was actually set on
+        # the call. We intentionally drop unset / None keys so the
+        # request body stays minimal.
+        chat_opts = _extract_chat_options(args)
         try:
             if name == "perplexity_ask":
-                return perplexity_tools.perplexity_ask(
+                return perplexity_tools.perplexity_ask(  # type: ignore[return-value]
                     msgs,  # type: ignore[arg-type]
-                    search_recency_filter=args.get("search_recency_filter"),
-                    search_domain_filter=args.get("search_domain_filter"),
-                    search_context_size=args.get("search_context_size"),
+                    **chat_opts,
                 )
             if name == "perplexity_research":
-                return perplexity_tools.perplexity_research(
+                return perplexity_tools.perplexity_research(  # type: ignore[return-value]
                     msgs,  # type: ignore[arg-type]
                     strip_thinking=bool(args.get("strip_thinking", False)),
-                    reasoning_effort=args.get("reasoning_effort"),
+                    **chat_opts,
                 )
-            # perplexity_reason
-            return perplexity_tools.perplexity_reason(
+            return perplexity_tools.perplexity_reason(  # type: ignore[return-value]
                 msgs,  # type: ignore[arg-type]
                 strip_thinking=bool(args.get("strip_thinking", False)),
-                search_recency_filter=args.get("search_recency_filter"),
-                search_domain_filter=args.get("search_domain_filter"),
-                search_context_size=args.get("search_context_size"),
+                **chat_opts,
             )
         except (perplexity_tools.PerplexityError, Exception) as exc:  # noqa: BLE001
             return f"{name} error: {type(exc).__name__}: {exc}"
+    if name == "perplexity_embed":
+        try:
+            res = perplexity_tools.perplexity_embed(
+                args["input"],
+                model=str(args["model"]),
+                dimensions=(int(args["dimensions"]) if args.get("dimensions") else None),
+                encoding_format=args.get("encoding_format"),
+            )
+        except (perplexity_tools.PerplexityError, Exception) as exc:  # noqa: BLE001
+            return f"perplexity_embed error: {type(exc).__name__}: {exc}"
+        return perplexity_tools.format_embeddings_result(res)
+    if name == "perplexity_async_create":
+        msgs = args.get("messages")
+        chat_opts = _extract_chat_options(args)
+        try:
+            payload = perplexity_tools.perplexity_async_create(
+                msgs,  # type: ignore[arg-type]
+                model=str(args["model"]),
+                idempotency_key=(
+                    str(args["idempotency_key"])
+                    if args.get("idempotency_key") else None
+                ),
+                **chat_opts,
+            )
+        except (perplexity_tools.PerplexityError, Exception) as exc:  # noqa: BLE001
+            return f"perplexity_async_create error: {type(exc).__name__}: {exc}"
+        return perplexity_tools.format_async_record(payload)
+    if name == "perplexity_async_get":
+        try:
+            payload = perplexity_tools.perplexity_async_get(
+                str(args["api_request_id"])
+            )
+        except (perplexity_tools.PerplexityError, Exception) as exc:  # noqa: BLE001
+            return f"perplexity_async_get error: {type(exc).__name__}: {exc}"
+        return perplexity_tools.format_async_record(payload)
+    if name == "perplexity_async_list":
+        try:
+            payload = perplexity_tools.perplexity_async_list()
+        except (perplexity_tools.PerplexityError, Exception) as exc:  # noqa: BLE001
+            return f"perplexity_async_list error: {type(exc).__name__}: {exc}"
+        return perplexity_tools.format_async_list(payload)
     raise ValueError(f"unknown tool: {name}")
 
 

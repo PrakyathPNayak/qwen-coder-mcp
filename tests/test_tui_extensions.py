@@ -69,20 +69,18 @@ class TestPatchAnchorRender:
 # --------------------------------------------------- perplexity wrappers
 class TestRenderPerplexity:
     def test_search_empty_query_via_dispatcher_branch(self) -> None:
-        # The dispatcher rejects empty rest before calling the renderer,
-        # but the renderer itself should also surface the underlying
-        # PerplexityError if called with whitespace.
+        # The renderer surfaces a usage line when the query is whitespace.
         out = tui._render_perplexity_search("   ")
-        assert "perplexity_search error" in out
+        assert "usage: /perplexity_search" in out
 
     def test_search_uses_module(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         captured: dict = {}
 
-        def fake_search(query: str, *, max_results: int = 10):
+        def fake_search(query: str, **kw):
             captured["query"] = query
-            captured["max_results"] = max_results
+            captured.update(kw)
             return [
                 perplexity_tools.PerplexitySearchResult(
                     title="T", url="https://u/", snippet="s"
@@ -93,13 +91,17 @@ class TestRenderPerplexity:
             perplexity_tools, "perplexity_search", fake_search
         )
         out = tui._render_perplexity_search("query terms")
-        assert captured == {"query": "query terms", "max_results": 10}
+        assert captured["query"] == "query terms"
+        # No flags supplied, so no extra kwargs forwarded.
+        assert "max_results" not in captured
         assert "1. T" in out
         assert "https://u/" in out
 
     def test_chat_usage_when_empty(self) -> None:
         for kind in ("ask", "research", "reason"):
-            assert tui._render_perplexity_chat(kind, "") == f"usage: /perplexity_{kind} <question>"
+            assert tui._render_perplexity_chat(kind, "") == (
+                f"usage: /perplexity_{kind} [flags] <question>"
+            )
 
     def test_chat_dispatches_by_kind(
         self, monkeypatch: pytest.MonkeyPatch
@@ -123,10 +125,14 @@ class TestRenderPerplexity:
         monkeypatch.setattr(perplexity_tools, "perplexity_reason", fake_reason)
 
         assert tui._render_perplexity_chat("ask", "hi") == "ASK:hi"
-        assert tui._render_perplexity_chat("research", "hi", strip_thinking=True) == \
-            "RESEARCH(strip=True):hi"
-        assert tui._render_perplexity_chat("reason", "hi", strip_thinking=True) == \
-            "REASON(strip=True):hi"
+        # research/reason default to strip_thinking=True via the dispatcher,
+        # so the renderer's default mirrors that.
+        assert tui._render_perplexity_chat(
+            "research", "hi", default_strip_thinking=True
+        ) == "RESEARCH(strip=True):hi"
+        assert tui._render_perplexity_chat(
+            "reason", "hi", default_strip_thinking=True
+        ) == "REASON(strip=True):hi"
         assert seen == ["ask", "research", "reason"]
 
     def test_chat_surfaces_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -204,6 +210,8 @@ class TestSlashRegistration:
             "/perplexity_ask",
             "/perplexity_research",
             "/perplexity_reason",
+            "/perplexity_embed",
+            "/perplexity_async",
             "/bug",
         ],
     )
@@ -211,3 +219,249 @@ class TestSlashRegistration:
         assert name in tui.SLASH_COMMANDS
         # Tab-completion routing also picks them up.
         assert name in tui.slash_completions(name[:5])
+
+
+# --------------------------------------------------- flag parser
+class TestPerplexityFlagParser:
+    def test_no_flags(self) -> None:
+        opts, rest = tui._parse_perplexity_flags("hello world")
+        assert opts == {}
+        assert rest == "hello world"
+
+    def test_single_string_flag(self) -> None:
+        opts, rest = tui._parse_perplexity_flags("--recency week tell me")
+        assert opts == {"search_recency_filter": "week"}
+        assert rest == "tell me"
+
+    def test_repeatable_list_flag(self) -> None:
+        opts, rest = tui._parse_perplexity_flags(
+            "--domain a.com,b.com --domain c.com find x"
+        )
+        assert opts["search_domain_filter"] == ["a.com", "b.com", "c.com"]
+        assert rest == "find x"
+
+    def test_int_and_float_flags(self) -> None:
+        opts, rest = tui._parse_perplexity_flags(
+            "--max 5 --tpp 512 --temperature 0.3 --top-p 0.9 query"
+        )
+        assert opts["max_results"] == 5
+        assert opts["max_tokens_per_page"] == 512
+        assert opts["temperature"] == 0.3
+        assert opts["top_p"] == 0.9
+        assert rest == "query"
+
+    def test_bool_flags(self) -> None:
+        opts, rest = tui._parse_perplexity_flags(
+            "--no-search --related --keep-think question"
+        )
+        assert opts["disable_search"] is True
+        assert opts["return_related_questions"] is True
+        assert opts["strip_thinking"] is False
+        assert rest == "question"
+
+    def test_strip_think_overrides_keep(self) -> None:
+        opts, _ = tui._parse_perplexity_flags("--keep-think --strip-think x")
+        assert opts["strip_thinking"] is True
+
+    def test_unknown_flag_terminates(self) -> None:
+        # Unknown flags stay in the remainder so the user sees the
+        # offending text rather than a silent drop.
+        opts, rest = tui._parse_perplexity_flags("--bogus value rest")
+        assert opts == {}
+        assert rest == "--bogus value rest"
+
+    def test_missing_value_raises(self) -> None:
+        with pytest.raises(ValueError):
+            tui._parse_perplexity_flags("--recency")
+
+    def test_int_parse_failure_raises(self) -> None:
+        with pytest.raises(ValueError):
+            tui._parse_perplexity_flags("--max NOT_AN_INT q")
+
+
+# --------------------------------------------------- search renderer w/ flags
+class TestRenderPerplexitySearchFlags:
+    def test_forwards_flags(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict = {}
+
+        def fake_search(query: str, **kw):
+            captured["query"] = query
+            captured.update(kw)
+            return []
+
+        monkeypatch.setattr(perplexity_tools, "perplexity_search", fake_search)
+        out = tui._render_perplexity_search(
+            "--mode academic --recency month --domain a.com,b.com python typing"
+        )
+        assert captured["query"] == "python typing"
+        assert captured["search_mode"] == "academic"
+        assert captured["search_recency_filter"] == "month"
+        assert captured["search_domain_filter"] == ["a.com", "b.com"]
+        assert "(no results)" in out
+
+    def test_drops_chat_only_keys(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict = {}
+
+        def fake_search(query: str, **kw):
+            captured.update(kw)
+            return []
+
+        monkeypatch.setattr(perplexity_tools, "perplexity_search", fake_search)
+        # --temperature is a chat-only flag; it must not be forwarded
+        # to perplexity_search.
+        tui._render_perplexity_search("--temperature 0.5 --max 3 query")
+        assert "temperature" not in captured
+        assert captured.get("max_results") == 3
+
+
+# --------------------------------------------------- chat renderer w/ flags
+class TestRenderPerplexityChatFlags:
+    def test_forwards_chat_options(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict = {}
+
+        def fake_ask(messages, **kw):
+            captured["messages"] = messages
+            captured.update(kw)
+            return "ok"
+
+        monkeypatch.setattr(perplexity_tools, "perplexity_ask", fake_ask)
+        out = tui._render_perplexity_chat(
+            "ask",
+            "--context high --temperature 0.2 --max-tokens 500 What is X?",
+        )
+        assert out == "ok"
+        assert captured["messages"][0]["content"] == "What is X?"
+        assert captured["search_context_size"] == "high"
+        assert captured["temperature"] == 0.2
+        assert captured["max_tokens"] == 500
+        # Search-only / embed-only kwargs are NOT in the chat-opt forward.
+        assert "max_results" not in captured
+
+    def test_keep_think_overrides_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict = {}
+
+        def fake_research(messages, **kw):
+            captured.update(kw)
+            return "r"
+
+        monkeypatch.setattr(
+            perplexity_tools, "perplexity_research", fake_research
+        )
+        # research defaults to strip=True; --keep-think flips to False.
+        tui._render_perplexity_chat(
+            "research", "--keep-think topic", default_strip_thinking=True
+        )
+        assert captured["strip_thinking"] is False
+
+
+# --------------------------------------------------- embed renderer
+class TestRenderPerplexityEmbed:
+    def test_usage_line_when_missing_args(self) -> None:
+        assert "usage:" in tui._render_perplexity_embed("")
+        assert "usage:" in tui._render_perplexity_embed("just-model")
+
+    def test_forwards_to_module(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict = {}
+
+        def fake_embed(input, **kw):
+            captured["input"] = input
+            captured.update(kw)
+            return perplexity_tools.PerplexityEmbeddingsResult(
+                data=[{"embedding": [0.1, 0.2, 0.3], "index": 0}],
+                model="pplx-embed-v1-0.6b",
+            )
+
+        monkeypatch.setattr(perplexity_tools, "perplexity_embed", fake_embed)
+        out = tui._render_perplexity_embed(
+            "--dim 256 --encoding base64_int8 pplx-embed-v1-0.6b hello"
+        )
+        assert captured["input"] == "hello"
+        assert captured["model"] == "pplx-embed-v1-0.6b"
+        assert captured["dimensions"] == 256
+        assert captured["encoding_format"] == "base64_int8"
+        assert "Generated 1 embedding" in out
+
+    def test_surfaces_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def boom(*_a, **_kw):
+            raise perplexity_tools.PerplexityError("nope")
+
+        monkeypatch.setattr(perplexity_tools, "perplexity_embed", boom)
+        out = tui._render_perplexity_embed("pplx-embed-v1-4b some text")
+        assert "perplexity_embed error" in out
+        assert "nope" in out
+
+
+# --------------------------------------------------- async renderer
+class TestRenderPerplexityAsync:
+    def test_usage_when_no_subcmd(self) -> None:
+        assert "usage:" in tui._render_perplexity_async("")
+        assert "usage:" in tui._render_perplexity_async("bogus")
+
+    def test_list_dispatches(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        called = {"n": 0}
+
+        def fake_list():
+            called["n"] += 1
+            return {"data": []}
+
+        monkeypatch.setattr(
+            perplexity_tools, "perplexity_async_list", fake_list
+        )
+        out = tui._render_perplexity_async("list")
+        assert called["n"] == 1
+        assert "no async jobs" in out
+
+    def test_get_requires_id(self) -> None:
+        out = tui._render_perplexity_async("get")
+        assert "usage:" in out
+
+    def test_get_dispatches(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict = {}
+
+        def fake_get(rid):
+            captured["rid"] = rid
+            return {"id": rid, "model": "sonar-pro", "status": "COMPLETED"}
+
+        monkeypatch.setattr(
+            perplexity_tools, "perplexity_async_get", fake_get
+        )
+        out = tui._render_perplexity_async("get xyz123")
+        assert captured["rid"] == "xyz123"
+        assert "[COMPLETED]" in out
+        assert "id=xyz123" in out
+
+    def test_create_requires_model_and_question(self) -> None:
+        out = tui._render_perplexity_async("create")
+        assert "usage:" in out
+        out = tui._render_perplexity_async("create sonar-pro")
+        assert "usage:" in out
+
+    def test_create_dispatches(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict = {}
+
+        def fake_create(messages, **kw):
+            captured["messages"] = messages
+            captured.update(kw)
+            return {
+                "id": "job-1",
+                "model": kw["model"],
+                "status": "CREATED",
+            }
+
+        monkeypatch.setattr(
+            perplexity_tools, "perplexity_async_create", fake_create
+        )
+        out = tui._render_perplexity_async(
+            "create sonar-pro --temperature 0.5 explain X"
+        )
+        assert captured["messages"][0]["content"] == "explain X"
+        assert captured["model"] == "sonar-pro"
+        assert captured["temperature"] == 0.5
+        assert "[CREATED]" in out
+        assert "id=job-1" in out
