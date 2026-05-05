@@ -204,6 +204,35 @@ directory gating, directory rejection, and registry/catalog membership.
 
 ---
 
+## Loop 298 — guarded rm write tool
+
+**OBSERVE**: The write tool surface lacked deletion. The model could delete only
+by asking for `run_shell`, which is both broader than necessary and less
+structured in logs/confirm previews.
+
+**ORIENT**: Deletion belongs in a first-class workspace-scoped tool, with
+explicit recursive directory behavior and the existing destructive approval
+boundary.
+
+**DECIDE**:
+
+1. Implement `_tool_rm(path, recursive=false, missing_ok=false)`.
+2. Resolve the path inside `FsConfig.root`.
+3. Refuse to remove the workspace root.
+4. Delete regular files directly; require `recursive=true` before deleting
+   directories.
+5. Register `rm` in `WRITE_TOOLS`, `TOOL_BLURBS`, and the static prompt summary.
+
+**DEVIL**: Adding a delete primitive increases power, but it is safer than
+teaching the model to use shell deletion: no path escapes, no workspace-root
+removal, no recursive directory deletion unless explicitly requested, and every
+call remains confirmation-gated.
+
+**ACT**: Added tests for file deletion, missing-file behavior, recursive
+directory deletion, root refusal, and registry/catalog membership.
+
+---
+
 ## Loop 1 — pytest harness
 
 **OBSERVE**: zero tests in repo; every parser in `agent/loop.py` was untested

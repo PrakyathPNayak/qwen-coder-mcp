@@ -143,3 +143,22 @@ directories, and only creates parent directories when explicitly requested.
 **DEVIL**: Appending can still corrupt structured files if used blindly, but it
 is less destructive than whole-file writes and remains behind the same
 Copilot-style destructive approval path.
+
+## Loop 298 — guarded rm write tool
+
+**OBSERVE**: The agent could create, edit, copy, move, and append files, but
+could not delete files except through shell commands. That made cleanup tasks
+noisier and pushed deletion toward the broader `run_shell` surface.
+
+**ORIENT**: Deletion should be explicit, workspace-scoped, and confirmation
+gated. A dedicated `rm` tool lets the model perform cleanup without shelling out
+and keeps the operation visible in the tool audit log.
+
+**DECIDE**: Add `_tool_rm(path, recursive=False, missing_ok=False)`, register it
+in `WRITE_TOOLS`, and document it in the prompt/catalog. It refuses to remove
+the workspace root, requires `recursive=true` for directories, and supports
+`missing_ok` for idempotent cleanup.
+
+**DEVIL**: `rm` is inherently dangerous, but the implementation is less risky
+than shell deletion because it is workspace-resolved, root-refusing, and routed
+through the destructive confirmation hook.

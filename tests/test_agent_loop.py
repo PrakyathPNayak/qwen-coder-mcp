@@ -958,3 +958,54 @@ class TestAppendFileTool:
         assert "append_file" in agent_loop.DESTRUCTIVE_TOOLS
         assert "append_file" not in agent_loop.DEFAULT_TOOLS
         assert "append_file" in agent_loop.TOOL_BLURBS
+
+
+class TestRmTool:
+    def _cfg(self, tmp_path: Path) -> fs_tools.FsConfig:
+        return fs_tools.FsConfig(root=tmp_path)
+
+    def test_removes_file(self, tmp_path: Path) -> None:
+        target = tmp_path / "dead.txt"
+        target.write_text("bye", encoding="utf-8")
+        r = agent_loop._tool_rm({"path": "dead.txt"}, self._cfg(tmp_path))
+        assert "removed file" in r
+        assert not target.exists()
+
+    def test_missing_errors_by_default(self, tmp_path: Path) -> None:
+        r = agent_loop._tool_rm({"path": "missing.txt"}, self._cfg(tmp_path))
+        assert "not found" in r
+        assert r.startswith("error:")
+
+    def test_missing_ok(self, tmp_path: Path) -> None:
+        r = agent_loop._tool_rm(
+            {"path": "missing.txt", "missing_ok": True}, self._cfg(tmp_path)
+        )
+        assert "ignored" in r
+
+    def test_directory_requires_recursive(self, tmp_path: Path) -> None:
+        (tmp_path / "d").mkdir()
+        (tmp_path / "d" / "x.txt").write_text("x", encoding="utf-8")
+        r = agent_loop._tool_rm({"path": "d"}, self._cfg(tmp_path))
+        assert "recursive=true" in r
+        assert (tmp_path / "d").exists()
+
+    def test_recursive_removes_directory(self, tmp_path: Path) -> None:
+        (tmp_path / "d").mkdir()
+        (tmp_path / "d" / "x.txt").write_text("x", encoding="utf-8")
+        r = agent_loop._tool_rm(
+            {"path": "d", "recursive": True}, self._cfg(tmp_path)
+        )
+        assert "removed directory" in r
+        assert not (tmp_path / "d").exists()
+
+    def test_refuses_workspace_root(self, tmp_path: Path) -> None:
+        r = agent_loop._tool_rm({"path": "."}, self._cfg(tmp_path))
+        assert "refusing to remove workspace root" in r
+        assert tmp_path.exists()
+
+    def test_in_write_tools_and_blurbs(self) -> None:
+        assert "rm" in agent_loop.WRITE_TOOLS
+        assert "rm" in agent_loop.ALL_TOOLS
+        assert "rm" in agent_loop.DESTRUCTIVE_TOOLS
+        assert "rm" not in agent_loop.DEFAULT_TOOLS
+        assert "rm" in agent_loop.TOOL_BLURBS

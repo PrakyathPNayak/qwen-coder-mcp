@@ -17,7 +17,7 @@ CODER_SYSTEM = (
     "                  git_status, git_diff, git_log, web_search, web_fetch,\n"
     "                  http_request, json_query, env_get\n"
     "  Write/modify:   fs_write, fs_edit, fs_regex_edit, fs_insert,\n"
-    "                  apply_patch, mkdir, touch, mv, cp, append_file\n"
+    "                  apply_patch, mkdir, touch, mv, cp, append_file, rm\n"
     "  Execute:        run_shell, python_exec  (shell + python on the host)\n"
     "  Operator:       ask_user   (prompt the human for a decision)\n"
     "\n"

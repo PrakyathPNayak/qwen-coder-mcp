@@ -888,6 +888,37 @@ def _tool_append_file(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
     return f"appended {len(content.encode('utf-8'))} bytes to {path}"
 
 
+def _tool_rm(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    """Delete a workspace file, or a directory when recursive=true."""
+    import shutil as _shutil
+
+    path = str(args.get("path", "")).strip()
+    if not path:
+        return "error: rm needs a 'path' arg"
+    recursive = bool(args.get("recursive", False))
+    missing_ok = bool(args.get("missing_ok", False))
+    try:
+        target = fs_tools._resolve_inside_root(cfg, path)
+    except fs_tools.FsError as exc:
+        return f"error: {exc}"
+    if target == cfg.root:
+        return "error: refusing to remove workspace root"
+    if not target.exists():
+        if missing_ok:
+            return f"not found (ignored): {path}"
+        return f"error: not found: {path}"
+    try:
+        if target.is_dir():
+            if not recursive:
+                return "error: path is a directory; set recursive=true"
+            _shutil.rmtree(target)
+            return f"removed directory {path}"
+        target.unlink()
+        return f"removed file {path}"
+    except OSError as exc:
+        return f"error: {exc}"
+
+
 DEFAULT_TOOLS: dict[str, ToolFn] = {
     "web_search": _tool_web_search,
     "web_fetch": _tool_web_fetch,
@@ -920,6 +951,7 @@ WRITE_TOOLS: dict[str, ToolFn] = {
     "mv": _tool_mv,
     "cp": _tool_cp,
     "append_file": _tool_append_file,
+    "rm": _tool_rm,
     "http_request": _tool_http_request,
     "run_shell": _tool_run_shell,
     "python_exec": _tool_python_exec,
@@ -1259,6 +1291,11 @@ TOOL_BLURBS: dict[str, str] = {
         "- append_file(path: str, content: str, create_parents: bool=false) --\n"
         "  append text to a workspace file without replacing existing content.\n"
         "  Creates parent dirs only when create_parents=true. Requires write-mode."
+    ),
+    "rm": (
+        "- rm(path: str, recursive: bool=false, missing_ok: bool=false) --\n"
+        "  delete a workspace file. Directories require recursive=true.\n"
+        "  Refuses to remove the workspace root. Requires write-mode."
     ),
 }
 
