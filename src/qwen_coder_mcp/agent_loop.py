@@ -664,6 +664,9 @@ def _tool_python_exec(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
 
 # ---------------------------------------- loop 290: utility tools --------
 
+_HTTP_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
 def _tool_http_request(args: dict[str, Any], _cfg: fs_tools.FsConfig) -> str:
     """Loop 290: make an HTTP request and return the response body.
 
@@ -715,6 +718,25 @@ def _tool_http_request(args: dict[str, Any], _cfg: fs_tools.FsConfig) -> str:
     body_text = raw.decode("utf-8", errors="replace")
     truncated = " [truncated]" if len(raw) >= max_bytes else ""
     return f"status={status} content-type={content_type!r}{truncated}\n{body_text}"
+
+
+def _tool_http_request_readonly(
+    args: dict[str, Any], cfg: fs_tools.FsConfig
+) -> str:
+    """Read-only registry wrapper for http_request.
+
+    Loop 293: the public blurb said mutating HTTP verbs required write-mode,
+    but DEFAULT_TOOLS exposed the full implementation. Keep GET/HEAD/OPTIONS
+    available to read-only agents and reserve POST/PUT/PATCH/DELETE for the
+    write registry where confirmation can run.
+    """
+    method = str(args.get("method", "GET")).upper()
+    if method not in _HTTP_SAFE_METHODS:
+        return (
+            f"error: http_request method {method!r} requires write-mode "
+            "approval; use GET, HEAD, or OPTIONS in read-only mode"
+        )
+    return _tool_http_request(args, cfg)
 
 
 def _tool_json_query(args: dict[str, Any], _cfg: fs_tools.FsConfig) -> str:
@@ -839,7 +861,7 @@ def _tool_cp(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
 DEFAULT_TOOLS: dict[str, ToolFn] = {
     "web_search": _tool_web_search,
     "web_fetch": _tool_web_fetch,
-    "http_request": _tool_http_request,
+    "http_request": _tool_http_request_readonly,
     "json_query": _tool_json_query,
     "env_get": _tool_env_get,
     "fs_read": _tool_fs_read,
@@ -867,6 +889,7 @@ WRITE_TOOLS: dict[str, ToolFn] = {
     "touch": _tool_touch,
     "mv": _tool_mv,
     "cp": _tool_cp,
+    "http_request": _tool_http_request,
     "run_shell": _tool_run_shell,
     "python_exec": _tool_python_exec,
 }
@@ -877,6 +900,13 @@ ALL_TOOLS: dict[str, ToolFn] = {**DEFAULT_TOOLS, **WRITE_TOOLS}
 # these through an optional confirmation hook so a TUI/CLI can prompt
 # the user before the write actually happens.
 DESTRUCTIVE_TOOLS: frozenset[str] = frozenset(WRITE_TOOLS.keys())
+
+
+def _tool_call_requires_confirm(name: str, args: dict[str, Any]) -> bool:
+    if name == "http_request":
+        method = str(args.get("method", "GET")).upper()
+        return method not in _HTTP_SAFE_METHODS
+    return name in DESTRUCTIVE_TOOLS
 
 
 # ---------------------------------------------------- memory tools (loop 246)
@@ -1173,8 +1203,8 @@ TOOL_BLURBS: dict[str, str] = {
     "http_request": (
         "- http_request(url: str, method: str='GET', headers: dict={},\n"
         "  body: str='', timeout: float=20) -- make an HTTP request and\n"
-        "  return status + response body (truncated at 32KB). GET/HEAD are\n"
-        "  read-only; POST/PUT/DELETE/PATCH require write-mode and Copilot\n"
+        "  return status + response body (truncated at 32KB). GET/HEAD/OPTIONS\n"
+        "  are read-only; POST/PUT/DELETE/PATCH require write-mode and Copilot\n"
         "  approval. Use for calling REST APIs, health checks, webhooks."
     ),
     "json_query": (
@@ -1313,7 +1343,10 @@ def run_tool(
             output=f"error: unknown tool {call.name!r}. Available: {avail}",
             error=True,
         )
-    if canonical_name in DESTRUCTIVE_TOOLS and confirm is not None:
+    if (
+        _tool_call_requires_confirm(canonical_name, call.args)
+        and confirm is not None
+    ):
         try:
             if not confirm(call):
                 return ToolResult(

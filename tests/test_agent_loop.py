@@ -709,6 +709,85 @@ class TestHttpRequestTool:
     def test_in_default_tools(self) -> None:
         assert "http_request" in agent_loop.DEFAULT_TOOLS
 
+    def test_in_write_tools_for_mutating_methods(self) -> None:
+        assert "http_request" in agent_loop.WRITE_TOOLS
+        assert "http_request" in agent_loop.DESTRUCTIVE_TOOLS
+
+    def test_default_registry_blocks_post_before_network(
+        self, tmp_path: Path
+    ) -> None:
+        from unittest.mock import patch
+
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        call = agent_loop.ToolCall(
+            name="http_request",
+            args={"url": "http://example.com", "method": "POST", "body": "x"},
+            raw="",
+        )
+        with patch("urllib.request.urlopen") as urlopen:
+            res = agent_loop.run_tool(
+                call, fs_cfg=cfg, tools=agent_loop.DEFAULT_TOOLS
+            )
+        assert res.error is False
+        assert "requires write-mode" in res.output
+        urlopen.assert_not_called()
+
+    def test_safe_http_method_skips_confirm_in_write_registry(
+        self, tmp_path: Path
+    ) -> None:
+        from unittest.mock import MagicMock, patch
+
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        seen: list[str] = []
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.status = 200
+        mock_resp.headers = {"Content-Type": "text/plain"}
+        mock_resp.read.return_value = b"ok"
+
+        def deny(call: agent_loop.ToolCall) -> bool:
+            seen.append(call.name)
+            return False
+
+        call = agent_loop.ToolCall(
+            name="http_request",
+            args={"url": "http://example.com", "method": "GET"},
+            raw="",
+        )
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            res = agent_loop.run_tool(
+                call, fs_cfg=cfg, tools=agent_loop.ALL_TOOLS, confirm=deny
+            )
+        assert seen == []
+        assert "status=200" in res.output
+
+    def test_mutating_http_method_uses_confirm(
+        self, tmp_path: Path
+    ) -> None:
+        from unittest.mock import patch
+
+        cfg = fs_tools.FsConfig(root=tmp_path)
+        seen: list[str] = []
+
+        def deny(call: agent_loop.ToolCall) -> bool:
+            seen.append(call.name)
+            return False
+
+        call = agent_loop.ToolCall(
+            name="http_request",
+            args={"url": "http://example.com", "method": "POST", "body": "x"},
+            raw="",
+        )
+        with patch("urllib.request.urlopen") as urlopen:
+            res = agent_loop.run_tool(
+                call, fs_cfg=cfg, tools=agent_loop.ALL_TOOLS, confirm=deny
+            )
+        assert res.error
+        assert "denied" in res.output
+        assert seen == ["http_request"]
+        urlopen.assert_not_called()
+
     def test_has_blurb(self) -> None:
         assert "http_request" in agent_loop.TOOL_BLURBS
 

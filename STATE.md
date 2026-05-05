@@ -33,3 +33,26 @@ visible turns could burn steps if the model repeatedly emits only thoughts, but
 retry, and `model_start` sequencing. Re-ran the live Qwen probe: event sequence
 is now tool call -> tool result -> model_start step 2 -> final, with no hidden
 reasoning in the final answer.
+
+## Loop 293 — enforce HTTP mutation approval boundary
+
+**OBSERVE**: `TOOL_BLURBS["http_request"]` said POST/PUT/DELETE/PATCH require
+write-mode and Copilot approval, but `DEFAULT_TOOLS` exposed the full
+implementation. A read-only agent could therefore attempt mutating HTTP methods
+without entering the same approval path used by filesystem and shell tools.
+
+**ORIENT**: This was a prompt/registry contract bug and a permission-boundary
+bug. It was not enough to update text; the registry needed separate read-only
+and write-mode behavior under the same tool name so the dynamic catalog remains
+simple for the model.
+
+**DECIDE**: Add a read-only wrapper for `http_request` in `DEFAULT_TOOLS` that
+allows GET/HEAD/OPTIONS and rejects mutating methods before network I/O. Add the
+full implementation to `WRITE_TOOLS`, let `ALL_TOOLS` override the wrapper, and
+make confirmation conditional on the requested HTTP method so safe GET calls in
+write mode do not pop unnecessary prompts.
+
+**DEVIL**: Method-level confirmation is more complex than the old static
+`DESTRUCTIVE_TOOLS` check, but without it either read-only mode is unsafe or
+safe GET calls become noisy in write mode. Keeping the same public tool name
+avoids teaching the model two nearly identical HTTP tools.

@@ -50,6 +50,37 @@ answer.
 
 ---
 
+## Loop 293 — enforce HTTP mutation approval boundary
+
+**OBSERVE**: `http_request` was introduced as a utility tool with a blurb saying
+GET/HEAD are read-only while POST/PUT/DELETE/PATCH require write-mode approval.
+The actual registry had only one implementation in `DEFAULT_TOOLS`, so
+read-only agents saw the tool and could send mutating methods without the
+Copilot-style confirmation hook.
+
+**ORIENT**: This is exactly the class of mismatch the operator has repeatedly
+called out: prompt/tool promises must match runtime behavior. The fix belongs in
+the registry/dispatcher, not only in docs.
+
+**DECIDE**:
+
+1. Add `_HTTP_SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}`.
+2. Keep `http_request` in `DEFAULT_TOOLS`, but point it at a wrapper that rejects
+   non-safe methods before `urllib.request.urlopen` is called.
+3. Add `http_request` to `WRITE_TOOLS`, where `ALL_TOOLS` exposes the full
+   implementation.
+4. Replace the raw `canonical_name in DESTRUCTIVE_TOOLS` confirm check with
+   `_tool_call_requires_confirm(name, args)`, so mutating HTTP methods prompt
+   while safe methods do not.
+
+**DEVIL**: A static destructive set is simpler and some HTTP GET endpoints can
+still have side effects if a remote service is badly designed, but the normal
+HTTP safety boundary is method-based and matches the advertised contract. A
+separate `http_request_write` tool would be more explicit but would fragment the
+model-facing API.
+
+---
+
 ## Loop 1 — pytest harness
 
 **OBSERVE**: zero tests in repo; every parser in `agent/loop.py` was untested
