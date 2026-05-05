@@ -202,3 +202,21 @@ targets before file/directory deletion.
 sandbox, but unlinking an in-workspace symlink does not mutate the outside
 target. Rejecting it would make broken/outside symlink cleanup impossible and
 push users back toward shell commands.
+
+## Loop 301 — append_file write-size cap
+
+**OBSERVE**: `append_file` wrote content directly with `open("a")` and did not
+check `FsConfig.max_write_bytes`. Other write/edit/insert/patch paths enforce
+that cap to keep local resource use bounded.
+
+**ORIENT**: The user explicitly allows local autonomy but only within resource
+limits. Append should follow the same size contract as the rest of the
+filesystem write surface.
+
+**DECIDE**: Encode the append payload first, reject when it exceeds
+`cfg.max_write_bytes`, and use the precomputed byte length in the success
+message.
+
+**DEVIL**: This caps per-call append size rather than final file size. That is
+consistent with existing write helpers and prevents one accidental huge payload;
+aggregate growth remains an operator/task concern.

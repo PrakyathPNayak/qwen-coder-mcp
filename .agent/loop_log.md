@@ -298,6 +298,31 @@ rejection. Existing root-refusal tests also remain green.
 
 ---
 
+## Loop 301 — append_file respects max_write_bytes
+
+**OBSERVE**: `append_file` accepted arbitrary string content and opened the file
+before any resource-limit check. Existing filesystem write paths enforce
+`FsConfig.max_write_bytes`, so append was the odd write primitive out.
+
+**ORIENT**: Local-model autonomy is still supposed to be bounded by resource
+limits. A single giant append payload should be rejected before it creates or
+mutates a file.
+
+**DECIDE**:
+
+1. Encode append content once at the top of `_tool_append_file`.
+2. If byte length exceeds `cfg.max_write_bytes`, return a clear error.
+3. Reuse the encoded length in the success message.
+4. Add a regression test with `max_write_bytes=4` and `content="12345"` proving
+   no file is created.
+
+**DEVIL**: This does not prevent many small appends from growing a file over
+time. That matches the existing per-operation cap behavior and avoids surprising
+the model when appending to already-large logs.
+
+
+---
+
 ## Loop 1 — pytest harness
 
 **OBSERVE**: zero tests in repo; every parser in `agent/loop.py` was untested

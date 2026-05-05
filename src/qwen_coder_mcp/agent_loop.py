@@ -866,6 +866,12 @@ def _tool_append_file(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
         return "error: append_file needs a 'path' arg"
     if not isinstance(content, str):
         return "error: append_file needs string 'content' arg"
+    encoded = content.encode("utf-8")
+    if len(encoded) > cfg.max_write_bytes:
+        return (
+            f"error: appended content too large "
+            f"({len(encoded)} > {cfg.max_write_bytes})"
+        )
     create_parents = bool(args.get("create_parents", False))
     try:
         target = fs_tools._resolve_inside_root(cfg, path)
@@ -886,7 +892,7 @@ def _tool_append_file(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
             fh.write(content)
     except (OSError, ValueError) as exc:
         return f"error: {exc}"
-    return f"appended {len(content.encode('utf-8'))} bytes to {path}"
+    return f"appended {len(encoded)} bytes to {path}"
 
 
 def _tool_rm(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:

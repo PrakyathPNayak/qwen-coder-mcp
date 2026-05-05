@@ -964,6 +964,14 @@ class TestAppendFileTool:
         )
         assert "cannot append to directory" in r
 
+    def test_content_respects_max_write_bytes(self, tmp_path: Path) -> None:
+        cfg = fs_tools.FsConfig(root=tmp_path, max_write_bytes=4)
+        r = agent_loop._tool_append_file(
+            {"path": "too-big.txt", "content": "12345"}, cfg
+        )
+        assert "too large" in r
+        assert not (tmp_path / "too-big.txt").exists()
+
     def test_in_write_tools_and_blurbs(self) -> None:
         assert "append_file" in agent_loop.WRITE_TOOLS
         assert "append_file" in agent_loop.ALL_TOOLS
