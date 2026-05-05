@@ -81,6 +81,42 @@ model-facing API.
 
 ---
 
+## Loop 294 — parse newline-containing Qwen tool-call JSON
+
+**OBSERVE**: Running the real-model benchmark (`loop294-scan`) found no scenario
+errors, but plain chat replies still exposed visible reasoning. A TUI-like live
+probe showed the more severe concrete bug: Qwen emitted
+`hidden...</think><tool_call>...fs_write...</tool_call>`, and the `content`
+argument contained literal newline characters inside a JSON string. Strict
+`json.loads` rejected it, `parse_tool_calls` silently dropped it, and the TUI
+would finalize/display the raw tool call rather than entering agent mode.
+
+**ORIENT**: The runtime should accept the tool-call shape the actual local model
+emits. This is not a speculative parser enhancement; it is a live failure mode
+that can look exactly like "generation stopped after tool call."
+
+**DECIDE**:
+
+1. In `parse_tool_calls`, fall back from strict `json.loads(block)` to
+   `json.loads(block, strict=False)`.
+2. Import `_strip_think_blocks` into `tui.py`.
+3. Sanitize `_finalize_stream` input before tool-call detection and rendering.
+4. Sanitize the assistant message committed by `chat_turn_stream`.
+5. Keep generated benchmark proof files out of the commit, but keep the
+   benchmark JSON result.
+
+**DEVIL**: A lenient JSON parser could hide model formatting bugs, but the
+leniency is scoped to explicit tool-call blocks and only permits control
+characters inside strings. If parsing still fails, the block remains ignored.
+Sanitizing at finalization cannot prevent every raw chunk from briefly appearing
+during live streaming, but it fixes the decision point and persisted history.
+
+**ACT**: Added tests for newline-containing JSON strings in tool calls, sanitized
+stream-history commits, and sanitized `_finalize_stream` rendering. Live probe
+now parses `fs_write(path='fizzbuzz.py')` from the sanitized TUI-like history.
+
+---
+
 ## Loop 1 — pytest harness
 
 **OBSERVE**: zero tests in repo; every parser in `agent/loop.py` was untested

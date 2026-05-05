@@ -78,6 +78,19 @@ class TestParseToolCalls:
         assert len(calls) == 1
         assert calls[0].name == "ok"
 
+    def test_literal_newlines_inside_json_strings(self) -> None:
+        text = (
+            '<tool_call>{"name": "fs_write", "args": {"path": "x.py", '
+            '"content": "def f():\n    return 1\n"}}</tool_call>'
+        )
+        calls = agent_loop.parse_tool_calls(text)
+        assert len(calls) == 1
+        assert calls[0].name == "fs_write"
+        assert calls[0].args == {
+            "path": "x.py",
+            "content": "def f():\n    return 1\n",
+        }
+
     def test_arguments_alias(self) -> None:
         # Some models prefer "arguments" over "args" -- accept both.
         text = '<tool_call>{"name": "fs_read", "arguments": {"path": "y"}}</tool_call>'

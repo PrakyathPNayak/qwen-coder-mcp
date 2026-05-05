@@ -423,6 +423,14 @@ class TestChatTurnStream:
         list(tui.chat_turn_stream(history, "hi", client=client))
         assert history[0].content == "custom"
 
+    def test_committed_stream_strips_unwrapped_think(self) -> None:
+        client = _FakeStreamingClient(
+            ["hidden reasoning", "</think>\n\n", "visible answer"]
+        )
+        history: list[ChatMessage] = []
+        list(tui.chat_turn_stream(history, "hi", client=client))
+        assert history[-1].content == "visible answer"
+
 
 class TestDiffSlash:
     def test_usage(self, tmp_path: Path) -> None:
@@ -2026,6 +2034,26 @@ class TestStreamingApp:
         assert app.total_turns == 1
         assert app.last_turn_tokens > 0
         assert app.total_tokens == app.last_turn_tokens
+
+    def test_finalize_stream_strips_think_before_recording(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = self._app(tmp_path)
+        writes: list[str] = []
+
+        class _Stub:
+            def update(self, *_a, **_k) -> None: ...
+            def remove_class(self, *_a, **_k) -> None: ...
+            def write(self, *args, **_k) -> None:
+                if args:
+                    writes.append(str(args[0]))
+
+        monkeypatch.setattr(app, "query_one", lambda _id, _cls: _Stub())
+        app._finalize_stream("user prompt", "hidden</think>\n\nvisible", 1.0)
+        rendered = "\n".join(writes)
+        assert "visible" in rendered
+        assert "hidden" not in rendered
+        assert "</think>" not in rendered
 
     def test_double_submit_during_stream_is_ignored(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

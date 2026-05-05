@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import agent_loop, fs_tools, perplexity_tools, prompts, shell_tools, web_tools
-from .qwen_client import ChatMessage, QwenClient
+from .qwen_client import ChatMessage, QwenClient, _strip_think_blocks
 
 
 def _safe_markup(text: object) -> str:
@@ -3862,7 +3862,7 @@ def chat_turn_stream(
         accum_parts.append(err)
         yield err, "".join(accum_parts)
         return
-    final = "".join(accum_parts)
+    final = _strip_think_blocks("".join(accum_parts))
     history.append(ChatMessage(role="assistant", content=final))
 
 
@@ -4679,6 +4679,7 @@ def _build_app(
                 return
 
         def _finalize_stream(self, prompt: str, reply: str, elapsed: float) -> None:
+            reply = _strip_think_blocks(reply)
             try:
                 stream = self.query_one("#stream", Static)
                 stream.update("")

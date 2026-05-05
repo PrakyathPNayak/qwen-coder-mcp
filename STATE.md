@@ -56,3 +56,30 @@ write mode do not pop unnecessary prompts.
 `DESTRUCTIVE_TOOLS` check, but without it either read-only mode is unsafe or
 safe GET calls become noisy in write mode. Keeping the same public tool name
 avoids teaching the model two nearly identical HTTP tools.
+
+## Loop 294 — parse Qwen newline tool-call JSON and sanitize plain streams
+
+**OBSERVE**: The real-model benchmark had no scenario errors but exposed visible
+reasoning in plain chat heads. A TUI-like live probe produced an even more
+actionable failure: Qwen emitted an unwrapped `</think>` followed by a
+`<tool_call>` whose `fs_write.content` JSON string contained literal newlines.
+The old parser dropped that block as malformed JSON, so plain streaming could
+display a raw tool call instead of switching into agent mode.
+
+**ORIENT**: This directly explains a class of "tool calls stop / do nothing"
+reports: the model did request a tool, but the parser rejected the common
+Qwen-shaped JSON and the TUI finalized the response as normal text.
+
+**DECIDE**: Retry `json.loads(..., strict=False)` for tool-call blocks after the
+strict parse fails, which accepts literal control characters inside JSON strings
+without broadly inventing a custom parser. Also sanitize `_finalize_stream` and
+committed `chat_turn_stream` history with `_strip_think_blocks` so unwrapped
+thinking does not affect tool detection or final display.
+
+**DEVIL**: `strict=False` is permissive, but it is limited to blocks already
+inside explicit `<tool_call>` tags and still requires syntactically valid JSON
+objects otherwise. That is a safer compatibility fix than regex-editing string
+contents by hand.
+
+**ACT**: Added parser and TUI streaming tests. Live probe now parses the
+newline-containing `fs_write` call from sanitized history.

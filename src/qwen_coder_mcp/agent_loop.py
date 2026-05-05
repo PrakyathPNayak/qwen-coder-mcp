@@ -1300,7 +1300,13 @@ def parse_tool_calls(text: str) -> list[ToolCall]:
         try:
             obj = json.loads(block)
         except json.JSONDecodeError:
-            continue
+            try:
+                # Qwen sometimes emits literal newlines inside JSON string
+                # values (especially fs_write content). Python's JSON parser
+                # can accept that common non-standard shape with strict=False.
+                obj = json.loads(block, strict=False)
+            except json.JSONDecodeError:
+                continue
         if not isinstance(obj, dict):
             continue
         name = obj.get("name")

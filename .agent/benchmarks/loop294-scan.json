@@ -1,0 +1,186 @@
+{
+  "tag": "loop294-scan",
+  "base_url": "http://127.0.0.1:8000/v1",
+  "model": "qwen3.6-27b",
+  "wall_s": 227.79402108299837,
+  "scenarios": [
+    {
+      "ttft_s": 0.11213708700051939,
+      "wall_s": 61.29439601800004,
+      "completion_chars": 8877,
+      "completion_words": 1467,
+      "words_per_s": 23.9336724937985,
+      "reply_head": "Here's a thinking process:\n\n1.  **Analyze User Request:**\n   - Function name: `fizzbuzz(n)`\n   - Purpose: Print FizzBuzz for numbers from 1 to n (inclusive)\n   - Constraint: Exactly 5 lines of Python code\n   - Output: Just the code, no explanation\n\n2.  **Understand FizzBuzz Rules:**\n   - For each number i from 1 to n:\n     - If divisible by both 3 and 5, print \"FizzBuzz\"\n     - Else if divisible b",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": false,
+        "safe_path_renders": true
+      },
+      "scenario": "warmup_plain_python",
+      "kind": "chat",
+      "bench_wall_s": 61.29492703699907
+    },
+    {
+      "ttft_s": 0.0868813710003451,
+      "wall_s": 64.51891903099931,
+      "completion_chars": 8932,
+      "completion_words": 1193,
+      "words_per_s": 18.490700370023262,
+      "reply_head": "Here's a thinking process:\n\n1.  **Understand User Requirements:**\n   - Class name: `LRUCache`\n   - Methods: `get`, `put`\n   - Data structure: `OrderedDict` (from `collections`)\n   - Include a brief docstring\n   - Output ONLY code (no explanations, no markdown except code block if necessary, but the prompt says \"Output ONLY code\", so I'll just output the raw Python code)\n\n2.  **Key Concepts of LRU ",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": false,
+        "safe_path_renders": true
+      },
+      "scenario": "tokens_per_second_long",
+      "kind": "chat",
+      "bench_wall_s": 64.51950231299998
+    },
+    {
+      "ttft_s": 0.07668367800033593,
+      "wall_s": 71.17253510800037,
+      "completion_chars": 8270,
+      "completion_words": 1302,
+      "words_per_s": 18.293573469376735,
+      "reply_head": "Here's a thinking process:\n\n1.  **Analyze User Input:**\n   - The user wants me to print *exactly* the provided text verbatim, character-for-character.\n   - The text must be wrapped in ````text` fences.\n   - The provided text is:\n     ```\n     [INFO] [/\u258d] progress 50%\n     regex matched: /\\[(.*?)\\]/g\n     Traceback (most recent call last):\n       File '[/x]', line 1\n     [ERROR] closing tag '[/\u258d]' ",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": true,
+        "safe_path_renders": true
+      },
+      "scenario": "bracket_heavy_output",
+      "kind": "chat",
+      "bench_wall_s": 71.1730855299993
+    },
+    {
+      "wall_s": 5.872504897999534,
+      "tool_calls": 1,
+      "stream_chunks": 153,
+      "final_chars": 247,
+      "final_head": "This project is a local Model Context Protocol (MCP) server powered by Qwen3.6-27B on a single RTX 4090, providing coding-focused AI tools alongside a self-improving agentic loop that autonomously audits, critiques, and patches its own repository.",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": false,
+        "safe_path_renders": true
+      },
+      "tool_result_markup_safe": [
+        {
+          "checked": true,
+          "raw_would_raise": false,
+          "safe_path_renders": true
+        }
+      ],
+      "tool_result_heads": [
+        "# README.md lines 1-30 of 454\n# qwen-coder-mcp\n\nA Model Context Protocol (MCP) server backed by **Qwen3.6-27B running\nlocally on a single RTX 4090** via vLLM (4-bit AutoRound, OpenAI-compatible),\nfocu"
+      ],
+      "scenario": "agent_one_step_fs_read",
+      "kind": "agent",
+      "bench_wall_s": 5.8727163529983955
+    },
+    {
+      "wall_s": 7.744792547999168,
+      "tool_calls": 2,
+      "stream_chunks": 166,
+      "final_chars": 88,
+      "final_head": "The file was created and read back successfully, confirming the content matches exactly.",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": false,
+        "safe_path_renders": true
+      },
+      "tool_result_markup_safe": [
+        {
+          "checked": true,
+          "raw_would_raise": false,
+          "safe_path_renders": true
+        },
+        {
+          "checked": true,
+          "raw_would_raise": true,
+          "safe_path_renders": true
+        }
+      ],
+      "tool_result_heads": [
+        "wrote 52 bytes to .agent/benchmarks/_bench_write_probe.txt",
+        "[INFO] [/\u258d] progress\n[ERROR] closing tag '[/\u258d]'\n"
+      ],
+      "scenario": "agent_write_bracket_file",
+      "kind": "agent",
+      "bench_wall_s": 7.745029128000169
+    },
+    {
+      "wall_s": 5.185209881999981,
+      "tool_calls": 1,
+      "stream_chunks": 115,
+      "final_chars": 92,
+      "final_head": "The command printed two lines: `[INFO] [/\u258d] progress 50%` followed by `[ERROR] closing tag`.",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": true,
+        "safe_path_renders": true
+      },
+      "tool_result_markup_safe": [
+        {
+          "checked": true,
+          "raw_would_raise": true,
+          "safe_path_renders": true
+        }
+      ],
+      "tool_result_heads": [
+        "$ echo '[INFO] [/\u258d] progress 50%' && echo '[ERROR] closing tag'\nexit=0\n--- stdout ---\n[INFO] [/\u258d] progress 50%\n[ERROR] closing tag"
+      ],
+      "scenario": "agent_run_shell_bracket",
+      "kind": "agent",
+      "bench_wall_s": 5.185334330000842
+    },
+    {
+      "wall_s": 12.00329704899923,
+      "tool_calls": 3,
+      "stream_chunks": 288,
+      "final_chars": 62,
+      "final_head": "The file now correctly prints `'HI, '` instead of `'hello, '`.",
+      "markup_safe": {
+        "checked": true,
+        "raw_would_raise": false,
+        "safe_path_renders": true
+      },
+      "tool_result_markup_safe": [
+        {
+          "checked": true,
+          "raw_would_raise": false,
+          "safe_path_renders": true
+        },
+        {
+          "checked": true,
+          "raw_would_raise": false,
+          "safe_path_renders": true
+        },
+        {
+          "checked": true,
+          "raw_would_raise": false,
+          "safe_path_renders": true
+        }
+      ],
+      "tool_result_heads": [
+        "wrote 61 bytes to .agent/benchmarks/_bench_regex_probe.py",
+        "edited .agent/benchmarks/_bench_regex_probe.py (regex): 1 replacement(s), size 61 -> 58 bytes",
+        "def greet(name):\n    print('HI, ' + name)\n    return None\n"
+      ],
+      "scenario": "agent_regex_edit_indent_drift",
+      "kind": "agent",
+      "bench_wall_s": 12.00342639200062
+    }
+  ],
+  "summary": {
+    "n_scenarios": 7,
+    "n_errors": 0,
+    "total_wall_s": 227.79165453399764,
+    "median_ttft_s": 0.0868813710003451,
+    "median_words_per_s": 18.490700370023262,
+    "n_replies_unprotected_would_crash": 2,
+    "n_replies_safe_path_rendered": 7,
+    "n_tool_results_checked": 7,
+    "n_tool_results_unprotected_would_crash": 2,
+    "n_tool_results_safe_path_rendered": 7
+  }
+}
