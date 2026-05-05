@@ -933,6 +933,18 @@ class TestAppendFileTool:
         assert "parent directory does not exist" in r
         assert not (tmp_path / "missing").exists()
 
+    def test_create_parents_required_with_relative_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        cfg = fs_tools.FsConfig(root=Path("."))
+        r = agent_loop._tool_append_file(
+            {"path": "missing/new.txt", "content": "hello"}, cfg
+        )
+        assert "parent directory does not exist" in r
+        assert "missing" in r
+        assert not (tmp_path / "missing").exists()
+
     def test_create_parents_true(self, tmp_path: Path) -> None:
         r = agent_loop._tool_append_file(
             {
@@ -1002,6 +1014,17 @@ class TestRmTool:
         r = agent_loop._tool_rm({"path": "."}, self._cfg(tmp_path))
         assert "refusing to remove workspace root" in r
         assert tmp_path.exists()
+
+    def test_refuses_workspace_root_with_relative_cfg_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "keep.txt").write_text("keep", encoding="utf-8")
+        cfg = fs_tools.FsConfig(root=Path("."))
+        r = agent_loop._tool_rm({"path": ".", "recursive": True}, cfg)
+        assert "refusing to remove workspace root" in r
+        assert tmp_path.exists()
+        assert (tmp_path / "keep.txt").exists()
 
     def test_in_write_tools_and_blurbs(self) -> None:
         assert "rm" in agent_loop.WRITE_TOOLS

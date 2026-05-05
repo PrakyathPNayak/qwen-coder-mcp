@@ -877,13 +877,14 @@ def _tool_append_file(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
         if create_parents:
             target.parent.mkdir(parents=True, exist_ok=True)
         elif not target.parent.exists():
+            root = cfg.root.resolve(strict=False)
             return (
                 f"error: parent directory does not exist: "
-                f"{target.parent.relative_to(cfg.root)}"
+                f"{target.parent.relative_to(root)}"
             )
         with target.open("a", encoding="utf-8") as fh:
             fh.write(content)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         return f"error: {exc}"
     return f"appended {len(content.encode('utf-8'))} bytes to {path}"
 
@@ -901,7 +902,8 @@ def _tool_rm(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
         target = fs_tools._resolve_inside_root(cfg, path)
     except fs_tools.FsError as exc:
         return f"error: {exc}"
-    if target == cfg.root:
+    root = cfg.root.resolve(strict=False)
+    if target == root:
         return "error: refusing to remove workspace root"
     if not target.exists():
         if missing_ok:

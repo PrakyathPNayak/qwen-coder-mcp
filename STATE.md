@@ -162,3 +162,22 @@ the workspace root, requires `recursive=true` for directories, and supports
 **DEVIL**: `rm` is inherently dangerous, but the implementation is less risky
 than shell deletion because it is workspace-resolved, root-refusing, and routed
 through the destructive confirmation hook.
+
+## Loop 299 — relative-root safety for new filesystem tools
+
+**OBSERVE**: The new `rm` and `append_file` tools used `cfg.root` directly after
+`fs_tools._resolve_inside_root()` returned resolved absolute paths. External API
+callers can construct `FsConfig(root=Path("."))`, making direct comparisons such
+as `target == cfg.root` false even when `target` is the workspace root.
+
+**ORIENT**: This is a safety bug in a destructive tool. With a relative root,
+`rm(path=".", recursive=true)` could bypass the root-refusal check and attempt
+to remove the workspace root.
+
+**DECIDE**: Normalize `cfg.root` with `resolve(strict=False)` before comparing
+or rendering paths in `rm` and `append_file`. Add regression tests using a
+relative-root `FsConfig` under `monkeypatch.chdir(tmp_path)`.
+
+**DEVIL**: Most in-app configs use absolute roots, but helper/API callers do not
+have to. Root safety must hold for every valid `FsConfig`, not only the common
+TUI path.

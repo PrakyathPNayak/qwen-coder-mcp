@@ -233,6 +233,39 @@ directory deletion, root refusal, and registry/catalog membership.
 
 ---
 
+## Loop 299 — relative-root safety for rm and append_file
+
+**OBSERVE**: `fs_tools._resolve_inside_root()` resolves paths against
+`cfg.root.resolve(strict=False)`, but the new `rm` root check compared the
+resolved target to `cfg.root` directly. If an external caller used
+`FsConfig(root=Path("."))`, `target == cfg.root` was false for the workspace
+root. `append_file` had the same class of direct-root issue when formatting a
+missing-parent error via `target.parent.relative_to(cfg.root)`.
+
+**ORIENT**: The destructive delete path must be safe for every valid `FsConfig`,
+not just the TUI's mostly absolute-root path.
+
+**DECIDE**:
+
+1. In `rm`, compare `target` to `cfg.root.resolve(strict=False)`.
+2. In `append_file`, compute missing-parent relative paths against the resolved
+   root.
+3. Catch `ValueError` along with `OSError` while formatting/writing append
+   errors.
+4. Add regression tests with `monkeypatch.chdir(tmp_path)` and
+   `FsConfig(root=Path("."))`.
+
+**DEVIL**: The direct TUI path likely passed absolute roots, so this is an API
+edge case rather than the most visible user bug. However, deletion tools are
+high-risk, and safety invariants must not depend on how the root was
+constructed.
+
+**ACT**: Added relative-root tests proving `rm(".", recursive=true)` refuses to
+remove the workspace and `append_file` reports missing parent directories
+without raising.
+
+---
+
 ## Loop 1 — pytest harness
 
 **OBSERVE**: zero tests in repo; every parser in `agent/loop.py` was untested
