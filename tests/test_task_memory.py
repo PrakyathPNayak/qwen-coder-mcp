@@ -146,11 +146,11 @@ class TestTaskMemoryPersistence:
 
     def test_eviction_with_many_done_todos_no_indexerror(self, tmp_path):
         """Regression: ``_evict_overflow_locked`` used to walk a stale
-        list of done-indices in ascending order, which raised
-        ``IndexError`` (or skipped entries) once the first ``pop()``
-        shifted the indices. Adding more done todos than ``max_todos``
-        in a tight loop reliably triggered it; the fix reverses the
-        iteration so each pop only invalidates already-consumed indices.
+        list of done-indices, which raised ``IndexError`` (or skipped
+        entries) once ``pop()`` shifted later positions. Adding more
+        done todos than ``max_todos`` in a tight loop reliably
+        triggered it; the fix now evicts selected victims by stable
+        todo id instead of mutating through stale list indices.
         """
         m = TaskMemory(path=tmp_path / "state.json", max_todos=2)
         for i in range(6):
