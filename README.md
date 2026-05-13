@@ -274,7 +274,9 @@ things VS Code, Continue, and similar local agent tooling let you do:
   mid-run for clarifications, choices, or shell input it doesn't have
   context for. Default-deny on a 2-minute timeout.
 - **Fetch data from the internet** — `web_search`, `fetch_url`, and the
-  `perplexity_*` tools talk to the open internet. `fetch_url` only
+  `perplexity_*` tools talk to the open internet. In the MCP server this
+  fetch tool is named `fetch_url`; in the TUI agent loop / default tool
+  registry, the corresponding tool is named `web_fetch`. `fetch_url` only
   follows `http(s)://` URLs and refuses non-text content types so the
   model can't accidentally dump a binary blob into chat history.
 - **Read & edit files in the workspace root** — `fs_read`, `fs_write`,
