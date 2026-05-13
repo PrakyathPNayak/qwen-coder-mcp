@@ -82,3 +82,22 @@ class TestGitTools:
     def test_log_invalid_n(self, repo):
         out = _tool_git_log({"n": "abc"}, repo)
         assert "init" in out
+
+    def test_diff_path_with_spaces_quoted(self, repo):
+        """Regression: previously the path arg was wrapped in single
+        quotes after stripping every quote character out of the input.
+        A legitimate filename like ``a b.txt`` (space) would survive,
+        but ``a'b.txt`` (apostrophe) would be silently mangled and the
+        resulting command could be broken. The fix uses ``shlex.quote``
+        so any legitimate path round-trips correctly.
+        """
+        target = repo.root / "a b.txt"
+        target.write_text("hello\nworld\n")
+        subprocess.run(["git", "add", "--", "a b.txt"], cwd=repo.root, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", "spaced"], cwd=repo.root, check=True
+        )
+        target.write_text("hello\nworld\nmore\n")
+        out = _tool_git_diff({"path": "a b.txt"}, repo)
+        assert "+more" in out
+        assert "a b.txt" in out

@@ -90,3 +90,25 @@ class TestSettingsOverrides:
         )
         with pytest.raises(Exception):
             s.max_tokens = 999  # type: ignore[misc]
+
+    def test_api_key_hidden_from_repr(self) -> None:
+        """Regression: ``Settings`` is frozen but its repr used to echo
+        the API key, which leaked into local logs and uncaught
+        traceback dumps. ``api_key`` is now ``repr=False`` so the
+        secret stays accessible by attribute but is omitted from any
+        accidental ``print(settings)``.
+        """
+        s = Settings(
+            base_url="http://x/v1",
+            api_key="super-secret-key",
+            model="m",
+            timeout=1.0,
+            max_tokens=10,
+            server_max_len=2048,
+            loop_interval_seconds=1,
+            loop_max_file_bytes=1,
+            loop_push=False,
+        )
+        assert "super-secret-key" not in repr(s)
+        # But the value is still readable for code that needs it.
+        assert s.api_key == "super-secret-key"
