@@ -95,7 +95,9 @@ class TestGitTools:
         target.write_text("hello\nworld\n")
         subprocess.run(["git", "add", "--", "a b.txt"], cwd=repo.root, check=True)
         subprocess.run(
-            ["git", "commit", "-m", "spaced"], cwd=repo.root, check=True
+            ["git", "-c", "commit.gpgsign=false", "commit", "-m", "spaced"],
+            cwd=repo.root,
+            check=True,
         )
         target.write_text("hello\nworld\nmore\n")
         out = _tool_git_diff({"path": "a b.txt"}, repo)
