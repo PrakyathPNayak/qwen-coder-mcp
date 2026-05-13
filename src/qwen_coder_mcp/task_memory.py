@@ -51,11 +51,26 @@ _DEFAULT_MAX_DECISIONS = 16
 _DEFAULT_MAX_FACTS = 32
 
 
+_VALID_TODO_STATUSES: tuple[str, ...] = ("open", "in_progress", "done", "blocked")
+
+
+def _normalise_status(status: str) -> str:
+    """Normalise an incoming todo status to one of the documented values.
+
+    Anything outside the documented set is coerced to ``"open"`` rather
+    than raising — keeps the public API tolerant of older state.json
+    payloads and lazy callers while still keeping
+    ``to_system_prompt`` / eviction logic consistent.
+    """
+    s = (status or "").strip().lower()
+    return s if s in _VALID_TODO_STATUSES else "open"
+
+
 @dataclass
 class Todo:
     id: str
     description: str
-    status: str = "open"  # "open", "in_progress", "done", "blocked"
+    status: str = "open"  # one of _VALID_TODO_STATUSES
     created_at: float = field(default_factory=lambda: time.time())
 
     def to_dict(self) -> dict[str, Any]:
@@ -66,7 +81,7 @@ class Todo:
         return cls(
             id=str(d.get("id", "")),
             description=str(d.get("description", "")),
-            status=str(d.get("status", "open")),
+            status=_normalise_status(str(d.get("status", "open"))),
             created_at=float(d.get("created_at", time.time())),
         )
 
@@ -194,14 +209,15 @@ class TaskMemory:
             todo_id = (todo_id or "").strip()
             if not todo_id:
                 raise ValueError("todo_id must be non-empty")
+            norm_status = _normalise_status(status)
             # Update in place if id already exists.
             for t in self.todos:
                 if t.id == todo_id:
                     t.description = description
-                    t.status = status
+                    t.status = norm_status
                     self._save_locked()
                     return t
-            t = Todo(id=todo_id, description=description, status=status)
+            t = Todo(id=todo_id, description=description, status=norm_status)
             self.todos.append(t)
             # FIFO eviction of oldest *done* todos first, then any.
             self._evict_overflow_locked()
@@ -210,9 +226,10 @@ class TaskMemory:
 
     def update_todo_status(self, todo_id: str, status: str) -> bool:
         with self._lock:
+            norm_status = _normalise_status(status)
             for t in self.todos:
                 if t.id == todo_id:
-                    t.status = status
+                    t.status = norm_status
                     self._save_locked()
                     return True
             return False
@@ -254,12 +271,21 @@ class TaskMemory:
 
     def _evict_overflow_locked(self) -> None:
         # Drop oldest done todos first; only then any oldest.
+        # Previous revision walked a precomputed list of indices in
+        # ascending order and called ``pop(idx)`` -- each pop shifted
+        # the remaining indices, so once the list shrank past the
+        # next stale index we would either skip a todo or raise
+        # IndexError. Walk the desired victims by id instead so each
+        # removal is independent of list bookkeeping.
         if len(self.todos) > self.max_todos:
-            done = [i for i, t in enumerate(self.todos) if t.status == "done"]
-            for idx in done:
+            done_ids = [t.id for t in self.todos if t.status == "done"]
+            for tid in done_ids:
                 if len(self.todos) <= self.max_todos:
                     break
-                self.todos.pop(idx)
+                for i, t in enumerate(self.todos):
+                    if t.id == tid:
+                        self.todos.pop(i)
+                        break
         while len(self.todos) > self.max_todos:
             self.todos.pop(0)
         while len(self.decisions) > self.max_decisions:

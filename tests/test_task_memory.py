@@ -144,6 +144,36 @@ class TestTaskMemoryPersistence:
             m.record_decision(f"d{i}")
         assert m.decisions == ["d2", "d3"]
 
+    def test_eviction_with_many_done_todos_no_indexerror(self, tmp_path):
+        """Regression: ``_evict_overflow_locked`` used to walk a stale
+        list of done-indices, which raised ``IndexError`` (or skipped
+        entries) once ``pop()`` shifted later positions. Adding more
+        done todos than ``max_todos`` in a tight loop reliably
+        triggered it; the fix now evicts selected victims by stable
+        todo id instead of mutating through stale list indices.
+        """
+        m = TaskMemory(path=tmp_path / "state.json", max_todos=2)
+        for i in range(6):
+            m.add_todo(f"t{i}", f"d{i}", status="done")
+        # No crash, exactly max_todos remain, kept ones are the newest.
+        assert len(m.todos) == 2
+        ids = {t.id for t in m.todos}
+        assert "t0" not in ids and "t1" not in ids
+
+    def test_invalid_todo_status_is_normalised(self, tmp_path):
+        """``add_todo`` / ``update_todo_status`` previously accepted any
+        string, which broke open/done bookkeeping. Bad values are now
+        coerced to ``"open"`` so the rest of the module's state-machine
+        assumptions hold."""
+        m = TaskMemory(path=tmp_path / "state.json")
+        m.add_todo("t1", "x", status="garbage")
+        assert m.todos[0].status == "open"
+        assert m.update_todo_status("t1", "also-garbage") is True
+        assert m.todos[0].status == "open"
+        # Valid values still flow through unchanged.
+        m.update_todo_status("t1", "in_progress")
+        assert m.todos[0].status == "in_progress"
+
 
 class TestRendering:
     def test_renders_current_task(self, tmp_path):

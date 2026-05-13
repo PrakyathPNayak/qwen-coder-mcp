@@ -6,6 +6,17 @@ focused on coding workflows, plus a self-improving **agentic loop** that
 continuously audits this repository, proposes fixes, plays devil's advocate
 against its own proposals, and commits accepted changes.
 
+> **Local-use tool.** This server is meant to run on a developer's own
+> workstation (or a remote machine the operator owns) and back an MCP
+> client like Claude Desktop, Continue, or the VS Code MCP extension.
+> It is **not** designed to be exposed as a public/commercial service.
+> The bundled tools intentionally support the same things other local
+> agent tools support: executing shell commands (with operator
+> confirmation), prompting the user for input mid-run, fetching data
+> from the open internet, and editing files inside the configured
+> workspace root. See [Local-use posture](#local-use-posture) for the
+> full list and the permission model.
+
 ## TL;DR — local 4090 setup
 
 ```bash
@@ -242,8 +253,54 @@ pip install -e .
 qwen-coder-mcp            # speaks MCP over stdio
 ```
 
-Register it with any MCP-capable client (Claude Desktop, Continue, etc.) by
-pointing the client at the `qwen-coder-mcp` binary.
+Register it with any MCP-capable client (Claude Desktop, Continue, VS Code's
+MCP extension, etc.) by pointing the client at the `qwen-coder-mcp` binary.
+
+### Local-use posture
+
+`qwen-coder-mcp` is intended to be run **on a developer's own machine** (or on
+a remote machine the operator owns and trusts), backing a local Qwen model
+over stdio. It is **not** intended to be exposed as a public/commercial
+service. Following that, the bundled tools intentionally do the kinds of
+things VS Code, Continue, and similar local agent tooling let you do:
+
+- **Run shell commands** — `run_shell` (write-mode only) and the
+  `git_status` / `git_diff` / `git_log` helpers execute commands in the
+  workspace via `/bin/sh`. The agent loop uses the
+  `confirm`-callback to gate each destructive call so the operator
+  approves it before it fires (the TUI's modal hooks into this).
+- **Ask the user for input** — the `ask_user` tool bridges back through
+  the TUI (`_AskScreen` modal) so the model can prompt the operator
+  mid-run for clarifications, choices, or shell input it doesn't have
+  context for. Default-deny on a 2-minute timeout.
+- **Fetch data from the internet** — `web_search`, `fetch_url`, and the
+  `perplexity_*` tools talk to the open internet. In the MCP server this
+  fetch tool is named `fetch_url`; in the TUI agent loop / default tool
+  registry, the corresponding tool is named `web_fetch`. `fetch_url` only
+  follows `http(s)://` URLs and refuses non-text content types so the
+  model can't accidentally dump a binary blob into chat history.
+- **Read & edit files in the workspace root** — `fs_read`, `fs_write`,
+  `fs_edit`, `apply_patch`, and friends are all sandboxed to the
+  `FsConfig.root` directory (no `..` escapes, no absolute paths
+  outside the root). Writes go through a tempfile + `os.replace` so
+  interrupted saves don't corrupt the destination.
+
+Because this is a local tool and the operator is the threat model author,
+the bundled hardening focuses on **correctness and operator-visible
+behaviour**, not on defending against a hostile MCP client. If you do
+expose this server beyond your own machine, layer your own auth /
+allowlist on top — e.g. wrap the binary in an `ssh` session you control,
+or set `QWEN_ALLOWED_TOOLS` (your own wrapper) to gate which tools the
+remote side can invoke.
+
+### Tool permissions cheat-sheet
+
+| Tool family | Registry | Confirm prompt? | Notes |
+| --- | --- | --- | --- |
+| `fs_read`, `grep`, `find`, `git_status/diff/log`, `web_search`, `fetch_url`, `http_request` (GET/HEAD) | `DEFAULT_TOOLS` | no | Read-only, available without `/allow_all`. |
+| `fs_write`, `fs_edit`, `apply_patch`, `mv`, `cp`, `run_shell`, `http_request` (POST/PUT/DELETE) | `WRITE_TOOLS` / `DESTRUCTIVE_TOOLS` | yes (modal y/n, 30 s default-deny) | Only available after `/allow_all` or `agent_write_default=on`. |
+| `ask_user` | always available | n/a | Pops the `_AskScreen` modal; default-deny on a 2-minute timeout. |
+| `perplexity_*` | `WRITE_TOOLS` registry (network-touching) | yes | Requires `PERPLEXITY_API_KEY`. |
 
 ## Running the agentic loop
 
@@ -263,9 +320,37 @@ docs/                 # Design notes
 
 ## Safety notes
 
-The loop only modifies files inside this repo, applies unified diffs through
-`git apply --check` first, runs `python -m compileall` on touched Python files,
-and rolls back on any failure. Commits are atomic per accepted fix.
+`qwen-coder-mcp` is a **local developer tool**: it deliberately exposes
+shell execution, file writes, and outbound HTTP requests so an MCP-capable
+editor or the bundled TUI can drive real coding workflows on your machine.
+The guard-rails it ships are aimed at operator visibility and correctness,
+not at sandboxing a hostile MCP client:
+
+- All write-mode tools (`fs_write`, `apply_patch`, `run_shell`,
+  `http_request` for mutating methods, etc.) are gated behind the
+  `confirm` callback. The TUI wires that callback to a y/n modal with a
+  30-second default-deny timeout (see [`docs/AGENT_CHECKPOINTS.md`](docs/AGENT_CHECKPOINTS.md)
+  for the full flow).
+- File operations are confined to `FsConfig.root`; relative paths that
+  escape via `..` are rejected and absolute paths outside the root are
+  refused.
+- `run_shell` runs through `/bin/sh` with a deny-list of obviously
+  destructive patterns (`rm -rf /`, `mkfs`, `shutdown`, fork-bombs,
+  etc.) and a per-call timeout / output cap so a runaway command can't
+  wedge the agent loop.
+- Secrets (`QWEN_API_KEY`, `PERPLEXITY_API_KEY`) are read from
+  environment / `.env` and **kept out of `Settings.__repr__`** so an
+  accidental `print(settings)` or unhandled traceback doesn't echo
+  them into the TUI scrollback or local log.
+
+The self-improving agentic loop only modifies files inside this repo, runs
+unified diffs through `git apply --check` first, runs `python -m compileall`
+on touched Python files, and rolls back on any failure. Commits are atomic
+per accepted fix.
+
+If you plan to run `qwen-coder-mcp` on a remote machine you trust, prefer
+fronting it with `ssh` rather than exposing the stdio transport on a
+network socket — that's outside the project's threat model.
 
 ## Runtime introspection
 

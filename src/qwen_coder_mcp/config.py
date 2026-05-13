@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 try:
@@ -15,7 +15,11 @@ except Exception:  # pragma: no cover - optional in some envs
 @dataclass(frozen=True)
 class Settings:
     base_url: str
-    api_key: str
+    # ``repr=False`` so an accidental ``print(settings)`` or unhandled
+    # exception traceback never echoes the API key into a local log or
+    # the TUI scrollback. The value is still readable as
+    # ``settings.api_key`` for code that legitimately needs it.
+    api_key: str = field(repr=False)
     model: str
     timeout: float
     max_tokens: int

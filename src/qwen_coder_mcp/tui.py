@@ -4635,7 +4635,12 @@ def _build_app(
                                 self._auto_loop_max = max(1, int(first))
                             except ValueError:
                                 self._auto_loop_max = 0
-                        self._auto_loop_seq = 0
+                        # Count the initial turn we're about to fire as
+                        # iteration 1 so ``max=N`` runs exactly N total
+                        # turns (one initial + N-1 continuations) instead
+                        # of the previous N+1 behaviour where seq started
+                        # at 0 and only the continuations were counted.
+                        self._auto_loop_seq = 1
                         self.agent_auto_loop = True
                         lim = "∞" if self._auto_loop_max == 0 else str(self._auto_loop_max)
                         log.write(

@@ -565,16 +565,21 @@ def _tool_git_status(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
 
 
 def _tool_git_diff(args: dict[str, Any], cfg: fs_tools.FsConfig) -> str:
+    import shlex
+
     path = args.get("path")
     staged = bool(args.get("staged", False))
     cmd = "git --no-pager diff"
     if staged:
         cmd += " --staged"
     if isinstance(path, str) and path.strip():
-        # Use shlex-safe quoting -- path is workspace-relative, no shell special chars
-        # tolerated. Strip quotes to avoid breaking the command.
-        safe = path.replace("'", "").replace('"', "")
-        cmd += f" -- '{safe}'"
+        # Use shlex.quote so legitimate paths containing spaces, single
+        # quotes, or other shell metacharacters survive intact rather
+        # than being mangled (the previous implementation silently
+        # stripped quote characters out of the path, which broke any
+        # filename that legitimately contained one and was also unsafe
+        # when paths happened to look like shell fragments).
+        cmd += f" -- {shlex.quote(path)}"
     return _git_run(cfg, cmd)
 
 
